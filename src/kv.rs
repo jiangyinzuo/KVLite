@@ -79,9 +79,9 @@ impl KvStore {
     }
 
     /// Remove a given key.
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        if self.index.contains_key(&key) {
-            let cmd = Command::remove(key);
+    pub fn remove(&mut self, key: &str) -> Result<()> {
+        if self.index.contains_key(key) {
+            let cmd = Command::remove(key.to_string());
             serde_json::to_writer(&mut self.writer, &cmd)?;
             self.writer.flush()?;
             if let Command::Remove { key } = cmd {
