@@ -1,13 +1,11 @@
 mod buffer;
-mod command;
-mod error;
-pub mod kv;
-mod memory;
-#[cfg(test)]
-mod tests;
-mod wal;
+pub mod command;
 mod config;
+pub mod db;
+mod error;
+pub mod memory;
+mod wal;
 
 pub type Result<T> = std::result::Result<T, error::KVLiteError>;
 
-pub use kv::KvStore;
+pub use db::KVLite;

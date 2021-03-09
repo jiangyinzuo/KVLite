@@ -1,4 +1,5 @@
-use crate::command::Command;
+use crate::command::WriteCmdOp;
+use crate::command::WriteCommand;
 use crate::Result;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -23,7 +24,7 @@ impl WalWriter {
         Ok(WalWriter { log_path, writer })
     }
 
-    pub fn append(&mut self, cmd: &Command) -> Result<()> {
+    pub fn append(&mut self, cmd: &WriteCommand) -> Result<()> {
         serde_json::to_writer(&mut self.writer, cmd)?;
         Ok(())
     }

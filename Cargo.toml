@@ -1,5 +1,5 @@
 [package]
-name = "KVLite"
+name = "kvlite"
 version = "0.1.0"
 authors = ["jiang <392711804@qq.com>"]
 edition = "2018"
