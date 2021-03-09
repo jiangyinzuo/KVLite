@@ -1,9 +1,8 @@
-use crate::command::WriteCmdOp;
 use crate::command::WriteCommand;
 use crate::Result;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 /// Write Ahead Log Writer

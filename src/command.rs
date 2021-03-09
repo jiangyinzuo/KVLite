@@ -1,4 +1,3 @@
-use crate::memory::{MemTable, MemTables};
 use serde::{Deserialize, Serialize};
 
 /// Write Command

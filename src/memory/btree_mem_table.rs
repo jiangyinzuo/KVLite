@@ -38,4 +38,12 @@ impl Query for BTreeMemTable {
     }
 }
 
-impl MemTable for BTreeMemTable {}
+impl MemTable for BTreeMemTable {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
+        Box::new(self.inner.iter())
+    }
+}

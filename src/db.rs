@@ -2,7 +2,6 @@ use crate::command::{WriteCmdOp, WriteCommand};
 use crate::memory::{MemTable, MemTables};
 use crate::wal::WalWriter;
 use crate::Result;
-use std::fs;
 use std::path::PathBuf;
 
 pub trait Query {
