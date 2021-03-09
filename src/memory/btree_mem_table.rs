@@ -1,4 +1,5 @@
 use crate::command::WriteCmdOp;
+use crate::db::Query;
 use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::MemTable;
 use crate::Result;
@@ -28,6 +29,12 @@ impl Default for BTreeMemTable {
         BTreeMemTable {
             inner: BTreeMap::new(),
         }
+    }
+}
+
+impl Query for BTreeMemTable {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.inner.get(key).cloned())
     }
 }
 

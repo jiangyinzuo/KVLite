@@ -1,8 +1,8 @@
 mod buffer;
 pub mod command;
-mod config;
+pub mod config;
 pub mod db;
-mod error;
+pub mod error;
 pub mod memory;
 mod wal;
 
