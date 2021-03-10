@@ -1,9 +1,7 @@
-use kvlite::command::WriteCmdOp;
 use kvlite::config::ACTIVE_SIZE_THRESHOLD;
-use kvlite::db::Query;
+use kvlite::db::{KVLite, DB};
 use kvlite::error::KVLiteError;
 use kvlite::memory::BTreeMemTable;
-use kvlite::KVLite;
 use kvlite::Result;
 use tempfile::TempDir;
 

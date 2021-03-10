@@ -9,4 +9,4 @@ mod wal;
 
 pub type Result<T> = std::result::Result<T, error::KVLiteError>;
 
-pub use db::KVLite;
+pub use db::DBImpl;
