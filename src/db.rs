@@ -1,13 +1,16 @@
-use crate::command::{WriteCmdOp, WriteCommand};
+use crate::command::WriteCommand;
 use crate::config::ACTIVE_SIZE_THRESHOLD;
+use crate::error::KVLiteError;
 use crate::memory::MemTable;
 use crate::sstable::SSTableWriter;
+use crate::version::versions::Versions;
 use crate::wal::WalWriter;
 use crate::Result;
 use std::collections::HashMap;
 use std::ops::DerefMut;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::thread;
 
 pub trait Query {
     fn get(&self, key: &str) -> Result<Option<String>>;
@@ -24,11 +27,27 @@ pub struct KVLite<T: MemTable> {
 }
 
 impl<T: MemTable> KVLite<T> {
-    pub fn open(log_path: impl Into<PathBuf>) -> Result<KVLite<T>> {
-        let db_impl = DBImpl::open(log_path)?;
-        Ok(KVLite {
-            inner: Arc::new(db_impl),
-        })
+    pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
+        let db_impl = Arc::new(DBImpl::open(db_path)?);
+
+        let kv_lite = KVLite { inner: db_impl };
+        kv_lite.task_write_to_level0_sstable();
+        Ok(kv_lite)
+    }
+
+    /// Create a thread to write immutable memory table to level0 sstable.
+    fn task_write_to_level0_sstable(&self) {
+        thread::Builder::new()
+            .name("write_to_level0_sstable".to_owned())
+            .spawn(move || {
+                info!("start thread `{}`", std::thread::current().name().unwrap());
+            })
+            .unwrap();
+    }
+
+    /// Write immutable memory table to level0 sstable
+    fn write_to_level0_sstable(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -51,15 +70,26 @@ pub struct DBImpl<T: MemTable> {
     imm_mem_tables: Arc<RwLock<HashMap<u128, T>>>,
     wal_writer: Mutex<WalWriter>,
     sstable_writer: SSTableWriter,
+    versions: Versions,
 }
 
 impl<T: MemTable> DBImpl<T> {
-    pub fn open(log_path: impl Into<PathBuf>) -> Result<DBImpl<T>> {
+    pub fn open(db_path: impl AsRef<Path>) -> Result<DBImpl<T>> {
+        let db_path = match db_path.as_ref().to_owned().into_os_string().into_string() {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(KVLiteError::Custom(
+                    "Invalid db path. Expect to use Unicode db path.".to_owned(),
+                ))
+            }
+        };
+
         Ok(DBImpl {
             mem_table: RwLock::default(),
             imm_mem_tables: Arc::new(RwLock::default()),
-            wal_writer: Mutex::new(WalWriter::open(log_path)?),
+            wal_writer: Mutex::new(WalWriter::open(db_path.clone())?),
             sstable_writer: SSTableWriter::default(),
+            versions: Versions::new(db_path),
         })
     }
 
@@ -101,6 +131,7 @@ impl<T: MemTable> DB for DBImpl<T> {
         }
         Ok(None)
     }
+
     fn set(&self, key: String, value: String) -> Result<()> {
         let cmd = WriteCommand::set(&key, &value);
         let mut wal_writer_lock = self.wal_writer.lock().unwrap();

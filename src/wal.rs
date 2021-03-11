@@ -7,16 +7,15 @@ use std::path::{Path, PathBuf};
 
 /// Write Ahead Log Writer
 pub struct WalWriter {
-    log_path: PathBuf,
+    log_path: String,
     writer: BufWriter<File>,
 }
 
 impl WalWriter {
-    pub fn open(log_path: impl Into<PathBuf>) -> Result<WalWriter> {
-        let log_path = log_path.into();
+    pub fn open(log_path: String) -> Result<WalWriter> {
         fs::create_dir_all(&log_path)?;
 
-        let log_file = log_file(&log_path, 0);
+        let log_file = log_file(log_path.as_ref(), 0);
 
         let writer = BufWriter::new(
             OpenOptions::new()

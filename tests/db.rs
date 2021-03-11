@@ -1,3 +1,4 @@
+use env_logger;
 use kvlite::config::ACTIVE_SIZE_THRESHOLD;
 use kvlite::db::{KVLite, DB};
 use kvlite::error::KVLiteError;
@@ -8,8 +9,8 @@ use tempfile::TempDir;
 #[test]
 fn test_command() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-
-    let mut db = KVLite::<BTreeMemTable>::open(temp_dir.path())?;
+    env_logger::init();
+    let db = KVLite::<BTreeMemTable>::open(temp_dir.path())?;
 
     db.set("hello".into(), "world".into())?;
     assert_eq!(KVLiteError::KeyNotFound, db.remove("no_exist").unwrap_err());

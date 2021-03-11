@@ -12,16 +12,20 @@ pub enum KVLiteError {
 
     #[error("invalid command")]
     InvalidCommand,
+
+    #[error("{0}")]
+    Custom(String),
 }
 
 impl PartialEq for KVLiteError {
     fn eq(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
+        match (self, other) {
             (Self::Disconnect(_), Self::Disconnect(_))
-                | (Self::SerdeError(_), Self::SerdeError(_))
-                | (Self::KeyNotFound, Self::KeyNotFound)
-                | (Self::InvalidCommand, Self::InvalidCommand)
-        )
+            | (Self::SerdeError(_), Self::SerdeError(_))
+            | (Self::KeyNotFound, Self::KeyNotFound)
+            | (Self::InvalidCommand, Self::InvalidCommand) => true,
+            (Self::Custom(s1), Self::Custom(s2)) => s1.eq(s2),
+            _ => false,
+        }
     }
 }
