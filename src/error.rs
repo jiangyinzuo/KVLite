@@ -3,9 +3,13 @@ use std::io;
 #[derive(thiserror::Error, Debug)]
 pub enum KVLiteError {
     #[error("{0}")]
-    Disconnect(#[from] io::Error),
+    IOError(#[from] io::Error),
+
     #[error("{0}")]
     SerdeError(#[from] serde_json::Error),
+
+    #[error("{0}")]
+    SendError(#[from] crossbeam_channel::SendError<()>),
 
     #[error("key not found")]
     KeyNotFound,
@@ -20,7 +24,7 @@ pub enum KVLiteError {
 impl PartialEq for KVLiteError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Disconnect(_), Self::Disconnect(_))
+            (Self::IOError(_), Self::IOError(_))
             | (Self::SerdeError(_), Self::SerdeError(_))
             | (Self::KeyNotFound, Self::KeyNotFound)
             | (Self::InvalidCommand, Self::InvalidCommand) => true,

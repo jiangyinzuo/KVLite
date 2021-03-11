@@ -8,10 +8,8 @@ use crate::db::Query;
 
 pub use btree_mem_table::BTreeMemTable;
 
-use std::hash::Hash;
-
 /// Table in Memory
-pub trait MemTable: WriteCmdOp + Query + Default + Eq + Hash {
+pub trait MemTable: WriteCmdOp + Query + Default + Send + Sync {
     fn len(&self) -> usize;
 
     #[inline]

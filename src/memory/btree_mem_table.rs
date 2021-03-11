@@ -4,7 +4,6 @@ use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::MemTable;
 use crate::Result;
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::sync::RwLock;
 
 /// Wrapper of `BTreeMap<String, String>`
@@ -51,14 +50,6 @@ impl PartialEq for BTreeMemTable {
     }
 }
 
-impl Eq for BTreeMemTable {}
-
-impl Hash for BTreeMemTable {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.inner.hash(state);
-    }
-}
-
 impl MemTable for BTreeMemTable {
     fn len(&self) -> usize {
         let _lock = self.rw_lock.read().unwrap();
@@ -68,5 +59,26 @@ impl MemTable for BTreeMemTable {
     fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
         let _lock = self.rw_lock.read().unwrap();
         Box::new(self.inner.iter())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::command::WriteCmdOp;
+    use crate::db::Query;
+    use crate::memory::{BTreeMemTable, MemTable};
+    use crate::Result;
+
+    #[test]
+    fn test_iter() -> Result<()> {
+        let mut mem_table = BTreeMemTable::default();
+        for i in 0..100 {
+            mem_table.set(format!("a{}", i), i.to_string())?;
+        }
+
+        for (i, (key, value)) in mem_table.iter().enumerate() {
+            assert_eq!(key, &format!("a{}", value));
+        }
+        Ok(())
     }
 }
