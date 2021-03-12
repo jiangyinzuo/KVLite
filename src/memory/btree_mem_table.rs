@@ -1,5 +1,4 @@
-use crate::command::WriteCmdOp;
-use crate::db::Query;
+use crate::db::DBCommandMut;
 use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::MemTable;
 use crate::Result;
@@ -12,16 +11,21 @@ pub struct BTreeMemTable {
     inner: BTreeMap<String, String>,
 }
 
-impl WriteCmdOp for BTreeMemTable {
+impl DBCommandMut for BTreeMemTable {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        let _lock = self.rw_lock.read().unwrap();
+        Ok(self.inner.get(key).cloned())
+    }
+
     fn set(&mut self, key: String, value: String) -> Result<()> {
         let _lock = self.rw_lock.read().unwrap();
         self.inner.insert(key, value);
         Ok(())
     }
 
-    fn remove(&mut self, key: &str) -> Result<()> {
+    fn remove(&mut self, key: String) -> Result<()> {
         let _lock = self.rw_lock.write().unwrap();
-        match self.inner.remove(key) {
+        match self.inner.insert(key, String::new()) {
             Some(_) => Ok(()),
             None => Err(KeyNotFound),
         }
@@ -34,13 +38,6 @@ impl Default for BTreeMemTable {
             rw_lock: RwLock::default(),
             inner: BTreeMap::default(),
         }
-    }
-}
-
-impl Query for BTreeMemTable {
-    fn get(&self, key: &str) -> Result<Option<String>> {
-        let _lock = self.rw_lock.read().unwrap();
-        Ok(self.inner.get(key).cloned())
     }
 }
 
@@ -64,8 +61,7 @@ impl MemTable for BTreeMemTable {
 
 #[cfg(test)]
 mod tests {
-    use crate::command::WriteCmdOp;
-    use crate::db::Query;
+    use crate::db::DBCommandMut;
     use crate::memory::{BTreeMemTable, MemTable};
     use crate::Result;
 
@@ -76,7 +72,7 @@ mod tests {
             mem_table.set(format!("a{}", i), i.to_string())?;
         }
 
-        for (i, (key, value)) in mem_table.iter().enumerate() {
+        for (key, value) in mem_table.iter() {
             assert_eq!(key, &format!("a{}", value));
         }
         Ok(())

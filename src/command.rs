@@ -16,15 +16,3 @@ impl<'a> WriteCommand<'a> {
         WriteCommand::Remove { key }
     }
 }
-
-/// Process "set" and "rm" commands.
-pub trait WriteCmdOp {
-    fn set(&mut self, key: String, value: String) -> crate::Result<()>;
-
-    fn remove(&mut self, key: &str) -> crate::Result<()>;
-}
-
-/// Process "get" command
-pub trait ReadCmdOp {
-    fn get(&mut self, key: &str) -> crate::Result<&String>;
-}

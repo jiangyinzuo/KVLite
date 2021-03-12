@@ -2,14 +2,12 @@
 
 mod btree_mem_table;
 
-use crate::command::WriteCmdOp;
-
-use crate::db::Query;
+use crate::db::DBCommandMut;
 
 pub use btree_mem_table::BTreeMemTable;
 
 /// Table in Memory
-pub trait MemTable: WriteCmdOp + Query + Default + Send + Sync {
+pub trait MemTable: DBCommandMut + Default + Send + Sync {
     fn len(&self) -> usize;
 
     #[inline]

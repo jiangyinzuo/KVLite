@@ -2,25 +2,25 @@ use crate::command::WriteCommand;
 use crate::config::ACTIVE_SIZE_THRESHOLD;
 use crate::error::KVLiteError;
 use crate::memory::MemTable;
-use crate::sstable::SSTableWriter;
-use crate::version::versions::Versions;
+use crate::sstable::SSTableManager;
 use crate::wal::WalWriter;
 use crate::Result;
 use crossbeam_channel::{Receiver, Sender};
-use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
-pub trait Query {
-    fn get(&self, key: &str) -> Result<Option<String>>;
+pub trait DBCommand {
+    fn get(&self, key: &String) -> Result<Option<String>>;
+    fn set(&self, key: String, value: String) -> crate::Result<()>;
+    fn remove(&self, key: String) -> crate::Result<()>;
 }
 
-pub trait DB {
+pub trait DBCommandMut {
     fn get(&self, key: &str) -> Result<Option<String>>;
-    fn set(&self, key: String, value: String) -> crate::Result<()>;
-    fn remove(&self, key: &str) -> crate::Result<()>;
+    fn set(&mut self, key: String, value: String) -> crate::Result<()>;
+    fn remove(&mut self, key: String) -> crate::Result<()>;
 }
 
 pub struct KVLite<T: MemTable> {
@@ -48,31 +48,31 @@ impl<T: MemTable + 'static> KVLite<T> {
                     debug!("thread `{}`: start writing", thread_name);
                     let imm_guard = db.imm_mem_table.read().unwrap();
                     let mut iter = imm_guard.iter();
-                    let mut versions_guard = db.versions.lock().unwrap();
-                    versions_guard.write_level0_sstable(&mut iter).unwrap();
+                    db.sstable_manager.write_level0_sstable(&mut iter).unwrap();
 
                     debug!("thread `{}`: done", thread_name);
                 }
             })
             .unwrap();
     }
-
-    /// Write immutable memory table to level0 sstable
-    fn write_to_level0_sstable(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
-impl<T: MemTable> DB for KVLite<T> {
-    fn get(&self, key: &str) -> Result<Option<String>> {
-        self.inner.get(key)
+impl<T: MemTable> DBCommand for KVLite<T> {
+    fn get(&self, key: &String) -> Result<Option<String>> {
+        match self.inner.get(key) {
+            Ok(option) => match option {
+                Some(s) if s.is_empty() => Ok(None),
+                o => Ok(o),
+            },
+            Err(e) => Err(e),
+        }
     }
 
     fn set(&self, key: String, value: String) -> Result<()> {
         self.inner.set(key, value)
     }
 
-    fn remove(&self, key: &str) -> Result<()> {
+    fn remove(&self, key: String) -> Result<()> {
         self.inner.remove(key)
     }
 }
@@ -81,8 +81,7 @@ pub struct DBImpl<T: MemTable> {
     mem_table: RwLock<T>,
     imm_mem_table: Arc<RwLock<T>>,
     wal_writer: Mutex<WalWriter>,
-    sstable_writer: SSTableWriter,
-    versions: Mutex<Versions>,
+    sstable_manager: SSTableManager,
 
     /// channels
     do_write_to_level0_sstable: (Sender<()>, Receiver<()>),
@@ -107,34 +106,19 @@ impl<T: MemTable> DBImpl<T> {
             mem_table: RwLock::default(),
             imm_mem_table: Arc::new(RwLock::default()),
             wal_writer: Mutex::new(WalWriter::open(db_path.clone())?),
-            sstable_writer: SSTableWriter::default(),
-            versions: Mutex::new(Versions::new(db_path)),
+            sstable_manager: SSTableManager::new(db_path),
             do_write_to_level0_sstable: crossbeam_channel::unbounded(),
         })
     }
-
-    fn schedule_to_write_sstable(&self) {
-        let imm_tables = self.imm_mem_table.write().unwrap();
-    }
-
-    fn random_imm_table_key(imm_tables: &RwLockWriteGuard<HashMap<u128, T>>) -> u128 {
-        for _ in 0..10_0000_0000u128 {
-            let key = rand::random();
-            if !imm_tables.contains_key(&key) {
-                return key;
-            }
-        }
-        panic!("no suitable key")
-    }
 }
 
-impl<T: MemTable> DB for DBImpl<T> {
-    fn get(&self, key: &str) -> Result<Option<String>> {
+impl<T: MemTable> DBCommand for DBImpl<T> {
+    fn get(&self, key: &String) -> Result<Option<String>> {
         // query memory table
         let mem_table_lock = self.mem_table.read().unwrap();
-        let result = mem_table_lock.get(key)?;
-        if result.is_some() {
-            return Ok(result);
+        let option = mem_table_lock.get(key)?;
+        if option.is_some() {
+            return Ok(option);
         }
 
         // query immutable memory table
@@ -143,9 +127,15 @@ impl<T: MemTable> DB for DBImpl<T> {
             .read()
             .expect("error in RwLock on imm_tables");
 
-        let result = imm_lock_guard.get(key)?;
-        if result.is_some() {
-            return Ok(result);
+        let option = imm_lock_guard.get(key)?;
+        if option.is_some() {
+            return Ok(option);
+        }
+
+        // query sstable
+        let option = self.sstable_manager.get(key)?;
+        if option.is_some() {
+            return Ok(option);
         }
 
         Ok(None)
@@ -174,8 +164,8 @@ impl<T: MemTable> DB for DBImpl<T> {
         Ok(())
     }
 
-    fn remove(&self, key: &str) -> Result<()> {
-        let cmd = WriteCommand::remove(key);
+    fn remove(&self, key: String) -> Result<()> {
+        let cmd = WriteCommand::remove(&key);
         let mut wal_writer_lock = self.wal_writer.lock().unwrap();
         wal_writer_lock.append(&cmd)?;
         let mut mem_table_lock = self.mem_table.write().unwrap();
