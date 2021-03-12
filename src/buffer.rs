@@ -34,7 +34,7 @@ impl<R: Read + Seek> Seek for BufReaderWithPos<R> {
 
 pub struct BufWriterWithPos<W: Write + Seek> {
     writer: BufWriter<W>,
-    pub(crate) pos: u64,
+    pub pos: u64,
 }
 
 impl<W: Write + Seek> BufWriterWithPos<W> {

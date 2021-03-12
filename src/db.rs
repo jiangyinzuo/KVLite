@@ -99,6 +99,10 @@ impl<T: MemTable> DBImpl<T> {
             }
         };
 
+        for level in 0..=4 {
+            std::fs::create_dir_all(format!("{}/{}", db_path, level))?;
+        }
+
         Ok(DBImpl {
             mem_table: RwLock::default(),
             imm_mem_table: Arc::new(RwLock::default()),

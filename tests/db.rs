@@ -11,7 +11,7 @@ fn test_command() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     env_logger::init();
     let db = KVLite::<BTreeMemTable>::open(temp_dir.path())?;
-    // let db = KVLite::<BTreeMemTable>::open("temp_test")?;
+    let db = KVLite::<BTreeMemTable>::open("temp_test")?;
 
     db.set("hello".into(), "world".into())?;
     assert_eq!(KVLiteError::KeyNotFound, db.remove("no_exist").unwrap_err());
