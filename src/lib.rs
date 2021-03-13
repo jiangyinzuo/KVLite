@@ -7,6 +7,7 @@ pub mod error;
 mod ioutils;
 pub mod memory;
 pub mod sstable;
+pub mod treap;
 mod wal;
 
 pub type Result<T> = std::result::Result<T, error::KVLiteError>;

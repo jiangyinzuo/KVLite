@@ -76,7 +76,7 @@ use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 
 pub(crate) mod footer;
 pub(crate) mod index_block;
@@ -88,7 +88,10 @@ pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 pub struct SSTableManager {
     db_path: String,
     next_sstable_id: [RwLock<u64>; MAX_LEVEL + 1],
-    level0_sstables: RwLock<BTreeSet<PathBuf>>,
+    level0_sstables: Arc<RwLock<BTreeSet<PathBuf>>>,
+    level0_to_compact: Mutex<Vec<u64>>,
+    level_manifests: [Arc<RwLock<BTreeSet<Manifest>>>; MAX_LEVEL],
+    handle: tokio::runtime::Handle,
 }
 
 impl SSTableManager {
@@ -96,7 +99,7 @@ impl SSTableManager {
         let level0_path = PathBuf::from(format!("{}/0", db_path));
         let dir = std::fs::read_dir(level0_path).unwrap();
         let level0_sstables: BTreeSet<PathBuf> = dir.map(|d| d.unwrap().path()).collect();
-
+        let handle = tokio::runtime::Handle::current();
         Ok(SSTableManager {
             db_path,
             next_sstable_id: [
@@ -109,7 +112,18 @@ impl SSTableManager {
                 RwLock::default(),
                 RwLock::default(),
             ],
-            level0_sstables: RwLock::new(level0_sstables),
+            level0_sstables: Arc::new(RwLock::new(level0_sstables)),
+            level0_to_compact: Mutex::default(),
+            level_manifests: [
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+            ],
+            handle,
         })
     }
 
@@ -166,7 +180,10 @@ impl SSTableManager {
             let mut level0_guard = self.level0_sstables.write().unwrap();
             level0_guard.insert(PathBuf::from(sstable_path));
         }
-
+        {
+            let mut guard = self.level0_to_compact.lock().unwrap();
+            guard.push(next_sstable_id);
+        }
         self.may_compact(0);
         Ok(())
     }
@@ -207,8 +224,22 @@ impl SSTableManager {
 
     /// Check if the level need compacting and run a thread if needed.
     fn may_compact(&self, level: usize) {
-        let level0_guard = self.level0_sstables.read().unwrap();
-        if level == 0 && level0_guard.len() > LEVEL0_FILES_THRESHOLD {}
+        let mut to_compact_guard = self.level0_to_compact.lock().unwrap();
+        if level == 0 && to_compact_guard.len() > LEVEL0_FILES_THRESHOLD {
+            let level0_sstables = self.level0_sstables.clone();
+            let to_compact: Vec<u64> = std::mem::take(to_compact_guard.as_mut());
+            let manifest = self.level_manifests.get(level).unwrap().clone();
+            self.handle.spawn(async move {
+                // TODO
+                debug!("compact level {}: {:?}", level, to_compact);
+                Self::compact_level0(manifest, to_compact);
+            });
+        }
+    }
+
+    fn compact_level0(manifest: Arc<RwLock<BTreeSet<Manifest>>>, to_compact: Vec<u64>) {
+        let read_guard = manifest.read().unwrap();
+        if read_guard.is_empty() {}
     }
 }
 
@@ -238,4 +269,10 @@ fn data_block_get_value(
         offset += 8 + key_length + value_length;
     }
     Ok(None)
+}
+
+#[derive(Ord, PartialOrd, PartialEq, Eq)]
+struct Manifest {
+    pub sstable_id: u32,
+    pub min_key: String,
 }
