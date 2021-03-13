@@ -17,9 +17,9 @@ impl<'a> IndexBlock<'a> {
 
     pub(crate) fn write_to_file(&mut self, writer: &mut (impl Write + Seek)) -> Result<()> {
         for index in &self.indexes {
-            writer.write_all(&index.0.to_be_bytes())?;
-            writer.write_all(&index.1.to_be_bytes())?;
-            writer.write_all(&index.2.to_be_bytes())?;
+            writer.write_all(&index.0.to_le_bytes())?;
+            writer.write_all(&index.1.to_le_bytes())?;
+            writer.write_all(&index.2.to_le_bytes())?;
             writer.write_all(index.3)?;
         }
         Ok(())
@@ -40,14 +40,14 @@ impl SSTableIndex {
         let mut sstable_index = SSTableIndex::default();
         let mut index_offset = 0;
         while index_offset < footer.index_block_length {
-            let offset = read_u32(reader)?;
+            let block_offset = read_u32(reader)?;
             let block_length = read_u32(reader)?;
             let max_key_length = read_u32(reader)?;
 
             let max_key = read_string_exact(reader, max_key_length)?;
             sstable_index
                 .indexes
-                .push((offset, block_length, max_key_length, max_key));
+                .push((block_offset, block_length, max_key_length, max_key));
 
             index_offset += 12 + max_key_length;
         }
@@ -61,16 +61,18 @@ impl SSTableIndex {
 
     fn binary_search(&self, key: &String) -> Option<(u32, u32)> {
         match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
-            Ok(i) | Err(i) => {
-                if i > 0 {
-                    match self.indexes.get(i) {
-                        Some(e) => Some((e.0, e.1)),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
+            Ok(i) | Err(i) => match self.indexes.get(i) {
+                Some(e) => Some((e.0, e.1)),
+                _ => None,
+            },
         }
     }
+}
+
+#[test]
+fn test_may_contain_key() {
+    let mut index = SSTableIndex::default();
+    index.indexes.push((1, 1, 1, "key298".into()));
+    let option = index.may_contain_key(&"key299".to_string());
+    assert!(option.is_none());
 }

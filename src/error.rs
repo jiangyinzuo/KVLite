@@ -1,3 +1,4 @@
+use rayon::ThreadPoolBuildError;
 use std::io;
 
 #[derive(thiserror::Error, Debug)]
@@ -10,6 +11,9 @@ pub enum KVLiteError {
 
     #[error("{0}")]
     SendError(#[from] crossbeam_channel::SendError<()>),
+
+    #[error("{0}")]
+    ThreadPoolBuildError(#[from] ThreadPoolBuildError),
 
     #[error("key not found")]
     KeyNotFound,

@@ -1,5 +1,4 @@
 use crate::command::WriteCommand;
-use crate::config::ACTIVE_SIZE_THRESHOLD;
 use crate::error::KVLiteError;
 use crate::memory::MemTable;
 use crate::sstable::SSTableManager;
@@ -10,6 +9,8 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
+
+pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
 
 pub trait DBCommand {
     fn get(&self, key: &String) -> Result<Option<String>>;
@@ -47,11 +48,15 @@ impl<T: MemTable + 'static> KVLite<T> {
                 while let Ok(()) = db.do_write_to_level0_sstable.1.recv() {
                     debug!("thread `{}`: start writing", thread_name);
                     let imm_guard = db.imm_mem_table.read().unwrap();
-                    let mut iter = imm_guard.iter();
-                    db.sstable_manager.write_level0_sstable(&mut iter).unwrap();
 
-                    debug!("thread `{}`: done", thread_name);
+                    let mut iter = imm_guard.iter();
+                    db.sstable_manager
+                        .write_level0_sstable(&mut iter, imm_guard.len())
+                        .unwrap();
+
+                    debug!("thread `{}`: write done", thread_name);
                 }
+                debug!("thread `{}`: shutdown", thread_name);
             })
             .unwrap();
     }
@@ -106,7 +111,7 @@ impl<T: MemTable> DBImpl<T> {
             mem_table: RwLock::default(),
             imm_mem_table: Arc::new(RwLock::default()),
             wal_writer: Mutex::new(WalWriter::open(db_path.clone())?),
-            sstable_manager: SSTableManager::new(db_path),
+            sstable_manager: SSTableManager::new(db_path)?,
             do_write_to_level0_sstable: crossbeam_channel::unbounded(),
         })
     }
