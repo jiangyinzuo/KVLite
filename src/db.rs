@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
+pub const MAX_LEVEL: usize = 7;
 
 pub trait DBCommand {
     fn get(&self, key: &String) -> Result<Option<String>>;
@@ -103,7 +104,7 @@ impl<T: MemTable> DBImpl<T> {
             }
         };
 
-        for level in 0..=4 {
+        for level in 0..=MAX_LEVEL {
             std::fs::create_dir_all(format!("{}/{}", db_path, level))?;
         }
 

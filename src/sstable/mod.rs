@@ -66,6 +66,7 @@
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
+use crate::db::MAX_LEVEL;
 use crate::ioutils::{read_string_exact, read_u32, BufWriterWithPos};
 use crate::sstable::footer::Footer;
 use crate::sstable::index_block::{IndexBlock, SSTableIndex};
@@ -81,12 +82,13 @@ pub(crate) mod footer;
 pub(crate) mod index_block;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
+pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 
 /// The collection of all the Versions produced
 pub struct SSTableManager {
     db_path: String,
-    next_sstable_id: RwLock<u64>,
-    level0_sstables: BTreeSet<PathBuf>,
+    next_sstable_id: [RwLock<u64>; MAX_LEVEL + 1],
+    level0_sstables: RwLock<BTreeSet<PathBuf>>,
 }
 
 impl SSTableManager {
@@ -97,8 +99,17 @@ impl SSTableManager {
 
         Ok(SSTableManager {
             db_path,
-            next_sstable_id: RwLock::default(),
-            level0_sstables,
+            next_sstable_id: [
+                RwLock::default(),
+                RwLock::default(),
+                RwLock::default(),
+                RwLock::default(),
+                RwLock::default(),
+                RwLock::default(),
+                RwLock::default(),
+                RwLock::default(),
+            ],
+            level0_sstables: RwLock::new(level0_sstables),
         })
     }
 
@@ -108,7 +119,7 @@ impl SSTableManager {
         mem_table_iter: &mut dyn Iterator<Item = (&String, &String)>,
         length: usize,
     ) -> crate::Result<()> {
-        let next_sstable_id = self.get_next_sstable_id();
+        let next_sstable_id = self.get_next_sstable_id(0);
         let sstable_path = sstable_path(&self.db_path, 0, next_sstable_id);
         let mut writer = BufWriterWithPos::new(
             OpenOptions::new()
@@ -150,11 +161,19 @@ impl SSTableManager {
 
         // write footer
         footer.write_to_file(&mut writer)?;
+
+        {
+            let mut level0_guard = self.level0_sstables.write().unwrap();
+            level0_guard.insert(PathBuf::from(sstable_path));
+        }
+
+        self.may_compact(0);
         Ok(())
     }
 
-    fn get_next_sstable_id(&self) -> u64 {
-        let mut lock_guard = self.next_sstable_id.write().unwrap();
+    fn get_next_sstable_id(&self, level: usize) -> u64 {
+        debug_assert!(level <= MAX_LEVEL);
+        let mut lock_guard = self.next_sstable_id[level].write().unwrap();
         let id = *lock_guard;
         *lock_guard += 1;
         id
@@ -171,7 +190,8 @@ impl SSTableManager {
 
     fn query_level0_sstable(&self, key: &String) -> Result<Option<String>> {
         // traverse all the level0 sstables
-        for file_path in &self.level0_sstables {
+        let level0_guard = self.level0_sstables.read().unwrap();
+        for file_path in level0_guard.iter() {
             let mut file = std::fs::File::open(file_path)?;
             let sstable_index = SSTableIndex::load_index(&mut file)?;
 
@@ -183,6 +203,12 @@ impl SSTableManager {
             }
         }
         Ok(None)
+    }
+
+    /// Check if the level need compacting and run a thread if needed.
+    fn may_compact(&self, level: usize) {
+        let level0_guard = self.level0_sstables.read().unwrap();
+        if level == 0 && level0_guard.len() > LEVEL0_FILES_THRESHOLD {}
     }
 }
 
