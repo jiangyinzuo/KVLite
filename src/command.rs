@@ -2,17 +2,17 @@ use serde::{Deserialize, Serialize};
 
 /// Write Command
 #[derive(Serialize, Deserialize, Debug)]
-pub enum WriteCommand<'a> {
-    Set { key: &'a str, value: &'a str },
-    Remove { key: &'a str },
+pub enum WriteCommand {
+    Set { key: String, value: String },
+    Remove { key: String },
 }
 
-impl<'a> WriteCommand<'a> {
-    pub fn set(key: &'a str, value: &'a str) -> WriteCommand<'a> {
+impl WriteCommand {
+    pub fn set(key: String, value: String) -> WriteCommand {
         WriteCommand::Set { key, value }
     }
 
-    pub fn remove(key: &'a str) -> WriteCommand<'a> {
+    pub fn remove(key: String) -> WriteCommand {
         WriteCommand::Remove { key }
     }
 }

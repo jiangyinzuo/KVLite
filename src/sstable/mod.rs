@@ -70,6 +70,7 @@ use crate::db::MAX_LEVEL;
 use crate::ioutils::{read_string_exact, read_u32, BufWriterWithPos};
 use crate::sstable::footer::Footer;
 use crate::sstable::index_block::{IndexBlock, SSTableIndex};
+use crate::wal::WalWriter;
 use crate::Result;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -87,6 +88,7 @@ pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 /// The collection of all the Versions produced
 pub struct SSTableManager {
     db_path: String,
+    wal_writer: Arc<Mutex<WalWriter>>,
     next_sstable_id: [RwLock<u64>; MAX_LEVEL + 1],
     level0_sstables: Arc<RwLock<BTreeSet<PathBuf>>>,
     level0_to_compact: Mutex<Vec<u64>>,
@@ -95,13 +97,14 @@ pub struct SSTableManager {
 }
 
 impl SSTableManager {
-    pub fn new(db_path: String) -> Result<SSTableManager> {
+    pub fn new(db_path: String, wal_writer: Arc<Mutex<WalWriter>>) -> Result<SSTableManager> {
         let level0_path = PathBuf::from(format!("{}/0", db_path));
         let dir = std::fs::read_dir(level0_path).unwrap();
         let level0_sstables: BTreeSet<PathBuf> = dir.map(|d| d.unwrap().path()).collect();
         let handle = tokio::runtime::Handle::current();
         Ok(SSTableManager {
             db_path,
+            wal_writer,
             next_sstable_id: [
                 RwLock::default(),
                 RwLock::default(),
@@ -184,6 +187,14 @@ impl SSTableManager {
             let mut guard = self.level0_to_compact.lock().unwrap();
             guard.push(next_sstable_id);
         }
+        writer.flush()?;
+
+        {
+            // delete log after writing to level0 sstable
+            let mut wal_guard = self.wal_writer.lock().unwrap();
+            wal_guard.remove_log()?;
+        }
+
         self.may_compact(0);
         Ok(())
     }

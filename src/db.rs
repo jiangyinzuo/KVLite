@@ -1,14 +1,17 @@
 use crate::command::WriteCommand;
 use crate::error::KVLiteError;
+use crate::ioutils::BufReaderWithPos;
 use crate::memory::MemTable;
 use crate::sstable::SSTableManager;
 use crate::wal::WalWriter;
 use crate::Result;
 use crossbeam_channel::{Receiver, Sender};
+use serde_json::Deserializer;
+use std::io::{Seek, SeekFrom};
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
+use std::{fs, thread};
 
 pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
 pub const MAX_LEVEL: usize = 7;
@@ -48,6 +51,7 @@ impl<T: MemTable + 'static> KVLite<T> {
                 info!("start thread `{}`", thread_name);
                 while let Ok(()) = db.do_write_to_level0_sstable.1.recv() {
                     debug!("thread `{}`: start writing", thread_name);
+
                     let imm_guard = db.imm_mem_table.read().unwrap();
 
                     let mut iter = imm_guard.iter();
@@ -86,7 +90,7 @@ impl<T: MemTable> DBCommand for KVLite<T> {
 pub struct DBImpl<T: MemTable> {
     mem_table: RwLock<T>,
     imm_mem_table: Arc<RwLock<T>>,
-    wal_writer: Mutex<WalWriter>,
+    wal_writer: Arc<Mutex<WalWriter>>,
     sstable_manager: SSTableManager,
 
     /// channels
@@ -105,16 +109,49 @@ impl<T: MemTable> DBImpl<T> {
         };
 
         for level in 0..=MAX_LEVEL {
-            std::fs::create_dir_all(format!("{}/{}", db_path, level))?;
+            fs::create_dir_all(format!("{}/{}", db_path, level))?;
         }
+        let log_path = format!("{}/log", db_path);
+        fs::create_dir_all(&log_path)?;
 
-        Ok(DBImpl {
-            mem_table: RwLock::default(),
+        let mut mem_table = T::default();
+        Self::load_logs(&mut mem_table, &log_path)?;
+
+        let wal_writer = Arc::new(Mutex::new(WalWriter::open(log_path)?));
+        let db_impl = DBImpl {
+            mem_table: RwLock::new(mem_table),
             imm_mem_table: Arc::new(RwLock::default()),
-            wal_writer: Mutex::new(WalWriter::open(db_path.clone())?),
-            sstable_manager: SSTableManager::new(db_path)?,
+            wal_writer: wal_writer.clone(),
+            sstable_manager: SSTableManager::new(db_path, wal_writer)?,
             do_write_to_level0_sstable: crossbeam_channel::unbounded(),
-        })
+        };
+
+        Ok(db_impl)
+    }
+
+    fn load_logs(mem_table: &mut impl MemTable, log_path: &str) -> Result<()> {
+        let read_dir = fs::read_dir(log_path)?;
+        for f in read_dir {
+            let file_path = f.unwrap().path();
+            {
+                let file = fs::File::open(&file_path)?;
+                let mut reader = BufReaderWithPos::new(file)?;
+                reader.seek(SeekFrom::Start(0))?;
+                let stream = Deserializer::from_reader(reader).into_iter::<WriteCommand>();
+                for cmd in stream {
+                    match cmd? {
+                        WriteCommand::Set { key, value } => {
+                            mem_table.set(key.to_string(), value.to_string())?;
+                        }
+                        WriteCommand::Remove { key } => {
+                            mem_table.remove(key.to_string())?;
+                        }
+                    }
+                }
+            }
+            std::fs::remove_file(file_path)?;
+        }
+        Ok(())
     }
 }
 
@@ -148,16 +185,26 @@ impl<T: MemTable> DBCommand for DBImpl<T> {
     }
 
     fn set(&self, key: String, value: String) -> Result<()> {
-        let cmd = WriteCommand::set(&key, &value);
-        let mut wal_writer_lock = self.wal_writer.lock().unwrap();
-        wal_writer_lock.append(&cmd)?;
+        let cmd = WriteCommand::set(key, value);
 
-        let mut mem_table_lock = self.mem_table.write().unwrap();
-        mem_table_lock.set(key, value)?;
+        {
+            let mut wal_guard = self.wal_writer.lock().unwrap();
+            wal_guard.append(&cmd)?;
+        }
 
-        if mem_table_lock.len() >= ACTIVE_SIZE_THRESHOLD {
-            let imm_table = std::mem::take(mem_table_lock.deref_mut());
-            drop(mem_table_lock);
+        let mut mem_table_guard = self.mem_table.write().unwrap();
+        if let WriteCommand::Set { key, value } = cmd {
+            mem_table_guard.set(key, value)?;
+        }
+
+        if mem_table_guard.len() >= ACTIVE_SIZE_THRESHOLD {
+            {
+                // new log before writing to level0 sstable
+                let mut wal_guard = self.wal_writer.lock().unwrap();
+                wal_guard.new_log().unwrap();
+            }
+            let imm_table = std::mem::take(mem_table_guard.deref_mut());
+            drop(mem_table_guard);
             let mut lock = self
                 .imm_mem_table
                 .write()
@@ -171,11 +218,13 @@ impl<T: MemTable> DBCommand for DBImpl<T> {
     }
 
     fn remove(&self, key: String) -> Result<()> {
-        let cmd = WriteCommand::remove(&key);
+        let cmd = WriteCommand::remove(key);
         let mut wal_writer_lock = self.wal_writer.lock().unwrap();
         wal_writer_lock.append(&cmd)?;
         let mut mem_table_lock = self.mem_table.write().unwrap();
-        mem_table_lock.remove(key)?;
+        if let WriteCommand::Remove { key } = cmd {
+            mem_table_lock.remove(key)?;
+        }
         Ok(())
     }
 }

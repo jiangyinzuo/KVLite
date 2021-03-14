@@ -3,14 +3,14 @@ use rand::Rng;
 use std::alloc::Layout;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-pub const MAX_LEVEL: usize = 7;
+pub const MAX_LEVEL: usize = 12;
 
 fn rand_level() -> usize {
     let mut rng = rand::thread_rng();
     let mut level = 0;
     while level < MAX_LEVEL {
-        let number = rng.gen_range(1..=100);
-        if number <= 10 {
+        let number = rng.gen_range(1..=4);
+        if number == 1 {
             level += 1;
         } else {
             break;
