@@ -41,12 +41,6 @@ impl Default for BTreeMemTable {
     }
 }
 
-impl PartialEq for BTreeMemTable {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner.eq(&other.inner)
-    }
-}
-
 impl MemTable for BTreeMemTable {
     fn len(&self) -> usize {
         let _lock = self.rw_lock.read().unwrap();

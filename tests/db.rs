@@ -1,17 +1,23 @@
 use kvlite::db::ACTIVE_SIZE_THRESHOLD;
 use kvlite::db::{DBCommand, KVLite};
 use kvlite::error::KVLiteError;
-use kvlite::memory::BTreeMemTable;
+use kvlite::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
 use kvlite::Result;
 use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_command() -> Result<()> {
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     env_logger::init();
-    let db = KVLite::<BTreeMemTable>::open(temp_dir.path())?;
-    // let db = KVLite::<BTreeMemTable>::open("temp_test")?;
 
+    _test_command::<BTreeMemTable>().unwrap();
+    _test_command::<SkipMapMemTable>().unwrap();
+    Ok(())
+}
+
+fn _test_command<M: 'static + MemTable>() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    // let db = KVLite::<M>::open("temp_test")?;
+    let db = KVLite::<M>::open(temp_dir.path())?;
     db.set("hello".into(), "world".into())?;
     assert_eq!(
         KVLiteError::KeyNotFound,
@@ -24,7 +30,7 @@ async fn test_command() -> Result<()> {
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
         db.set(format!("key{}", i), format!("value{}", i))?;
     }
-    db.get(&format!("key{}", 3))?.unwrap();
+    db.get(&"key3".to_string())?.unwrap();
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
         assert_eq!(
             format!("value{}", i),

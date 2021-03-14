@@ -1,9 +1,9 @@
 # KVLite
 A toy key-value storage for DB study
 
-## Test with logging
+## Test with logging and detect memory leak
 ```shell
-RUST_LOG=debug cargo test
+RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-linux-gnu
 ```
 
 ## References

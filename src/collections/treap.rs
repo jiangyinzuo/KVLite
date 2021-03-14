@@ -1,10 +1,6 @@
+use crate::collections::Entry;
 use std::cmp::Ordering;
 use std::mem;
-
-struct Entry<K: Ord, V> {
-    pub key: K,
-    pub value: V,
-}
 
 struct TreapNode<K: Ord, V> {
     entry: Entry<K, V>,
@@ -193,7 +189,7 @@ impl<K: Ord, V> Default for TreapMap<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::treap::TreapMap;
+    use crate::collections::treap::TreapMap;
 
     #[test]
     fn test() {

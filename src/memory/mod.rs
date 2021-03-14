@@ -1,10 +1,12 @@
 //! Memory table
 
 mod btree_mem_table;
+mod skiplist;
 
 use crate::db::DBCommandMut;
 
 pub use btree_mem_table::BTreeMemTable;
+pub use skiplist::SkipMapMemTable;
 
 /// Table in Memory
 pub trait MemTable: DBCommandMut + Default + Send + Sync {

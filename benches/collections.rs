@@ -2,7 +2,7 @@
 extern crate kvlite;
 extern crate test;
 
-use kvlite::treap::TreapMap;
+use kvlite::collections::treap::TreapMap;
 use std::collections::BTreeMap;
 use test::Bencher;
 
