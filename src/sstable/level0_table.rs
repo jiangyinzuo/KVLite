@@ -9,28 +9,22 @@ use crossbeam_channel::Receiver;
 use std::collections::LinkedList;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::iter::FromIterator;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
 
 /// Struct for read and write level0 sstable.
-pub struct Level0Manager<M: MemTable> {
+pub struct Level0Manager {
     db_path: String,
-    /// immutable memory table
-    imm_mem_table: Arc<RwLock<M>>,
+
     /// Table ID is increasing order.
     tables: RwLock<LinkedList<u128>>,
     wal: Arc<Mutex<WriteAheadLog>>,
 }
 
-impl<M: 'static + MemTable> Level0Manager<M> {
-    fn new(
-        db_path: String,
-        wal: Arc<Mutex<WriteAheadLog>>,
-        imm_mem_table: Arc<RwLock<M>>,
-    ) -> Result<Level0Manager<M>> {
+impl Level0Manager {
+    fn new(db_path: String, wal: Arc<Mutex<WriteAheadLog>>) -> Result<Level0Manager> {
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
         let mut tables: Vec<u128> = dir
             .map(|d| {
@@ -48,7 +42,6 @@ impl<M: 'static + MemTable> Level0Manager<M> {
         tables.sort_unstable();
         Ok(Level0Manager {
             db_path,
-            imm_mem_table,
             tables: RwLock::new(tables.into_iter().collect::<LinkedList<u128>>()),
             wal,
         })
@@ -58,10 +51,10 @@ impl<M: 'static + MemTable> Level0Manager<M> {
     pub fn start_task_write_level0(
         db_path: String,
         wal: Arc<Mutex<WriteAheadLog>>,
-        imm_mem_table: Arc<RwLock<M>>,
+        imm_mem_table: Arc<RwLock<impl MemTable>>,
         recv: Receiver<()>,
-    ) -> (Arc<Level0Manager<M>>, JoinHandle<()>) {
-        let manager = Arc::new(Self::new(db_path, wal, imm_mem_table.clone()).unwrap());
+    ) -> (Arc<Level0Manager>, JoinHandle<()>) {
+        let manager = Arc::new(Self::new(db_path, wal).unwrap());
         let manager2 = manager.clone();
         let handle = thread::Builder::new()
             .name("level0 writer".to_owned())
