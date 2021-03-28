@@ -34,17 +34,19 @@ pub(crate) struct SSTableIndex {
 
 impl SSTableIndex {
     pub(crate) fn load_index(reader: &mut (impl Read + Seek)) -> Result<SSTableIndex> {
-        let footer = Footer::load_footer(reader)?;
-        reader.seek(SeekFrom::Start(footer.index_block_offset as u64))?;
+        let footer = Footer::load_footer(reader).unwrap();
+        reader
+            .seek(SeekFrom::Start(footer.index_block_offset as u64))
+            .unwrap();
 
         let mut sstable_index = SSTableIndex::default();
         let mut index_offset = 0;
         while index_offset < footer.index_block_length {
-            let block_offset = read_u32(reader)?;
-            let block_length = read_u32(reader)?;
-            let max_key_length = read_u32(reader)?;
+            let block_offset = read_u32(reader).unwrap();
+            let block_length = read_u32(reader).unwrap();
+            let max_key_length = read_u32(reader).unwrap();
 
-            let max_key = read_string_exact(reader, max_key_length)?;
+            let max_key = read_string_exact(reader, max_key_length);
             sstable_index
                 .indexes
                 .push((block_offset, block_length, max_key_length, max_key));

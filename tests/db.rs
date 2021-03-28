@@ -6,41 +6,49 @@ use kvlite::Result;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+#[test]
+fn test_command() {
+    _test_command::<BTreeMemTable>();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_command() -> Result<()> {
+async fn test_command_concurrently() -> Result<()> {
     env_logger::init();
 
-    _test_command::<BTreeMemTable>().unwrap();
-    _test_command::<SkipMapMemTable>().unwrap();
+    _test_command::<BTreeMemTable>();
+    _test_command::<SkipMapMemTable>();
     Ok(())
 }
 
-fn _test_command<M: 'static + MemTable>() -> Result<()> {
+fn _test_command<M: 'static + MemTable>() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    // let db = KVLite::<M>::open("temp_test")?;
-    let db = KVLite::<M>::open(temp_dir.path())?;
-    db.set("hello".into(), "world".into())?;
+    let db = KVLite::<M>::open("temp_test").unwrap();
+    // let db = KVLite::<M>::open(temp_dir.path()).unwrap();
+    db.set("hello".into(), "world".into()).unwrap();
     assert_eq!(
         KVLiteError::KeyNotFound,
         db.remove("no_exist".into()).unwrap_err()
     );
-    assert_eq!("world", db.get(&"hello".to_owned())?.unwrap());
-    db.remove("hello".into())?;
-    assert!(db.get(&"hello".to_owned())?.is_none());
+    assert_eq!("world", db.get(&"hello".to_owned()).unwrap().unwrap());
+    db.remove("hello".into()).unwrap();
+
+    let v = db.get(&"hello".to_owned()).unwrap();
+    assert!(v.is_none(), "{:?}", v);
 
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
-        db.set(format!("key{}", i), format!("value{}", i))?;
+        db.set(format!("key{}", i), format!("value{}", i)).unwrap();
     }
-    db.get(&"key3".to_string())?.unwrap();
+    db.get(&"key3".to_string()).unwrap().unwrap();
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
         assert_eq!(
             format!("value{}", i),
-            db.get(&format!("key{}", i))?.expect(&*format!("{}", i)),
+            db.get(&format!("key{}", i))
+                .unwrap()
+                .expect(&*format!("{}", i)),
             "kv {}",
             i
         );
     }
-    Ok(())
 }
 
 // FIXME: no such file or directory
@@ -54,7 +62,7 @@ async fn test_read_log() -> Result<()> {
             db.set(format!("{}", i), format!("value{}", i))?;
         }
     }
-    let db = Arc::new(KVLite::<BTreeMemTable>::open(temp_dir.path())?);
+    let db = KVLite::<BTreeMemTable>::open(temp_dir.path())?;
 
     for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
         assert_eq!(Some(format!("value{}", i)), db.get(&format!("{}", i))?);
@@ -63,14 +71,14 @@ async fn test_read_log() -> Result<()> {
         db.set(format!("{}", i), format!("value{}", i))?;
         assert_eq!(Some(format!("value{}", i)), db.get(&format!("{}", i))?);
     }
-    let db = Arc::new(KVLite::<SkipMapMemTable>::open(temp_dir.path())?);
+    let db = Arc::new(KVLite::<SkipMapMemTable>::open(temp_dir.path()).unwrap());
     let db1 = db.clone();
     let handle1 = std::thread::spawn(move || {
         for _ in 0..3 {
             for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
                 assert_eq!(
                     Some(format!("value{}", i)),
-                    db1.get(&format!("{}", i)).unwrap()
+                    db1.get(&format!("{}", i)).expect("error in read thread1")
                 );
             }
         }
@@ -80,7 +88,7 @@ async fn test_read_log() -> Result<()> {
             for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
                 assert_eq!(
                     Some(format!("value{}", i)),
-                    db.get(&format!("{}", i)).unwrap()
+                    db.get(&format!("{}", i)).expect("error in read thread2")
                 );
             }
         }

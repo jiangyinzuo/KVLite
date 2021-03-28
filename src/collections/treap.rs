@@ -55,9 +55,9 @@ impl<K: Ord, V> TreapNode<K, V> {
         }
     }
 
+    // rotate to maintain min heap
     fn may_rotate(&mut self) {
         if let Some(left_son) = &self.left_son {
-            // should be min heap
             if self.priority > left_son.priority {
                 self.right_rotate();
             }

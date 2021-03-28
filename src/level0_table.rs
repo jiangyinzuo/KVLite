@@ -1,0 +1,162 @@
+use crate::ioutils::BufWriterWithPos;
+use crate::memory::MemTable;
+use crate::sstable::footer::Footer;
+use crate::sstable::index_block::IndexBlock;
+use crate::sstable::{query_sstable, sstable_file, MAX_BLOCK_KV_PAIRS};
+use crate::wal_writer::WriteAheadLog;
+use crate::Result;
+use crossbeam_channel::Receiver;
+use std::collections::LinkedList;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::thread::JoinHandle;
+
+pub struct Level0Manager<M: MemTable> {
+    db_path: String,
+    /// immutable memory table
+    imm_mem_table: Arc<RwLock<M>>,
+    /// Table ID is increasing order.
+    tables: RwLock<LinkedList<u128>>,
+    wal: Arc<Mutex<WriteAheadLog>>,
+}
+
+impl<M: 'static + MemTable> Level0Manager<M> {
+    fn new(
+        db_path: String,
+        wal: Arc<Mutex<WriteAheadLog>>,
+        imm_mem_table: Arc<RwLock<M>>,
+    ) -> Result<Level0Manager<M>> {
+        let dir = std::fs::read_dir(format!("{}/0", db_path))?;
+        let tables: LinkedList<u128> = dir
+            .map(|d| {
+                let s = d
+                    .unwrap()
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                s.parse::<u128>().unwrap()
+            })
+            .collect();
+
+        Ok(Level0Manager {
+            db_path,
+            imm_mem_table,
+            tables: RwLock::new(tables),
+            wal,
+        })
+    }
+
+    /// Start a thread for writing immutable memory table to level0 sstable
+    pub fn start_task_write_level0(
+        db_path: String,
+        wal: Arc<Mutex<WriteAheadLog>>,
+        imm_mem_table: Arc<RwLock<M>>,
+        recv: Receiver<()>,
+    ) -> (Arc<Level0Manager<M>>, JoinHandle<()>) {
+        let manager = Arc::new(Self::new(db_path, wal, imm_mem_table.clone()).unwrap());
+        let manager2 = manager.clone();
+        let handle = thread::Builder::new()
+            .name("level0 writer".to_owned())
+            .spawn(move || {
+                info!("thread `{}` start!", thread::current().name().unwrap());
+                while let Ok(()) = recv.recv() {
+                    let imm_guard = imm_mem_table.read().unwrap();
+
+                    if let Err(e) = manager2.write_to_table(imm_guard.deref()) {
+                        let bt = std::backtrace::Backtrace::capture();
+                        error!(
+                            "Error in thread `{}`: {:?}",
+                            thread::current().name().unwrap(),
+                            e
+                        );
+                        println!("{:#?}", bt);
+                    }
+                }
+                info!("thread `{}` exit!", thread::current().name().unwrap());
+            })
+            .unwrap();
+        (manager, handle)
+    }
+
+    pub fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
+        // query the latest table first
+        let table_guard = self.tables.read().unwrap();
+        for table in table_guard.iter().rev() {
+            let option = query_sstable(&self.db_path, 0, *table, key).unwrap();
+            if option.is_some() {
+                return Ok(option);
+            }
+        }
+        Ok(None)
+    }
+
+    fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
+        let (mut writer, next_table_id) = self.create_table();
+
+        let mut count = 0;
+        let mut last_pos = 0;
+        let mut index_block = IndexBlock::default();
+
+        // write Data Blocks
+        for (i, (k, v)) in table.iter().enumerate() {
+            let (k, v) = (k.as_bytes(), v.as_bytes());
+            let (k_len, v_len) = (k.len() as u32, v.len() as u32);
+            writer.write_all(&k_len.to_le_bytes())?;
+            writer.write_all(&v_len.to_le_bytes())?;
+            writer.write_all(k)?;
+            writer.write_all(v)?;
+            if count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
+                index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
+                last_pos = writer.pos;
+                count = 0;
+            } else {
+                count += 1;
+            }
+        }
+
+        let index_block_offset = last_pos as u32;
+
+        index_block.write_to_file(&mut writer)?;
+
+        // write footer
+        let footer = Footer {
+            index_block_offset,
+            index_block_length: writer.pos as u32 - index_block_offset,
+        };
+        footer.write_to_file(&mut writer)?;
+
+        {
+            let mut table_guard = self.tables.write().unwrap();
+            table_guard.push_back(next_table_id);
+        }
+
+        writer.flush()?;
+
+        {
+            // delete immutable log after writing to level0 sstable
+            let mut wal_guard = self.wal.lock().unwrap();
+            wal_guard.clear_imm_log()?;
+        }
+        Ok(())
+    }
+
+    /// Create sstable file, return file writer and sstable ID
+    fn create_table(&self) -> (BufWriterWithPos<File>, u128) {
+        let table_guard = self.tables.read().unwrap();
+        let next_table_id = table_guard.back().unwrap_or(&0) + 1;
+
+        let file_path = sstable_file(&self.db_path, 0, next_table_id);
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&file_path)
+            .expect(&file_path);
+        (BufWriterWithPos::new(file).unwrap(), next_table_id)
+    }
+}

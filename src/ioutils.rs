@@ -1,6 +1,8 @@
 use crate::Result;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 
 pub struct BufReaderWithPos<R: Read + Seek> {
     reader: BufReader<R>,
@@ -38,12 +40,22 @@ pub struct BufWriterWithPos<W: Write + Seek> {
 }
 
 impl<W: Write + Seek> BufWriterWithPos<W> {
-    pub(crate) fn new(mut inner: W) -> Result<Self> {
+    pub fn new(mut inner: W) -> Result<Self> {
         let pos = inner.seek(SeekFrom::End(0))?;
         Ok(BufWriterWithPos {
             writer: BufWriter::new(inner),
             pos,
         })
+    }
+}
+
+impl BufWriterWithPos<File> {
+    /// Create a file at `path`
+    pub fn create_file(path: impl AsRef<Path>) -> Result<BufWriterWithPos<File>> {
+        let mut writer =
+            BufWriterWithPos::new(OpenOptions::new().create(true).write(true).open(&path)?)?;
+        writer.seek(SeekFrom::Start(0))?;
+        Ok(writer)
     }
 }
 
@@ -74,9 +86,9 @@ pub fn read_u32(reader: &mut (impl Read + Seek)) -> Result<u32> {
     Ok(result)
 }
 
-pub fn read_string_exact(reader: &mut (impl Read + Seek), length: u32) -> Result<String> {
+pub fn read_string_exact(reader: &mut (impl Read + Seek), length: u32) -> String {
     let mut max_key = String::new();
     let mut handle = reader.take(length as u64);
-    handle.read_to_string(&mut max_key)?;
-    Ok(max_key)
+    handle.read_to_string(&mut max_key).unwrap();
+    max_key
 }
