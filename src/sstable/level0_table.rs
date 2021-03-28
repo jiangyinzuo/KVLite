@@ -51,7 +51,7 @@ impl Level0Manager {
     pub fn start_task_write_level0(
         db_path: String,
         wal: Arc<Mutex<WriteAheadLog>>,
-        imm_mem_table: Arc<RwLock<impl MemTable>>,
+        imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
         recv: Receiver<()>,
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
         let manager = Arc::new(Self::new(db_path, wal).unwrap());

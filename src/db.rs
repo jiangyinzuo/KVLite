@@ -30,7 +30,7 @@ pub struct KVLite<T: MemTable> {
     mut_mem_table: RwLock<T>,
     imm_mem_table: Arc<RwLock<T>>,
 
-    level0_manager: Arc<Level0Manager<T>>,
+    level0_manager: Arc<Level0Manager>,
     level0_writer_handle: JoinHandle<()>,
     write_level0_channel: Sender<()>,
 }
