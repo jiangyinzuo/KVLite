@@ -1,6 +1,7 @@
 use crate::ioutils::{read_string_exact, read_u32};
 use crate::sstable::footer::Footer;
 use crate::Result;
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
@@ -33,7 +34,7 @@ pub(crate) struct SSTableIndex {
 }
 
 impl SSTableIndex {
-    pub(crate) fn load_index(reader: &mut (impl Read + Seek)) -> Result<SSTableIndex> {
+    pub(crate) fn load_index(reader: &mut File) -> SSTableIndex {
         let footer = Footer::load_footer(reader).unwrap();
         reader
             .seek(SeekFrom::Start(footer.index_block_offset as u64))
@@ -53,7 +54,7 @@ impl SSTableIndex {
 
             index_offset += 12 + max_key_length;
         }
-        Ok(sstable_index)
+        sstable_index
     }
 
     /// Returns (offset, length)

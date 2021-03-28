@@ -43,8 +43,8 @@ impl WriteAheadLog {
             .open(&mut_log)
             .unwrap();
 
-        load_log(&mut_log, mut_mem_table)?;
-        load_log(&mut_log, imm_mem_table)?;
+        load_log(&mut_log, mut_mem_table).unwrap();
+        load_log(&imm_log, imm_mem_table).unwrap();
 
         Ok(WriteAheadLog {
             log_path,
@@ -95,7 +95,9 @@ fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
                 mem_table.set(key.to_string(), value.to_string())?;
             }
             WriteCommand::Remove { key } => {
-                mem_table.remove(key.to_string())?;
+                mem_table
+                    .remove(key.to_string())
+                    .unwrap_or_else(|_| panic!("not found key is: {}", &key));
             }
         }
     }
@@ -106,7 +108,7 @@ fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
 mod tests {
     use crate::command::WriteCommand;
     use crate::memory::{MemTable, SkipMapMemTable};
-    use crate::wal_writer::WriteAheadLog;
+    use crate::wal::WriteAheadLog;
     use tempfile::TempDir;
 
     #[test]
@@ -117,7 +119,7 @@ mod tests {
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
 
-        let mut wal = WriteAheadLog::open_and_load_logs(path.clone(), &mut mut_mem, &mut imm_mem).unwrap();
+        let mut wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem, &mut imm_mem).unwrap();
         for i in 1..4 {
             mut_mem = SkipMapMemTable::default();
             for j in 0..100 {

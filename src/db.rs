@@ -1,7 +1,7 @@
 use crate::command::WriteCommand;
-use crate::level0_table::Level0Manager;
 use crate::memory::MemTable;
-use crate::wal_writer::WriteAheadLog;
+use crate::sstable::level0_table::Level0Manager;
+use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Sender;
 use std::ops::DerefMut;
@@ -40,17 +40,16 @@ impl<T: 'static + MemTable> KVLite<T> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
 
         for i in 0..=MAX_LEVEL {
-            std::fs::create_dir_all(format!("{}/{}", db_path, i))?;
+            std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
         }
 
         let mut mut_mem_table = T::default();
         let mut imm_mem_table = T::default();
 
-        let wal = Arc::new(Mutex::new(WriteAheadLog::open_and_load_logs(
-            &db_path,
-            &mut mut_mem_table,
-            &mut imm_mem_table,
-        )?));
+        let wal = Arc::new(Mutex::new(
+            WriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table, &mut imm_mem_table)
+                .unwrap(),
+        ));
 
         let imm_mem_table = Arc::new(RwLock::new(imm_mem_table));
         let channel = crossbeam_channel::unbounded();

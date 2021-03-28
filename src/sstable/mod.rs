@@ -66,14 +66,16 @@
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
-use crate::ioutils::{read_string_exact, read_u32};
-use crate::sstable::index_block::SSTableIndex;
-use crate::Result;
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom};
 
+use crate::ioutils::{read_string_exact, read_u32};
+use crate::sstable::index_block::SSTableIndex;
+use crate::Result;
+
 pub(crate) mod footer;
 pub(crate) mod index_block;
+pub mod level0_table;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;
@@ -82,7 +84,7 @@ fn sstable_path(db_path: &str, level: i32, sstable_id: u64) -> String {
     format!("{}/{}/{}.sst", db_path, level, sstable_id)
 }
 
-fn data_block_get_value(
+fn get_value_from_data_block(
     reader: &mut (impl Read + Seek),
     key: &str,
     start: u32,
@@ -106,21 +108,16 @@ fn data_block_get_value(
     None
 }
 
-pub fn query_sstable(
-    db_path: &String,
-    level: u32,
-    table_id: u128,
-    key: &String,
-) -> Result<Option<String>> {
+pub fn query_sstable(db_path: &String, level: u32, table_id: u128, key: &String) -> Option<String> {
     let file_name = sstable_file(db_path, level, table_id);
     let mut file = std::fs::File::open(file_name).expect("sstable not found");
-    let sstable_index = SSTableIndex::load_index(&mut file).unwrap();
+    let sstable_index = SSTableIndex::load_index(&mut file);
 
     if let Some((offset, length)) = sstable_index.may_contain_key(key) {
-        let option = data_block_get_value(&mut file, key, offset, length);
-        return Ok(option);
+        let option = get_value_from_data_block(&mut file, key, offset, length);
+        return option;
     }
-    Ok(None)
+    None
 }
 
 pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {
