@@ -22,7 +22,9 @@ fn rand_level() -> usize {
 #[repr(C)]
 pub struct Node<K: Ord + Default, V: Default> {
     pub entry: Entry<K, V>,
+    /// ranges [0, `MAX_LEVEL`]
     level: usize,
+    /// the actual size is `level + 1`
     next: [AtomicPtr<Self>; 0],
 }
 
@@ -149,11 +151,18 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
+    /// return whether `key` has already exist.
     pub fn insert(&self, key: K, value: V) -> bool {
         let mut prev_nodes = [self.head; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
-        self.insert_before(prev_nodes, key, value);
+        if has_key {
+            unsafe {
+                (*node).entry.value = value;
+            }
+        } else {
+            self.insert_before(prev_nodes, key, value);
+        }
         has_key
     }
 
@@ -261,6 +270,9 @@ mod tests {
     #[test]
     fn test_insert() {
         let skip_map: SkipMap<i32, String> = SkipMap::new();
+        for i in 0..40 {
+            skip_map.insert(i, "temp".into());
+        }
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
         }
