@@ -15,16 +15,6 @@ fn test_command() {
     _test_command::<SkipMapMemTable>();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_command_concurrently() -> Result<()> {
-    env_logger::try_init();
-
-    _test_command::<BTreeMemTable>();
-    std::thread::sleep(Duration::from_secs(2));
-    _test_command::<SkipMapMemTable>();
-    Ok(())
-}
-
 fn _test_command<M: 'static + MemTable>() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let db = KVLite::<M>::open(temp_dir.path()).unwrap();

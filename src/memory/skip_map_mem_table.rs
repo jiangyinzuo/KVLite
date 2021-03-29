@@ -1,4 +1,4 @@
-use crate::collections::skiplist::SkipMap;
+use crate::collections::skiplist::MultiSkipMap;
 use crate::db::DBCommandMut;
 use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::MemTable;
@@ -6,7 +6,7 @@ use crate::Result;
 
 #[derive(Default)]
 pub struct SkipMapMemTable {
-    inner: SkipMap<String, String>,
+    inner: MultiSkipMap<String, String>,
 }
 
 impl DBCommandMut for SkipMapMemTable {
@@ -31,7 +31,7 @@ impl DBCommandMut for SkipMapMemTable {
     }
 
     fn remove(&mut self, key: String) -> Result<()> {
-        if self.inner.remove(key) {
+        if self.inner.insert(key, String::new()) {
             Ok(())
         } else {
             Err(KeyNotFound)

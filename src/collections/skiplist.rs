@@ -81,22 +81,24 @@ unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
     std::alloc::dealloc(node as *mut u8, layout);
 }
 
+/// Map that allows duplicate keys, based on skip list
+///
 /// # NOTICE:
 ///
 /// Concurrent insertion is not thread safe but concurrent reading with a
 /// single writer is safe.
-pub struct SkipMap<K: Ord + Default, V: Default> {
+pub struct MultiSkipMap<K: Ord + Default, V: Default> {
     head: *const Node<K, V>,
     cur_max_level: AtomicUsize,
     len: AtomicUsize,
 }
 
-unsafe impl<K: Ord + Default, V: Default> Send for SkipMap<K, V> {}
-unsafe impl<K: Ord + Default, V: Default> Sync for SkipMap<K, V> {}
+unsafe impl<K: Ord + Default, V: Default> Send for MultiSkipMap<K, V> {}
+unsafe impl<K: Ord + Default, V: Default> Sync for MultiSkipMap<K, V> {}
 
-impl<K: Ord + Default, V: Default> SkipMap<K, V> {
-    pub fn new() -> SkipMap<K, V> {
-        SkipMap {
+impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
+    pub fn new() -> MultiSkipMap<K, V> {
+        MultiSkipMap {
             head: Node::head(),
             cur_max_level: AtomicUsize::default(),
             len: AtomicUsize::default(),
@@ -156,13 +158,7 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         let mut prev_nodes = [self.head; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
-        if has_key {
-            unsafe {
-                (*node).entry.value = value;
-            }
-        } else {
-            self.insert_before(prev_nodes, key, value);
-        }
+        self.insert_before(prev_nodes, key, value);
         has_key
     }
 
@@ -194,18 +190,22 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         self.len.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Remove `key`, return whether `key` exists
+    /// Remove all the `key` in map, return whether `key` exists
     pub fn remove(&self, key: K) -> bool {
         let mut prev_nodes = [self.head; MAX_LEVEL + 1];
-        let node = self.find_first_ge(&key, Some(&mut prev_nodes));
+        let mut node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
         if has_key {
             unsafe {
-                for i in 0..=(*node).level {
-                    (*prev_nodes[i]).set_next(i, (*node).get_next(i))
+                while !node.is_null() && Self::node_eq_key(node, &key) {
+                    let next_node = (*node).get_next(0);
+                    for i in 0..=(*node).level {
+                        (*prev_nodes[i]).set_next(i, (*node).get_next(i))
+                    }
+                    self.len.fetch_sub(1, Ordering::SeqCst);
+                    drop_node(node);
+                    node = next_node;
                 }
-                self.len.fetch_sub(1, Ordering::SeqCst);
-                drop_node(node);
             }
             true
         } else {
@@ -222,13 +222,13 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     }
 }
 
-impl<K: Ord + Default, V: Default> Default for SkipMap<K, V> {
+impl<K: Ord + Default, V: Default> Default for MultiSkipMap<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
+impl<K: Ord + Default, V: Default> Drop for MultiSkipMap<K, V> {
     fn drop(&mut self) {
         let mut node = self.head;
 
@@ -265,14 +265,11 @@ impl<K: Ord + Default, V: Default> Iterator for Iter<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::skiplist::SkipMap;
+    use crate::collections::skiplist::MultiSkipMap;
 
     #[test]
     fn test_insert() {
-        let skip_map: SkipMap<i32, String> = SkipMap::new();
-        for i in 0..40 {
-            skip_map.insert(i, "temp".into());
-        }
+        let skip_map: MultiSkipMap<i32, String> = MultiSkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
         }
@@ -296,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let skip_map: SkipMap<i32, String> = SkipMap::new();
+        let skip_map: MultiSkipMap<i32, String> = MultiSkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
         }
@@ -310,7 +307,9 @@ mod tests {
                 assert_eq!((*node).entry.key, *v);
             }
         }
+        skip_map.insert(0, "temp".into());
         assert!(skip_map.remove(0));
+        assert_eq!(skip_map.len(), 1);
         assert!(skip_map.remove(99));
         assert!(!skip_map.remove(0));
         assert_eq!(skip_map.len(), 0);

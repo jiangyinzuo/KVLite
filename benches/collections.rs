@@ -2,7 +2,7 @@
 extern crate kvlite;
 extern crate test;
 
-use kvlite::collections::skiplist::SkipMap;
+use kvlite::collections::skiplist::MultiSkipMap;
 use kvlite::collections::treap::TreapMap;
 use std::collections::BTreeMap;
 use test::Bencher;
@@ -38,7 +38,7 @@ fn bench_btree_map_insert(b: &mut Bencher) {
 #[bench]
 fn bench_skip_map_insert(b: &mut Bencher) {
     b.iter(|| {
-        let skip_map: SkipMap<i32, i32> = SkipMap::new();
+        let skip_map: MultiSkipMap<i32, i32> = MultiSkipMap::new();
         for i in 0..5000i32 {
             skip_map.insert(i, rand::random());
         }
