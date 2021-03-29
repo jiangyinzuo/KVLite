@@ -73,9 +73,11 @@ use crate::ioutils::{read_string_exact, read_u32};
 use crate::sstable::index_block::SSTableIndex;
 use crate::Result;
 
+mod compact;
 pub(crate) mod footer;
 pub(crate) mod index_block;
 pub mod level0_table;
+mod table_handle;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;

@@ -31,7 +31,7 @@ impl DBCommandMut for SkipMapMemTable {
     }
 
     fn remove(&mut self, key: String) -> Result<()> {
-        if self.inner.insert(key, String::new()) {
+        if self.inner.remove(key) {
             Ok(())
         } else {
             Err(KeyNotFound)

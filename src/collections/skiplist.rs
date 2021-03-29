@@ -73,6 +73,12 @@ impl<K: Ord + Default, V: Default> Node<K, V> {
     }
 }
 
+unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
+    let layout = (*node).get_layout();
+    std::ptr::drop_in_place(node as *mut Node<K, V>);
+    std::alloc::dealloc(node as *mut u8, layout);
+}
+
 /// # NOTICE:
 ///
 /// Concurrent insertion is not thread safe but concurrent reading with a
@@ -179,6 +185,25 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         self.len.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Remove `key`, return whether `key` exists
+    pub fn remove(&self, key: K) -> bool {
+        let mut prev_nodes = [self.head; MAX_LEVEL + 1];
+        let node = self.find_first_ge(&key, Some(&mut prev_nodes));
+        let has_key = unsafe { Self::node_eq_key(node, &key) };
+        if has_key {
+            unsafe {
+                for i in 0..=(*node).level {
+                    (*prev_nodes[i]).set_next(i, (*node).get_next(i))
+                }
+                self.len.fetch_sub(1, Ordering::SeqCst);
+                drop_node(node);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn iter(&self) -> Iter<K, V> {
         unsafe {
             Iter {
@@ -201,9 +226,7 @@ impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
         unsafe {
             while !node.is_null() {
                 let next_node = (*node).get_next(0);
-                let layout = (*node).get_layout();
-                std::ptr::drop_in_place(node as *mut Node<K, V>);
-                std::alloc::dealloc(node as *mut u8, layout);
+                drop_node(node as *mut Node<K, V>);
                 node = next_node;
             }
         }
@@ -238,7 +261,6 @@ mod tests {
     #[test]
     fn test_insert() {
         let skip_map: SkipMap<i32, String> = SkipMap::new();
-
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
         }
@@ -258,5 +280,27 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, skip_map.len());
+    }
+
+    #[test]
+    fn test_remove() {
+        let skip_map: SkipMap<i32, String> = SkipMap::new();
+        for i in 0..100 {
+            skip_map.insert(i, format!("value{}", i));
+        }
+        for i in 1..99 {
+            assert!(skip_map.remove(i));
+        }
+        assert_eq!(2, skip_map.len());
+        let value = [0, 99];
+        for (node, v) in skip_map.iter().zip(value.iter()) {
+            unsafe {
+                assert_eq!((*node).entry.key, *v);
+            }
+        }
+        assert!(skip_map.remove(0));
+        assert!(skip_map.remove(99));
+        assert!(!skip_map.remove(0));
+        assert_eq!(skip_map.len(), 0);
     }
 }
