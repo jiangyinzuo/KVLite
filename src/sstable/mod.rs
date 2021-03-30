@@ -2,7 +2,6 @@
 //!
 //! # SSTable
 //!
-//! A SSTable is stored in a file named "<version>.sst", where <version> is a Base 62 number(A-Z a-z 0-9).
 //!
 //! ```text
 //! +-------------------------+ (offset 0)
@@ -80,7 +79,7 @@ pub(crate) mod manager;
 pub(crate) mod table_handle;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
-pub const LEVEL0_FILES_THRESHOLD: usize = 4;
+pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
 
 fn get_value_from_data_block(
     reader: &mut (impl Read + Seek),

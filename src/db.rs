@@ -5,6 +5,7 @@ use crate::sstable::manager::TableManager;
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Sender;
+use lazy_static::lazy_static;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
@@ -12,12 +13,6 @@ use std::thread::JoinHandle;
 
 pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
 pub const MAX_LEVEL: usize = 7;
-
-pub trait DBCommand {
-    fn get(&self, key: &String) -> Result<Option<String>>;
-    fn set(&self, key: String, value: String) -> crate::Result<()>;
-    fn remove(&self, key: String) -> crate::Result<()>;
-}
 
 pub trait DBCommandMut {
     fn get(&self, key: &str) -> Result<Option<String>>;
@@ -32,17 +27,17 @@ pub struct KVLite<T: MemTable> {
     imm_mem_table: Arc<RwLock<T>>,
 
     table_manager: Arc<TableManager>,
-    
+
     level0_manager: Arc<Level0Manager>,
     level0_writer_handle: JoinHandle<()>,
     write_level0_channel: Sender<()>,
 }
 
 impl<T: 'static + MemTable> KVLite<T> {
-    pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
+    pub async fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
-
-        let table_manager = Arc::new(TableManager::open_tables(db_path.clone()));
+        let table_manager = TableManager::open_tables(db_path.clone()).await;
+        let table_manager = Arc::new(table_manager);
 
         let mut mut_mem_table = T::default();
         let mut imm_mem_table = T::default();
@@ -94,7 +89,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
     }
 
-    fn query(&self, key: &String) -> Result<Option<String>> {
+    async fn query(&self, key: &String) -> Result<Option<String>> {
         // query mutable memory table
         let mem_table_lock = self.mut_mem_table.read().unwrap();
         let option = mem_table_lock.get(key)?;
@@ -114,7 +109,8 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
 
         // query sstable
-        let option = self.level0_manager.query_level0_table(key).unwrap();
+
+        let option = self.level0_manager.query_level0_table(key).await.unwrap();
         if option.is_some() {
             return Ok(option);
         }
@@ -123,9 +119,9 @@ impl<T: 'static + MemTable> KVLite<T> {
     }
 }
 
-impl<T: 'static + MemTable> DBCommand for KVLite<T> {
-    fn get(&self, key: &String) -> Result<Option<String>> {
-        match self.query(key)? {
+impl<T: 'static + MemTable> KVLite<T> {
+    pub async fn get(&self, key: &String) -> Result<Option<String>> {
+        match self.query(key).await? {
             Some(v) => {
                 if v.is_empty() {
                     Ok(None)
@@ -137,7 +133,7 @@ impl<T: 'static + MemTable> DBCommand for KVLite<T> {
         }
     }
 
-    fn set(&self, key: String, value: String) -> Result<()> {
+    pub fn set(&self, key: String, value: String) -> Result<()> {
         let cmd = WriteCommand::set(key, value);
 
         {
@@ -155,7 +151,7 @@ impl<T: 'static + MemTable> DBCommand for KVLite<T> {
         Ok(())
     }
 
-    fn remove(&self, key: String) -> Result<()> {
+    pub fn remove(&self, key: String) -> Result<()> {
         let cmd = WriteCommand::remove(key);
         let mut wal_writer_lock = self.wal.lock().unwrap();
         wal_writer_lock.append(&cmd)?;

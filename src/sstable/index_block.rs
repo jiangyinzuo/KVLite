@@ -1,7 +1,6 @@
 use crate::ioutils::{read_string_exact, read_u32};
 use crate::sstable::footer::Footer;
 use crate::Result;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
@@ -42,6 +41,8 @@ impl SSTableIndex {
 
         let mut sstable_index = SSTableIndex::default();
         let mut index_offset = 0;
+        
+        debug_assert!(index_offset < footer.index_block_length);
         while index_offset < footer.index_block_length {
             let block_offset = read_u32(reader).unwrap();
             let block_length = read_u32(reader).unwrap();
@@ -62,12 +63,18 @@ impl SSTableIndex {
         self.binary_search(key)
     }
 
+    /// Get maximum key from [SSTableIndex]
+    pub(crate) fn max_key(&self) -> &String {
+        let last = self.indexes.last().unwrap_or_else( || unsafe {
+            std::hint::unreachable_unchecked();
+        });
+        &last.3
+    }
+
+    /// Returns (offset, length)
     fn binary_search(&self, key: &String) -> Option<(u32, u32)> {
         match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
-            Ok(i) | Err(i) => match self.indexes.get(i) {
-                Some(e) => Some((e.0, e.1)),
-                _ => None,
-            },
+            Ok(i) | Err(i) => self.indexes.get(i).map(|e| (e.0, e.1)),
         }
     }
 }

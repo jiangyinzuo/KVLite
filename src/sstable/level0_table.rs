@@ -1,14 +1,13 @@
 use crate::memory::MemTable;
+use crate::sstable::compact::Level0Compacter;
 use crate::sstable::footer::Footer;
 use crate::sstable::index_block::IndexBlock;
 use crate::sstable::manager::TableManager;
 use crate::sstable::table_handle::TableHandle;
-use crate::sstable::{query_sstable, sstable_file, MAX_BLOCK_KV_PAIRS};
+use crate::sstable::{query_sstable, MAX_BLOCK_KV_PAIRS};
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Receiver;
-use std::collections::LinkedList;
-use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock};
@@ -20,6 +19,7 @@ pub struct Level0Manager {
     db_path: String,
 
     table_manager: Arc<TableManager>,
+    level0_compactor: Arc<Level0Compacter>,
 
     /// Table ID is increasing order.
     wal: Arc<Mutex<WriteAheadLog>>,
@@ -46,15 +46,17 @@ impl Level0Manager {
             })
             .collect();
         tables.sort_unstable();
+        let level0_compactor = Arc::new(Level0Compacter::new(table_manager.clone()));
         Ok(Level0Manager {
             db_path,
             table_manager,
+            level0_compactor,
             wal,
         })
     }
 
     /// Start a thread for writing immutable memory table to level0 sstable
-    pub fn start_task_write_level0(
+    pub(crate) fn start_task_write_level0(
         db_path: String,
         table_manager: Arc<TableManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
@@ -63,6 +65,8 @@ impl Level0Manager {
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
         let manager = Arc::new(Self::new(db_path, table_manager, wal).unwrap());
         let manager2 = manager.clone();
+
+        let tokio_handle = tokio::runtime::Handle::current();
         let handle = thread::Builder::new()
             .name("level0 writer".to_owned())
             .spawn(move || {
@@ -70,7 +74,9 @@ impl Level0Manager {
                 while let Ok(()) = recv.recv() {
                     let imm_guard = imm_mem_table.read().unwrap();
                     debug!("length of imm table: {}", imm_guard.len());
-                    if let Err(e) = manager2.write_to_table(imm_guard.deref()) {
+                    if let Err(e) =
+                        tokio_handle.block_on(manager2.write_to_table(imm_guard.deref()))
+                    {
                         let bt = std::backtrace::Backtrace::capture();
                         error!(
                             "Error in thread `{}`: {:?}",
@@ -86,14 +92,13 @@ impl Level0Manager {
         (manager, handle)
     }
 
-    pub fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
-        // query the latest table first
-
+    pub async fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
         let tables_lock = self.table_manager.get_level_tables_lock(0);
-        let tables_guard = tables_lock.read().unwrap();
+        let tables_guard = tables_lock.read().await;
+
+        // query the latest table first
         for table in tables_guard.values().rev() {
-            let sstable_guard = table.read().unwrap();
-            let mut buf_reader = sstable_guard.create_buf_reader_with_pos();
+            let (_sstable_guard, mut buf_reader) = table.create_buf_reader_with_pos();
             let option = query_sstable(&mut buf_reader, key);
             if option.is_some() {
                 return Ok(option);
@@ -102,15 +107,21 @@ impl Level0Manager {
         Ok(None)
     }
 
-    fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let handle = self.table_manager.create_table(0);
+    /// Persistently write the `table` to disk.
+    async fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
+        let handle = self.table_manager.create_table(0).await;
+        self.write_sstable(handle, table)?;
+        self.delete_imm_table_log()?;
+        self.level0_compactor.may_compact();
+        Ok(())
+    }
 
+    fn write_sstable(&self, handle: Arc<TableHandle>, table: &impl MemTable) -> Result<()> {
         let mut count = 0;
         let mut last_pos = 0;
         let mut index_block = IndexBlock::default();
 
-        let mut handle_write_guard = handle.write().unwrap();
-        let mut writer = handle_write_guard.create_buf_writer_with_pos();
+        let (_write_guard, mut writer) = handle.create_buf_writer_with_pos();
 
         // write Data Blocks
         for (i, (k, v)) in table.iter().enumerate() {
@@ -142,12 +153,13 @@ impl Level0Manager {
         };
         footer.write_to_file(&mut writer)?;
         writer.flush()?;
+        Ok(())
+    }
 
-        {
-            // delete immutable log after writing to level0 sstable
-            let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.clear_imm_log()?;
-        }
+    // delete immutable log after writing to level0 sstable
+    fn delete_imm_table_log(&self) -> Result<()> {
+        let mut wal_guard = self.wal.lock().unwrap();
+        wal_guard.clear_imm_log()?;
         Ok(())
     }
 }
@@ -163,21 +175,21 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
-    #[test]
-    fn test() {
-        env_logger::try_init();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test() {
+        let _ = env_logger::try_init();
 
         let temp = TempDir::new().unwrap();
         let path = temp.path().to_str().unwrap().to_string();
 
         for i in 0..10 {
-            test_query(path.clone(), i == 0);
+            test_query(path.clone(), i == 0).await;
             println!("test {} ok", i);
         }
     }
 
-    fn test_query(path: String, insert_value: bool) {
-        let table_manager = Arc::new(TableManager::open_tables(path.clone()));
+    async fn test_query(path: String, insert_value: bool) {
+        let table_manager = Arc::new(TableManager::open_tables(path.clone()).await);
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
 
@@ -210,7 +222,10 @@ mod tests {
         std::thread::sleep(Duration::from_secs(1));
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
-            let v = manager.query_level0_table(&format!("key{}", i)).unwrap();
+            let v = manager
+                .query_level0_table(&format!("key{}", i))
+                .await
+                .unwrap();
             assert_eq!(format!("value{}", i), v.unwrap());
         }
 
