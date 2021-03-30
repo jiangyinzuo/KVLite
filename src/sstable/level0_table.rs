@@ -112,7 +112,7 @@ impl Level0Manager {
         let handle = self.table_manager.create_table(0).await;
         self.write_sstable(handle, table)?;
         self.delete_imm_table_log()?;
-        self.level0_compactor.may_compact();
+        self.level0_compactor.may_compact().await;
         Ok(())
     }
 

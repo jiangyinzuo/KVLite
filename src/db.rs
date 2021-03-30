@@ -5,7 +5,6 @@ use crate::sstable::manager::TableManager;
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Sender;
-use lazy_static::lazy_static;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};

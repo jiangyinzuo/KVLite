@@ -9,10 +9,10 @@ use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_command() {
-    env_logger::try_init();
-    _test_command::<BTreeMemTable>();
+    let _ = env_logger::try_init();
+    _test_command::<BTreeMemTable>().await;
     std::thread::sleep(Duration::from_secs(2));
-    _test_command::<SkipMapMemTable>();
+    _test_command::<SkipMapMemTable>().await;
 }
 
 async fn _test_command<M: 'static + MemTable>() {
@@ -81,14 +81,7 @@ async fn test_read_log() -> Result<()> {
 
     let db = Arc::new(KVLite::<SkipMapMemTable>::open(path).await.unwrap());
     let db1 = db.clone();
-    let handle1 = std::thread::spawn(move || {
-        test_log(db);
-    });
-    let handle2 = std::thread::spawn(move || {
-        test_log(db1);
-    });
-    handle1.join().unwrap();
-    handle2.join().unwrap();
+    tokio::join!(test_log(db), test_log(db1));
     Ok(())
 }
 
