@@ -1,7 +1,8 @@
-use crate::ioutils::BufWriterWithPos;
 use crate::memory::MemTable;
 use crate::sstable::footer::Footer;
 use crate::sstable::index_block::IndexBlock;
+use crate::sstable::manager::TableManager;
+use crate::sstable::table_handle::TableHandle;
 use crate::sstable::{query_sstable, sstable_file, MAX_BLOCK_KV_PAIRS};
 use crate::wal::WriteAheadLog;
 use crate::Result;
@@ -18,13 +19,18 @@ use std::thread::JoinHandle;
 pub struct Level0Manager {
     db_path: String,
 
+    table_manager: Arc<TableManager>,
+
     /// Table ID is increasing order.
-    tables: RwLock<LinkedList<u128>>,
     wal: Arc<Mutex<WriteAheadLog>>,
 }
 
 impl Level0Manager {
-    fn new(db_path: String, wal: Arc<Mutex<WriteAheadLog>>) -> Result<Level0Manager> {
+    fn new(
+        db_path: String,
+        table_manager: Arc<TableManager>,
+        wal: Arc<Mutex<WriteAheadLog>>,
+    ) -> Result<Level0Manager> {
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
         let mut tables: Vec<u128> = dir
             .map(|d| {
@@ -42,7 +48,7 @@ impl Level0Manager {
         tables.sort_unstable();
         Ok(Level0Manager {
             db_path,
-            tables: RwLock::new(tables.into_iter().collect::<LinkedList<u128>>()),
+            table_manager,
             wal,
         })
     }
@@ -50,11 +56,12 @@ impl Level0Manager {
     /// Start a thread for writing immutable memory table to level0 sstable
     pub fn start_task_write_level0(
         db_path: String,
+        table_manager: Arc<TableManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
         imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
         recv: Receiver<()>,
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
-        let manager = Arc::new(Self::new(db_path, wal).unwrap());
+        let manager = Arc::new(Self::new(db_path, table_manager, wal).unwrap());
         let manager2 = manager.clone();
         let handle = thread::Builder::new()
             .name("level0 writer".to_owned())
@@ -81,9 +88,13 @@ impl Level0Manager {
 
     pub fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
         // query the latest table first
-        let table_guard = self.tables.read().unwrap();
-        for table in table_guard.iter().rev() {
-            let option = query_sstable(&self.db_path, 0, *table, key);
+
+        let tables_lock = self.table_manager.get_level_tables_lock(0);
+        let tables_guard = tables_lock.read().unwrap();
+        for table in tables_guard.values().rev() {
+            let sstable_guard = table.read().unwrap();
+            let mut buf_reader = sstable_guard.create_buf_reader_with_pos();
+            let option = query_sstable(&mut buf_reader, key);
             if option.is_some() {
                 return Ok(option);
             }
@@ -92,11 +103,14 @@ impl Level0Manager {
     }
 
     fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let (mut writer, next_table_id) = self.create_table();
+        let handle = self.table_manager.create_table(0);
 
         let mut count = 0;
         let mut last_pos = 0;
         let mut index_block = IndexBlock::default();
+
+        let mut handle_write_guard = handle.write().unwrap();
+        let mut writer = handle_write_guard.create_buf_writer_with_pos();
 
         // write Data Blocks
         for (i, (k, v)) in table.iter().enumerate() {
@@ -130,31 +144,11 @@ impl Level0Manager {
         writer.flush()?;
 
         {
-            let mut table_guard = self.tables.write().unwrap();
-            table_guard.push_back(next_table_id);
-        }
-
-        {
             // delete immutable log after writing to level0 sstable
             let mut wal_guard = self.wal.lock().unwrap();
             wal_guard.clear_imm_log()?;
         }
         Ok(())
-    }
-
-    /// Create sstable file, return file writer and sstable ID
-    fn create_table(&self) -> (BufWriterWithPos<File>, u128) {
-        let table_guard = self.tables.read().unwrap();
-        let next_table_id = table_guard.back().unwrap_or(&0) + 1;
-
-        let file_path = sstable_file(&self.db_path, 0, next_table_id);
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&file_path)
-            .expect(&file_path);
-        debug!("create sstable {}/{}", 0, next_table_id);
-        (BufWriterWithPos::new(file).unwrap(), next_table_id)
     }
 }
 
@@ -163,6 +157,7 @@ mod tests {
     use crate::db::{DBCommandMut, ACTIVE_SIZE_THRESHOLD};
     use crate::memory::{MemTable, SkipMapMemTable};
     use crate::sstable::level0_table::Level0Manager;
+    use crate::sstable::manager::TableManager;
     use crate::wal::WriteAheadLog;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
@@ -177,15 +172,15 @@ mod tests {
 
         for i in 0..10 {
             test_query(path.clone(), i == 0);
-            info!("test {} ok", i);
+            println!("test {} ok", i);
         }
     }
 
     fn test_query(path: String, insert_value: bool) {
+        let table_manager = Arc::new(TableManager::open_tables(path.clone()));
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
 
-        std::fs::create_dir_all(format!("{}/0", path)).unwrap();
         let (sender, receiver) = crossbeam_channel::unbounded();
         let wal = WriteAheadLog::open_and_load_logs(&path, &mut mut_mem, &mut imm_mem).unwrap();
 
@@ -196,6 +191,7 @@ mod tests {
 
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,
+            table_manager,
             Arc::new(Mutex::new(wal)),
             imm_mem.clone(),
             receiver,

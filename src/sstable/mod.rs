@@ -71,20 +71,16 @@ use std::io::{Read, Seek, SeekFrom};
 
 use crate::ioutils::{read_string_exact, read_u32};
 use crate::sstable::index_block::SSTableIndex;
-use crate::Result;
 
 mod compact;
 pub(crate) mod footer;
 pub(crate) mod index_block;
 pub mod level0_table;
-mod table_handle;
+pub(crate) mod manager;
+pub(crate) mod table_handle;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;
-
-fn sstable_path(db_path: &str, level: i32, sstable_id: u64) -> String {
-    format!("{}/{}/{}.sst", db_path, level, sstable_id)
-}
 
 fn get_value_from_data_block(
     reader: &mut (impl Read + Seek),
@@ -110,13 +106,11 @@ fn get_value_from_data_block(
     None
 }
 
-pub fn query_sstable(db_path: &String, level: u32, table_id: u128, key: &String) -> Option<String> {
-    let file_name = sstable_file(db_path, level, table_id);
-    let mut file = std::fs::File::open(file_name).expect("sstable not found");
-    let sstable_index = SSTableIndex::load_index(&mut file);
-
+/// Query sstable stored in `reader`, return value if exists.
+pub fn query_sstable(reader: &mut (impl Read + Seek), key: &String) -> Option<String> {
+    let sstable_index = SSTableIndex::load_index(reader);
     if let Some((offset, length)) = sstable_index.may_contain_key(key) {
-        let option = get_value_from_data_block(&mut file, key, offset, length);
+        let option = get_value_from_data_block(reader, key, offset, length);
         return option;
     }
     None

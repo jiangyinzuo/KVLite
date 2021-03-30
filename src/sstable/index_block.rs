@@ -34,7 +34,7 @@ pub(crate) struct SSTableIndex {
 }
 
 impl SSTableIndex {
-    pub(crate) fn load_index(reader: &mut File) -> SSTableIndex {
+    pub(crate) fn load_index(reader: &mut (impl Read + Seek)) -> SSTableIndex {
         let footer = Footer::load_footer(reader).unwrap();
         reader
             .seek(SeekFrom::Start(footer.index_block_offset as u64))

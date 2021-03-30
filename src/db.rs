@@ -1,6 +1,7 @@
 use crate::command::WriteCommand;
 use crate::memory::MemTable;
 use crate::sstable::level0_table::Level0Manager;
+use crate::sstable::manager::TableManager;
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Sender;
@@ -30,6 +31,8 @@ pub struct KVLite<T: MemTable> {
     mut_mem_table: RwLock<T>,
     imm_mem_table: Arc<RwLock<T>>,
 
+    table_manager: Arc<TableManager>,
+    
     level0_manager: Arc<Level0Manager>,
     level0_writer_handle: JoinHandle<()>,
     write_level0_channel: Sender<()>,
@@ -39,9 +42,7 @@ impl<T: 'static + MemTable> KVLite<T> {
     pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
 
-        for i in 0..=MAX_LEVEL {
-            std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
-        }
+        let table_manager = Arc::new(TableManager::open_tables(db_path.clone()));
 
         let mut mut_mem_table = T::default();
         let mut imm_mem_table = T::default();
@@ -55,6 +56,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         let channel = crossbeam_channel::unbounded();
         let (level0_manager, level0_writer_handle) = Level0Manager::start_task_write_level0(
             db_path.clone(),
+            table_manager.clone(),
             wal.clone(),
             imm_mem_table.clone(),
             channel.1,
@@ -65,6 +67,7 @@ impl<T: 'static + MemTable> KVLite<T> {
             wal,
             mut_mem_table: RwLock::new(mut_mem_table),
             imm_mem_table,
+            table_manager,
             level0_manager,
             level0_writer_handle,
             write_level0_channel: channel.0,

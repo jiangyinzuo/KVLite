@@ -1,8 +1,6 @@
 use crate::Result;
-use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::Path;
 
 pub struct BufReaderWithPos<R: Read + Seek> {
     reader: BufReader<R>,
@@ -46,16 +44,6 @@ impl<W: Write + Seek> BufWriterWithPos<W> {
             writer: BufWriter::new(inner),
             pos,
         })
-    }
-}
-
-impl BufWriterWithPos<File> {
-    /// Create a file at `path`
-    pub fn create_file(path: impl AsRef<Path>) -> Result<BufWriterWithPos<File>> {
-        let mut writer =
-            BufWriterWithPos::new(OpenOptions::new().create(true).write(true).open(&path)?)?;
-        writer.seek(SeekFrom::Start(0))?;
-        Ok(writer)
     }
 }
 
