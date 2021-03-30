@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn test_command() {
     let _ = env_logger::try_init();
     tokio::join!(
@@ -38,19 +38,12 @@ async fn _test_command<M: 'static + MemTable>() {
 
     db.get(&"key3".to_string()).await.unwrap().unwrap();
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
-        assert_eq!(
-            format!("value{}", i),
-            db.get(&format!("key{}", i))
-                .await
-                .unwrap()
-                .expect(&*format!("{}", i)),
-            "kv {}",
-            i
-        );
+        let v = db.get(&format!("key{}", i)).await;
+        assert_eq!(format!("value{}", i), v.unwrap().unwrap(), "kv {}", i);
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn test_read_log() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let path = temp_dir.path();
