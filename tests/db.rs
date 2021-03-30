@@ -10,9 +10,10 @@ use tempfile::TempDir;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_command() {
     let _ = env_logger::try_init();
-    _test_command::<BTreeMemTable>().await;
-    std::thread::sleep(Duration::from_secs(2));
-    _test_command::<SkipMapMemTable>().await;
+    tokio::join!(
+        _test_command::<BTreeMemTable>(),
+        _test_command::<SkipMapMemTable>()
+    );
 }
 
 async fn _test_command<M: 'static + MemTable>() {
