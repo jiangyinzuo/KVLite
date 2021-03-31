@@ -65,11 +65,9 @@
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
+use crate::ioutils::{read_string_exact, read_u32};
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom};
-
-use crate::ioutils::{read_string_exact, read_u32};
-use crate::sstable::index_block::SSTableIndex;
 
 mod compact;
 pub(crate) mod footer;
@@ -80,6 +78,14 @@ pub(crate) mod table_handle;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
+
+fn get_min_key(reader: &mut (impl Read + Seek)) -> String {
+    reader.seek(SeekFrom::Start(0)).unwrap();
+    let key_length = read_u32(reader).unwrap();
+    // value_length
+    reader.seek(SeekFrom::Current(4)).unwrap();
+    read_string_exact(reader, key_length)
+}
 
 fn get_value_from_data_block(
     reader: &mut (impl Read + Seek),
@@ -101,16 +107,6 @@ fn get_value_from_data_block(
             }
         }
         offset += 8 + key_length + value_length;
-    }
-    None
-}
-
-/// Query sstable stored in `reader`, return value if exists.
-pub fn query_sstable(reader: &mut (impl Read + Seek), key: &String) -> Option<String> {
-    let sstable_index = SSTableIndex::load_index(reader);
-    if let Some((offset, length)) = sstable_index.may_contain_key(key) {
-        let option = get_value_from_data_block(reader, key, offset, length);
-        return option;
     }
     None
 }

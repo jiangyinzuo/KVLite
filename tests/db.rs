@@ -12,7 +12,7 @@ async fn test_command() {
     let _ = env_logger::try_init();
     tokio::join!(
         _test_command::<BTreeMemTable>(),
-        _test_command::<SkipMapMemTable>()
+        _test_command::<SkipMapMemTable>(),
     );
 }
 
@@ -31,6 +31,13 @@ async fn _test_command<M: 'static + MemTable>() {
     assert!(v.is_none(), "{:?}", v);
 
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
+        db.set(
+            format!("key{}", if i < ACTIVE_SIZE_THRESHOLD { 0 } else { i }),
+            format!("value{}", i),
+        )
+        .unwrap();
+    }
+    for i in 0..ACTIVE_SIZE_THRESHOLD {
         db.set(format!("key{}", i), format!("value{}", i)).unwrap();
     }
 

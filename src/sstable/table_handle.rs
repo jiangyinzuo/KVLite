@@ -1,4 +1,6 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
+use crate::sstable::index_block::SSTableIndex;
+use crate::sstable::{get_min_key, get_value_from_data_block};
 use std::fs::{File, OpenOptions};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -72,6 +74,17 @@ impl TableHandle {
         *guard.deref()
     }
 
+    /// Query value by `key`
+    pub fn query_sstable(&self, key: &String) -> Option<String> {
+        let (_sstable_guard, mut buf_reader) = self.create_buf_reader_with_pos();
+        let sstable_index = SSTableIndex::load_index(&mut buf_reader);
+        if let Some((offset, length)) = sstable_index.may_contain_key(key) {
+            let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
+            return option;
+        }
+        None
+    }
+
     /// Check whether status of sstable is `Store`.
     /// If it is, change the status to `Compacting` and return true; or else return false.
     pub async fn test_and_set_compacting(&self) -> bool {
@@ -82,6 +95,15 @@ impl TableHandle {
         } else {
             false
         }
+    }
+
+    pub async fn get_min_max_key(&self) -> (String, String) {
+        let (_read_guard, mut buf_reader) = self.create_buf_reader_with_pos();
+        let sstable_index = SSTableIndex::load_index(&mut buf_reader);
+        (
+            get_min_key(&mut buf_reader),
+            sstable_index.max_key().to_string(),
+        )
     }
 }
 

@@ -1,14 +1,16 @@
+use crate::ioutils::BufWriterWithPos;
 use crate::memory::MemTable;
 use crate::sstable::compact::Level0Compacter;
 use crate::sstable::footer::Footer;
 use crate::sstable::index_block::IndexBlock;
 use crate::sstable::manager::TableManager;
 use crate::sstable::table_handle::TableHandle;
-use crate::sstable::{query_sstable, MAX_BLOCK_KV_PAIRS};
+use crate::sstable::MAX_BLOCK_KV_PAIRS;
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Receiver;
-use std::io::Write;
+use std::fs::File;
+use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -98,8 +100,7 @@ impl Level0Manager {
 
         // query the latest table first
         for table in tables_guard.values().rev() {
-            let (_sstable_guard, mut buf_reader) = table.create_buf_reader_with_pos();
-            let option = query_sstable(&mut buf_reader, key);
+            let option = table.query_sstable(key);
             if option.is_some() {
                 return Ok(option);
             }
@@ -123,23 +124,40 @@ impl Level0Manager {
 
         let (_write_guard, mut writer) = handle.create_buf_writer_with_pos();
 
-        // write Data Blocks
-        for (i, (k, v)) in table.iter().enumerate() {
-            let (k, v) = (k.as_bytes(), v.as_bytes());
-            let (k_len, v_len) = (k.len() as u32, v.len() as u32);
+        macro_rules! write_kv_entries {
+            ($i:ident, $key:ident, $value:ident) => {
+                let (k, v) = ($key.as_bytes(), $value.as_bytes());
+                let (k_len, v_len) = (k.len() as u32, v.len() as u32);
 
-            // length of key | length of value | key | value
-            writer.write_all(&k_len.to_le_bytes())?;
-            writer.write_all(&v_len.to_le_bytes())?;
-            writer.write_all(k)?;
-            writer.write_all(v)?;
-            if count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
-                index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
-                last_pos = writer.pos;
-                count = 0;
-            } else {
-                count += 1;
+                // length of key | length of value | key | value
+                writer.write_all(&k_len.to_le_bytes())?;
+                writer.write_all(&v_len.to_le_bytes())?;
+                writer.write_all(k)?;
+                writer.write_all(v)?;
+                if count == MAX_BLOCK_KV_PAIRS || $i == table.len() - 1 {
+                    index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
+                    last_pos = writer.pos;
+                    count = 0;
+                } else {
+                    count += 1;
+                }
+            };
+        }
+
+        // write Data Blocks
+        let mut last_key = "";
+        let mut last_value = "";
+        for (i, (k, v)) in table.iter().enumerate() {
+            if i > 0 && last_key != k {
+                write_kv_entries!(i, last_key, last_value);
             }
+            last_key = k;
+            last_value = v;
+        }
+
+        if !table.is_empty() {
+            let last_id = table.len() - 1;
+            write_kv_entries!(last_id, last_key, last_value);
         }
 
         let index_block_offset = last_pos as u32;
