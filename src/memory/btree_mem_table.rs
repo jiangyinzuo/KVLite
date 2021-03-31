@@ -51,6 +51,22 @@ impl MemTable for BTreeMemTable {
         let _lock = self.rw_lock.read().unwrap();
         Box::new(self.inner.iter())
     }
+
+    fn first_key(&self) -> Option<&String> {
+        let _lock = self.rw_lock.read().unwrap();
+        match self.inner.first_key_value() {
+            Some((k, v)) => Some(k),
+            None => None,
+        }
+    }
+
+    fn last_key(&self) -> Option<&String> {
+        let _lock = self.rw_lock.read().unwrap();
+        match self.inner.last_key_value() {
+            Some((k, v)) => Some(k),
+            None => None,
+        }
+    }
 }
 
 #[cfg(test)]

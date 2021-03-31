@@ -25,18 +25,8 @@ impl Level0Compacter {
         let table_manager = self.table_manager.clone();
         tokio::spawn(async move {
             let tables_fut = table_manager.assign_level0_tables_to_compact();
-            let tables = tables_fut.await;
-
-            let futs = tables.iter().map(|table| table.get_min_max_key());
-            let mut futs_unordered = futs.collect::<FuturesUnordered<_>>();
-
-            if let Some((mut min_key, mut max_key)) = futs_unordered.next().await {
-                while let Some(res) = futs_unordered.next().await {
-                    min_key = min_key.min(res.0);
-                    max_key = max_key.min(res.1);
-                }
-                println!("{} {}", min_key, max_key);
-            }
+            // level0
+            let (tables, min_key, max_key) = tables_fut.await;
         });
     }
 }

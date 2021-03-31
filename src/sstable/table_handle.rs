@@ -21,6 +21,8 @@ pub struct TableHandle {
     table_id: u128,
     status: RwLock<TableStatus>,
     file: File,
+    min_key: String,
+    max_key: String,
     /// Ensure `file` has one writer or multiple readers.
     rw_lock: RwLock<()>,
 }
@@ -44,6 +46,8 @@ impl TableHandle {
             table_id,
             status: RwLock::new(TableStatus::Store),
             file,
+            min_key: String::new(),
+            max_key: String::new(),
             rw_lock: RwLock::default(),
         }
     }

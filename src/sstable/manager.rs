@@ -87,18 +87,35 @@ impl TableManager {
     }
 
     /// Return level0 tables to compact
-    pub async fn assign_level0_tables_to_compact(&self) -> Vec<Arc<TableHandle>> {
+    pub async fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableHandle>>, String, String) {
         let tables = unsafe { self.level_tables.get_unchecked(0) };
         let guard = tables.read().await;
 
-        let mut result = Vec::new();
-        result.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
+        let mut tables = Vec::new();
+        tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
 
+        let mut count = 0;
+        let mut min_key = String::new();
+        let mut max_key = String::new();
         for (_id, table) in guard.iter() {
             if table.test_and_set_compacting().await {
-                result.push(table.clone());
+                tables.push(table.clone());
+                count += 1;
+                let keys = table.get_min_max_key().await;
+                min_key = min_key.min(keys.0);
+                max_key = if max_key.is_empty() {
+                    keys.1
+                } else {
+                    max_key.max(keys.1)
+                };
+                if count >= NUM_LEVEL0_TABLE_TO_COMPACT {
+                    break;
+                }
             }
         }
-        result
+        (tables, min_key, max_key)
     }
+
+    /// Get tables in `level` that intersect with [`min_key`, `max_key`].
+    pub fn get_overlap_tables(&self, level: usize, min_key: &str, max_key: &str) {}
 }

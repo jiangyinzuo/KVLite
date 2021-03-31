@@ -89,6 +89,7 @@ unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
 /// single writer is safe.
 pub struct MultiSkipMap<K: Ord + Default, V: Default> {
     head: *const Node<K, V>,
+    tail: AtomicPtr<Node<K, V>>,
     cur_max_level: AtomicUsize,
     len: AtomicUsize,
 }
@@ -100,6 +101,7 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     pub fn new() -> MultiSkipMap<K, V> {
         MultiSkipMap {
             head: Node::head(),
+            tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
             len: AtomicUsize::default(),
         }
@@ -127,6 +129,18 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
         !node.is_null() && (*node).entry.key.eq(key)
     }
 
+    /// Return the first node `N` whose key is greater or equal than given `key`.
+    /// if `prev_nodes` is `Some(...)`, it will be assigned to all the previous nodes of `N`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use kvlite::collections::skiplist::MultiSkipMap;
+    /// let mut skip_map = MultiSkipMap::new();
+    /// assert!(skip_map.find_first_ge(&1, None).is_null());
+    /// skip_map.insert(3, 3);
+    /// assert!(skip_map.find_first_ge(&5, None).is_null());
+    /// ```
     pub fn find_first_ge(
         &self,
         key: &K,
@@ -158,11 +172,12 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
         let mut prev_nodes = [self.head; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
-        self.insert_before(prev_nodes, key, value);
+        self.insert_after(prev_nodes, key, value);
         has_key
     }
 
-    fn insert_before(&self, prev_nodes: [*const Node<K, V>; MAX_LEVEL + 1], key: K, value: V) {
+    /// Insert node with `key`, `value` after `prev_nodes`
+    fn insert_after(&self, prev_nodes: [*const Node<K, V>; MAX_LEVEL + 1], key: K, value: V) {
         #[cfg(debug_assertions)]
         {
             for (level, prev) in prev_nodes.iter().enumerate() {
@@ -179,6 +194,12 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
         }
 
         let new_node = Node::new_with_level(key, value, level);
+        unsafe {
+            if (*(*prev_nodes.get_unchecked(0))).get_next(0).is_null() {
+                self.tail.store(new_node, Ordering::Release);
+            }
+        }
+
         unsafe {
             for i in 0..=level {
                 // set next of new_node first to ensure concurrent read is correct.
@@ -202,7 +223,11 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
                     for i in 0..=(*node).level {
                         (*prev_nodes[i]).set_next(i, (*node).get_next(i))
                     }
-                    self.len.fetch_sub(1, Ordering::SeqCst);
+                    self.len.fetch_sub(1, Ordering::Release);
+                    if next_node.is_null() {
+                        self.tail
+                            .store(*prev_nodes.get_unchecked(0) as *mut _, Ordering::SeqCst);
+                    }
                     drop_node(node);
                     node = next_node;
                 }
@@ -218,6 +243,52 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
             Iter {
                 node: (*self.head).get_next(0),
             }
+        }
+    }
+
+    /// Get first key-value pair.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use kvlite::collections::skiplist::MultiSkipMap;
+    /// let mut skip_map = MultiSkipMap::new();
+    /// assert!(skip_map.first_key_value().is_none());
+    ///
+    /// skip_map.insert("hello", 2);
+    /// skip_map.insert("apple", 1);
+    /// let entry = skip_map.first_key_value().unwrap();
+    /// assert_eq!(entry.key, "apple");
+    /// assert_eq!(entry.value, 1);
+    /// ```
+    pub fn first_key_value(&self) -> Option<&Entry<K, V>> {
+        if self.is_empty() {
+            None
+        } else {
+            unsafe { Some(&(*(*self.head).get_next(0)).entry) }
+        }
+    }
+
+    /// Get last key-value pair.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use kvlite::collections::skiplist::MultiSkipMap;
+    /// let mut skip_map = MultiSkipMap::new();
+    /// assert!(skip_map.last_key_value().is_none());
+    ///
+    /// skip_map.insert("hello", 2);
+    /// skip_map.insert("apple", 1);
+    /// let entry = skip_map.last_key_value().unwrap();
+    /// assert_eq!(entry.key, "hello");
+    /// assert_eq!(entry.value, 2);
+    /// ```
+    pub fn last_key_value(&self) -> Option<&Entry<K, V>> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { &(*self.tail.load(Ordering::Acquire)).entry })
         }
     }
 }
@@ -266,12 +337,14 @@ impl<K: Ord + Default, V: Default> Iterator for Iter<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::skiplist::MultiSkipMap;
+    use crate::collections::Entry;
 
     #[test]
     fn test_insert() {
         let skip_map: MultiSkipMap<i32, String> = MultiSkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
+            assert_eq!(skip_map.last_key_value().unwrap().key, i);
         }
         debug_assert_eq!(100, skip_map.len());
         for i in 0..100 {
@@ -310,8 +383,54 @@ mod tests {
         skip_map.insert(0, "temp".into());
         assert!(skip_map.remove(0));
         assert_eq!(skip_map.len(), 1);
+
         assert!(skip_map.remove(99));
+        assert!(skip_map.last_key_value().is_none());
         assert!(!skip_map.remove(0));
         assert_eq!(skip_map.len(), 0);
+    }
+
+    #[test]
+    fn test_first_key_value() {
+        let skip_map = MultiSkipMap::new();
+        macro_rules! assert_first_key {
+            ($k:literal) => {
+                assert_eq!(skip_map.first_key_value().unwrap().key, $k);
+            };
+        }
+        assert!(skip_map.first_key_value().is_none());
+        skip_map.insert(10, 10);
+        assert_first_key!(10);
+        skip_map.insert(5, 5);
+        assert_first_key!(5);
+        skip_map.insert(3, 3);
+        assert_first_key!(3);
+        skip_map.insert(10, 10);
+        assert_first_key!(3);
+        skip_map.remove(3);
+        assert_first_key!(5);
+    }
+
+    #[test]
+    fn test_last_key_value() {
+        let skip_map = MultiSkipMap::new();
+
+        macro_rules! assert_last_key {
+            ($k:literal) => {
+                assert_eq!(skip_map.last_key_value().unwrap().key, $k);
+            };
+        }
+
+        assert!(skip_map.last_key_value().is_none());
+        skip_map.insert(10, 10);
+        assert_last_key!(10);
+        skip_map.insert(5, 5);
+        assert_last_key!(10);
+        skip_map.insert(13, 13);
+        assert_last_key!(13);
+        skip_map.insert(14, 14);
+        assert_last_key!(14);
+        skip_map.remove(14);
+        assert_last_key!(13);
     }
 }

@@ -18,4 +18,8 @@ pub trait MemTable: DBCommandMut + Default + Send + Sync {
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_>;
+
+    fn first_key(&self) -> Option<&String>;
+
+    fn last_key(&self) -> Option<&String>;
 }

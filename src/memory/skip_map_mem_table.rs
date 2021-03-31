@@ -51,4 +51,12 @@ impl MemTable for SkipMapMemTable {
                 .map(|n| unsafe { (&(*n).entry.key, &(*n).entry.value) }),
         )
     }
+
+    fn first_key(&self) -> Option<&String> {
+        self.inner.first_key_value().map(|entry| &entry.key)
+    }
+
+    fn last_key(&self) -> Option<&String> {
+        self.inner.last_key_value().map(|entry| &entry.key)
+    }
 }
