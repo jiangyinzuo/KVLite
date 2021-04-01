@@ -111,11 +111,7 @@ impl<T: 'static + MemTable> KVLite<T> {
 
         // query sstable
         let option = self.level0_manager.query_level0_table(key).unwrap();
-        if option.is_some() {
-            return Ok(option);
-        }
-
-        Ok(None)
+        Ok(option)
     }
 }
 

@@ -65,9 +65,10 @@
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
-use crate::ioutils::{read_string_exact, read_u32};
+use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 use std::cmp::Ordering;
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
 
 mod compact;
 pub(crate) mod footer;
@@ -79,16 +80,16 @@ pub(crate) mod table_handle;
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
 
-fn get_min_key(reader: &mut (impl Read + Seek)) -> String {
+fn get_min_key(reader: &mut BufReaderWithPos<File>) -> String {
     reader.seek(SeekFrom::Start(0)).unwrap();
-    let key_length = read_u32(reader).unwrap();
+    let key_length = read_u32(reader);
     // value_length
     reader.seek(SeekFrom::Current(4)).unwrap();
     read_string_exact(reader, key_length)
 }
 
 fn get_value_from_data_block(
-    reader: &mut (impl Read + Seek),
+    reader: &mut BufReaderWithPos<File>,
     key: &str,
     start: u32,
     length: u32,
@@ -96,8 +97,8 @@ fn get_value_from_data_block(
     reader.seek(SeekFrom::Start(start as u64)).unwrap();
     let mut offset = 0u32;
     while offset < length {
-        let key_length = read_u32(reader).unwrap();
-        let value_length = read_u32(reader).unwrap();
+        let key_length = read_u32(reader);
+        let value_length = read_u32(reader);
         let key_read = read_string_exact(reader, key_length);
         match key.cmp(&key_read) {
             Ordering::Less => return None,

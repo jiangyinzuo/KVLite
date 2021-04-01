@@ -1,7 +1,8 @@
 use crate::error::KVLiteError;
-use crate::ioutils::read_u32;
+use crate::ioutils::{read_u32, BufReaderWithPos};
 use crate::Result;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
 
 pub const FOOTER_MAGIC_NUMBER: u32 = 0xdb991122;
 pub const FOOTER_BYTE_SIZE: i64 = 12;
@@ -26,11 +27,11 @@ impl Footer {
         Ok(())
     }
 
-    pub(crate) fn load_footer(reader: &mut (impl Read + Seek)) -> Result<Footer> {
+    pub(crate) fn load_footer(reader: &mut BufReaderWithPos<File>) -> Result<Footer> {
         reader.seek(SeekFrom::End(-FOOTER_BYTE_SIZE)).unwrap();
 
-        let index_block_offset = read_u32(reader).unwrap();
-        let index_block_length = read_u32(reader).unwrap();
+        let index_block_offset = read_u32(reader);
+        let index_block_length = read_u32(reader);
 
         let footer = Footer {
             index_block_offset,
@@ -38,7 +39,7 @@ impl Footer {
         };
 
         // validate magic number
-        let magic_number = read_u32(reader).unwrap();
+        let magic_number = read_u32(reader);
         if magic_number != FOOTER_MAGIC_NUMBER {
             return Err(KVLiteError::Custom("invalid footer magic number".into()));
         }

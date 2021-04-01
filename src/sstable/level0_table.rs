@@ -9,7 +9,6 @@ use crate::sstable::MAX_BLOCK_KV_PAIRS;
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Receiver;
-use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock};

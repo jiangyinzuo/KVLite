@@ -2,6 +2,7 @@ use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::sstable::index_block::SSTableIndex;
 use crate::sstable::{get_min_key, get_value_from_data_block};
 use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -35,10 +36,12 @@ impl TableHandle {
     pub fn open_table(db_path: &str, level: u8, table_id: u128) -> TableHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
 
-        let mut file = File::open(&file_path).unwrap();
-        let sstable_index = SSTableIndex::load_index(&mut file);
+        let file = File::open(&file_path).unwrap();
+        let mut buf_reader = BufReaderWithPos::new(file).unwrap();
 
-        let min_key = get_min_key(&mut file);
+        let sstable_index = SSTableIndex::load_index(&mut buf_reader);
+
+        let min_key = get_min_key(&mut buf_reader);
         let max_key = sstable_index.max_key().to_string();
 
         let handle = TableHandle {
@@ -46,7 +49,7 @@ impl TableHandle {
             level,
             table_id,
             status: RwLock::new(TableStatus::Store),
-            file,
+            file: buf_reader.into_inner(),
             min_key,
             max_key,
             rw_lock: RwLock::default(),
@@ -86,9 +89,11 @@ impl TableHandle {
 
     /// Used for read sstable
     pub fn create_buf_reader_with_pos(&self) -> (RwLockReadGuard<()>, BufReaderWithPos<File>) {
+        let mut file = self.file.try_clone().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
         (
             self.rw_lock.read().unwrap(),
-            BufReaderWithPos::new(self.file.try_clone().unwrap()).unwrap(),
+            BufReaderWithPos::new(file).unwrap(),
         )
     }
 

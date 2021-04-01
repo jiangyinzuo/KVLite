@@ -1,6 +1,7 @@
-use crate::ioutils::{read_string_exact, read_u32};
+use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 use crate::sstable::footer::Footer;
 use crate::Result;
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
@@ -33,7 +34,7 @@ pub(crate) struct SSTableIndex {
 }
 
 impl SSTableIndex {
-    pub(crate) fn load_index(reader: &mut (impl Read + Seek)) -> SSTableIndex {
+    pub(crate) fn load_index(reader: &mut BufReaderWithPos<File>) -> SSTableIndex {
         let footer = Footer::load_footer(reader).unwrap();
         reader
             .seek(SeekFrom::Start(footer.index_block_offset as u64))
@@ -41,12 +42,12 @@ impl SSTableIndex {
 
         let mut sstable_index = SSTableIndex::default();
         let mut index_offset = 0;
-        
+
         debug_assert!(index_offset < footer.index_block_length);
         while index_offset < footer.index_block_length {
-            let block_offset = read_u32(reader).unwrap();
-            let block_length = read_u32(reader).unwrap();
-            let max_key_length = read_u32(reader).unwrap();
+            let block_offset = read_u32(reader);
+            let block_length = read_u32(reader);
+            let max_key_length = read_u32(reader);
 
             let max_key = read_string_exact(reader, max_key_length);
             sstable_index
@@ -65,7 +66,7 @@ impl SSTableIndex {
 
     /// Get maximum key from [SSTableIndex]
     pub(crate) fn max_key(&self) -> &String {
-        let last = self.indexes.last().unwrap_or_else( || unsafe {
+        let last = self.indexes.last().unwrap_or_else(|| unsafe {
             std::hint::unreachable_unchecked();
         });
         &last.3
