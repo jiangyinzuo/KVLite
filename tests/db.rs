@@ -4,16 +4,18 @@ use kvlite::error::KVLiteError;
 use kvlite::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
 use kvlite::Result;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 
-#[tokio::test]
-async fn test_command() {
+#[test]
+fn test_command() {
     let _ = env_logger::try_init();
-    tokio::join!(
-        _test_command::<BTreeMemTable>(),
-        _test_command::<SkipMapMemTable>(),
-    );
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        tokio::join!(
+            _test_command::<BTreeMemTable>(),
+            _test_command::<SkipMapMemTable>(),
+        )
+    });
 }
 
 async fn _test_command<M: 'static + MemTable>() {
@@ -41,12 +43,11 @@ async fn _test_command<M: 'static + MemTable>() {
         db.set(format!("key{}", i), format!("value{}", i)).unwrap();
     }
 
-    std::thread::sleep(Duration::from_secs(2));
-
     db.get(&"key3".to_string()).await.unwrap().unwrap();
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
         let v = db.get(&format!("key{}", i)).await;
-        assert_eq!(format!("value{}", i), v.unwrap().unwrap(), "kv {}", i);
+        let value = v.unwrap();
+        assert_eq!(format!("value{}", i), value.unwrap(), "kv {}", i);
     }
 }
 
@@ -61,7 +62,6 @@ async fn test_read_log() -> Result<()> {
             db.set(format!("{}", i), format!("value{}", i))?;
         }
     }
-    std::thread::sleep(Duration::from_secs(2));
 
     let db = KVLite::<BTreeMemTable>::open(path).await?;
 
@@ -78,7 +78,6 @@ async fn test_read_log() -> Result<()> {
             db.get(&format!("{}", i)).await?
         );
     }
-    std::thread::sleep(Duration::from_secs(2));
 
     let db = Arc::new(KVLite::<SkipMapMemTable>::open(path).await.unwrap());
     let db1 = db.clone();
