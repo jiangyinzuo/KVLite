@@ -1,23 +1,7 @@
+use crate::collections::skip_list::{rand_level, MAX_LEVEL};
 use crate::collections::Entry;
-use rand::Rng;
 use std::alloc::Layout;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-
-pub const MAX_LEVEL: usize = 12;
-
-fn rand_level() -> usize {
-    let mut rng = rand::thread_rng();
-    let mut level = 0;
-    while level < MAX_LEVEL {
-        let number = rng.gen_range(1..=4);
-        if number == 1 {
-            level += 1;
-        } else {
-            break;
-        }
-    }
-    level
-}
 
 #[repr(C)]
 pub struct Node<K: Ord + Default, V: Default> {
@@ -25,7 +9,7 @@ pub struct Node<K: Ord + Default, V: Default> {
     /// ranges [0, `MAX_LEVEL`]
     level: usize,
     /// the actual size is `level + 1`
-    next: [AtomicPtr<Self>; 0],
+    next: [*mut Self; 0],
 }
 
 impl<K: Ord + Default, V: Default> Node<K, V> {
@@ -34,7 +18,7 @@ impl<K: Ord + Default, V: Default> Node<K, V> {
     }
 
     fn new_with_level(key: K, value: V, level: usize) -> *mut Node<K, V> {
-        let pointers_size = (level + 1) * std::mem::size_of::<AtomicPtr<Self>>();
+        let pointers_size = (level + 1) * std::mem::size_of::<*mut Self>();
         let layout = Layout::from_size_align(
             std::mem::size_of::<Self>() + pointers_size,
             std::mem::align_of::<Self>(),
@@ -51,7 +35,7 @@ impl<K: Ord + Default, V: Default> Node<K, V> {
     }
 
     fn get_layout(&self) -> Layout {
-        let pointers_size = (self.level + 1) * std::mem::size_of::<AtomicPtr<Self>>();
+        let pointers_size = (self.level + 1) * std::mem::size_of::<*mut Self>();
 
         Layout::from_size_align(
             std::mem::size_of::<Self>() + pointers_size,
@@ -62,15 +46,13 @@ impl<K: Ord + Default, V: Default> Node<K, V> {
 
     #[inline]
     fn get_next(&self, level: usize) -> *mut Self {
-        unsafe { self.next.get_unchecked(level).load(Ordering::Acquire) }
+        unsafe { *self.next.get_unchecked(level) }
     }
 
     #[inline]
-    fn set_next(&self, level: usize, node: *mut Self) {
+    fn set_next(&mut self, level: usize, node: *mut Self) {
         unsafe {
-            self.next
-                .get_unchecked(level)
-                .store(node, Ordering::Release);
+            *self.next.get_unchecked_mut(level) = node;
         }
     }
 }
@@ -85,31 +67,30 @@ unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
 ///
 /// # NOTICE:
 ///
-/// Concurrent insertion is not thread safe but concurrent reading with a
-/// single writer is safe.
-pub struct MultiSkipMap<K: Ord + Default, V: Default> {
+/// SkipMap is not thread-safe.
+pub struct SkipMap<K: Ord + Default, V: Default> {
     head: *const Node<K, V>,
     tail: AtomicPtr<Node<K, V>>,
     cur_max_level: AtomicUsize,
-    len: AtomicUsize,
+    len: usize,
 }
 
-unsafe impl<K: Ord + Default, V: Default> Send for MultiSkipMap<K, V> {}
-unsafe impl<K: Ord + Default, V: Default> Sync for MultiSkipMap<K, V> {}
+unsafe impl<K: Ord + Default, V: Default> Send for SkipMap<K, V> {}
+unsafe impl<K: Ord + Default, V: Default> Sync for SkipMap<K, V> {}
 
-impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
-    pub fn new() -> MultiSkipMap<K, V> {
-        MultiSkipMap {
+impl<K: Ord + Default, V: Default> SkipMap<K, V> {
+    pub fn new() -> SkipMap<K, V> {
+        SkipMap {
             head: Node::head(),
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
-            len: AtomicUsize::default(),
+            len: 0,
         }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.len.load(Ordering::SeqCst)
+        self.len
     }
 
     #[inline]
@@ -135,8 +116,8 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     /// # Examples
     ///
     /// ```rust
-    /// use kvlite::collections::skiplist::MultiSkipMap;
-    /// let mut skip_map = MultiSkipMap::new();
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
     /// assert!(skip_map.find_first_ge(&1, None).is_null());
     /// skip_map.insert(3, 3);
     /// assert!(skip_map.find_first_ge(&5, None).is_null());
@@ -144,10 +125,10 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     pub fn find_first_ge(
         &self,
         key: &K,
-        mut prev_nodes: Option<&mut [*const Node<K, V>]>,
+        mut prev_nodes: Option<&mut [*mut Node<K, V>; MAX_LEVEL + 1]>,
     ) -> *mut Node<K, V> {
         let mut level = self.cur_max_level.load(Ordering::Acquire);
-        let mut node = self.head;
+        let mut node = self.head as *mut Node<K, V>;
         loop {
             unsafe {
                 let next = (*node).get_next(level);
@@ -168,16 +149,22 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     }
 
     /// return whether `key` has already exist.
-    pub fn insert(&self, key: K, value: V) -> bool {
-        let mut prev_nodes = [self.head; MAX_LEVEL + 1];
+    pub fn insert(&mut self, key: K, value: V) -> bool {
+        let mut prev_nodes = [self.head as *mut _; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
-        self.insert_after(prev_nodes, key, value);
+        if has_key {
+            unsafe {
+                (*node).entry.value = value;
+            }
+        } else {
+            self.insert_after(prev_nodes, key, value);
+        }
         has_key
     }
 
     /// Insert node with `key`, `value` after `prev_nodes`
-    fn insert_after(&self, prev_nodes: [*const Node<K, V>; MAX_LEVEL + 1], key: K, value: V) {
+    fn insert_after(&mut self, prev_nodes: [*mut Node<K, V>; MAX_LEVEL + 1], key: K, value: V) {
         #[cfg(debug_assertions)]
         {
             for (level, prev) in prev_nodes.iter().enumerate() {
@@ -208,12 +195,12 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
             }
         }
 
-        self.len.fetch_add(1, Ordering::SeqCst);
+        self.len += 1;
     }
 
     /// Remove all the `key` in map, return whether `key` exists
-    pub fn remove(&self, key: K) -> bool {
-        let mut prev_nodes = [self.head; MAX_LEVEL + 1];
+    pub fn remove(&mut self, key: K) -> bool {
+        let mut prev_nodes = [self.head as *mut _; MAX_LEVEL + 1];
         let mut node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
         if has_key {
@@ -223,7 +210,7 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
                     for i in 0..=(*node).level {
                         (*prev_nodes[i]).set_next(i, (*node).get_next(i))
                     }
-                    self.len.fetch_sub(1, Ordering::Release);
+                    self.len -= 1;
                     if next_node.is_null() {
                         self.tail
                             .store(*prev_nodes.get_unchecked(0) as *mut _, Ordering::SeqCst);
@@ -251,8 +238,8 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     /// # Examples
     ///
     /// ```rust
-    /// use kvlite::collections::skiplist::MultiSkipMap;
-    /// let mut skip_map = MultiSkipMap::new();
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
     /// assert!(skip_map.first_key_value().is_none());
     ///
     /// skip_map.insert("hello", 2);
@@ -274,8 +261,8 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     /// # Examples
     ///
     /// ```rust
-    /// use kvlite::collections::skiplist::MultiSkipMap;
-    /// let mut skip_map = MultiSkipMap::new();
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
     /// assert!(skip_map.last_key_value().is_none());
     ///
     /// skip_map.insert("hello", 2);
@@ -293,13 +280,13 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
     }
 }
 
-impl<K: Ord + Default, V: Default> Default for MultiSkipMap<K, V> {
+impl<K: Ord + Default, V: Default> Default for SkipMap<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Ord + Default, V: Default> Drop for MultiSkipMap<K, V> {
+impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
     fn drop(&mut self) {
         let mut node = self.head;
 
@@ -336,12 +323,21 @@ impl<K: Ord + Default, V: Default> Iterator for Iter<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::skiplist::MultiSkipMap;
-    use crate::collections::Entry;
+    use crate::collections::skip_list::skipmap::SkipMap;
+
+    #[test]
+    fn test_key() {
+        let mut skip_map = SkipMap::new();
+        skip_map.insert(1, 1);
+        skip_map.insert(1, 2);
+        assert_eq!(skip_map.len(), 1);
+        skip_map.remove(1);
+        assert!(skip_map.is_empty());
+    }
 
     #[test]
     fn test_insert() {
-        let skip_map: MultiSkipMap<i32, String> = MultiSkipMap::new();
+        let mut skip_map: SkipMap<i32, String> = SkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
             assert_eq!(skip_map.last_key_value().unwrap().key, i);
@@ -366,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let skip_map: MultiSkipMap<i32, String> = MultiSkipMap::new();
+        let mut skip_map: SkipMap<i32, String> = SkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
         }
@@ -392,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_first_key_value() {
-        let skip_map = MultiSkipMap::new();
+        let mut skip_map = SkipMap::new();
         macro_rules! assert_first_key {
             ($k:literal) => {
                 assert_eq!(skip_map.first_key_value().unwrap().key, $k);
@@ -413,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_last_key_value() {
-        let skip_map = MultiSkipMap::new();
+        let mut skip_map = SkipMap::new();
 
         macro_rules! assert_last_key {
             ($k:literal) => {

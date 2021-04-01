@@ -1,4 +1,4 @@
-pub mod skiplist;
+pub mod skip_list;
 pub mod treap;
 
 pub struct Entry<K: Ord, V> {

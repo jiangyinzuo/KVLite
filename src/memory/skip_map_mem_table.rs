@@ -1,4 +1,4 @@
-use crate::collections::skiplist::MultiSkipMap;
+use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::DBCommandMut;
 use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::MemTable;
@@ -6,7 +6,7 @@ use crate::Result;
 
 #[derive(Default)]
 pub struct SkipMapMemTable {
-    inner: MultiSkipMap<String, String>,
+    inner: SkipMap<String, String>,
 }
 
 impl DBCommandMut for SkipMapMemTable {

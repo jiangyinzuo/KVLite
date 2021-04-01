@@ -5,6 +5,8 @@ extern crate test;
 use kvlite::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
 use test::Bencher;
 
+const SIZE: u32 = 10000;
+
 #[bench]
 fn btree_map_insert(b: &mut Bencher) {
     b.iter(|| {
@@ -44,10 +46,10 @@ fn skip_map_get(b: &mut Bencher) {
 }
 
 fn table_set(mem_table: &mut impl MemTable) {
-    for i in 0..250i32 {
+    for i in 0..SIZE {
         mem_table.set(format!("{}", i), format!("{}", i)).unwrap();
     }
-    for i in 0..250i32 {
+    for i in 0..SIZE {
         mem_table
             .set(format!("{}", i), format!("{}", i + 1))
             .unwrap();
@@ -56,7 +58,7 @@ fn table_set(mem_table: &mut impl MemTable) {
 
 fn table_get(mem_table: &mut impl MemTable) {
     for _ in 0..10 {
-        for j in 0..260 {
+        for j in 0..SIZE + 10 {
             mem_table.get(&format!("{}", j)).unwrap();
         }
     }
