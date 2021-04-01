@@ -68,7 +68,6 @@ impl Level0Manager {
         let manager = Arc::new(Self::new(db_path, table_manager, wal).unwrap());
         let manager2 = manager.clone();
 
-        let tokio_handle = tokio::runtime::Handle::current();
         let handle = thread::Builder::new()
             .name("level0 writer".to_owned())
             .spawn(move || {
@@ -76,9 +75,7 @@ impl Level0Manager {
                 while let Ok(()) = recv.recv() {
                     let imm_guard = imm_mem_table.read().unwrap();
                     debug!("length of imm table: {}", imm_guard.len());
-                    if let Err(e) =
-                        tokio_handle.block_on(manager2.write_to_table(imm_guard.deref()))
-                    {
+                    if let Err(e) = manager2.write_to_table(imm_guard.deref()) {
                         let bt = std::backtrace::Backtrace::capture();
                         error!(
                             "Error in thread `{}`: {:?}",
@@ -94,9 +91,9 @@ impl Level0Manager {
         (manager, handle)
     }
 
-    pub async fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
+    pub fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
         let tables_lock = self.table_manager.get_level_tables_lock(0);
-        let tables_guard = tables_lock.read().await;
+        let tables_guard = tables_lock.read().unwrap();
 
         // query the latest table first
         for table in tables_guard.values().rev() {
@@ -109,14 +106,15 @@ impl Level0Manager {
     }
 
     /// Persistently write the `table` to disk.
-    async fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let handle = self
-            .table_manager
-            .create_table(0, table.first_key().unwrap(), table.last_key().unwrap())
-            .await;
+    fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
+        let handle = self.table_manager.create_table(
+            0,
+            table.first_key().unwrap(),
+            table.last_key().unwrap(),
+        );
         self.write_sstable(handle, table)?;
         self.delete_imm_table_log()?;
-        self.level0_compactor.may_compact().await;
+        self.level0_compactor.may_compact();
         Ok(())
     }
 
@@ -179,21 +177,21 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test() {
+    #[test]
+    fn test() {
         let _ = env_logger::try_init();
 
         let temp = TempDir::new().unwrap();
         let path = temp.path().to_str().unwrap().to_string();
 
         for i in 0..10 {
-            test_query(path.clone(), i == 0).await;
+            test_query(path.clone(), i == 0);
             println!("test {} ok", i);
         }
     }
 
-    async fn test_query(path: String, insert_value: bool) {
-        let table_manager = Arc::new(TableManager::open_tables(path.clone()).await);
+    fn test_query(path: String, insert_value: bool) {
+        let table_manager = Arc::new(TableManager::open_tables(path.clone()));
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
 
@@ -223,17 +221,14 @@ mod tests {
             sender.send(()).unwrap();
         }
 
+        // wait for writing data
         std::thread::sleep(Duration::from_secs(1));
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
-            let v = manager
-                .query_level0_table(&format!("key{}", i))
-                .await
-                .unwrap();
+            let v = manager.query_level0_table(&format!("key{}", i)).unwrap();
             assert_eq!(format!("value{}", i), v.unwrap());
         }
 
-        std::thread::sleep(Duration::from_secs(1));
         drop(sender);
         handle.join().unwrap();
     }

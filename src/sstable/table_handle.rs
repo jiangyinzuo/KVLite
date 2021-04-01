@@ -1,7 +1,6 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::sstable::index_block::SSTableIndex;
 use crate::sstable::{get_min_key, get_value_from_data_block};
-use std::cmp::max;
 use std::fs::{File, OpenOptions};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -124,7 +123,7 @@ impl TableHandle {
 
     /// Check whether status of sstable is `Store`.
     /// If it is, change the status to `Compacting` and return true; or else return false.
-    pub async fn test_and_set_compacting(&self) -> bool {
+    pub fn test_and_set_compacting(&self) -> bool {
         let mut guard = self.status.write().unwrap();
         if *guard.deref() == TableStatus::Store {
             *guard = TableStatus::Compacting;

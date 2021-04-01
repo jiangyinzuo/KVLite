@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// Struct for adding and removing sstable files.
 pub struct TableManager {
     db_path: String,
-    level_tables: [tokio::sync::RwLock<BTreeMap<u128, Arc<TableHandle>>>; MAX_LEVEL + 1],
+    level_tables: [std::sync::RwLock<BTreeMap<u128, Arc<TableHandle>>>; MAX_LEVEL + 1],
 }
 
 unsafe impl Sync for TableManager {}
@@ -15,24 +15,22 @@ unsafe impl Send for TableManager {}
 
 impl TableManager {
     /// Open all the sstables at `db_path` when initializing DB.
-    pub async fn open_tables(db_path: String) -> TableManager {
+    pub fn open_tables(db_path: String) -> TableManager {
         for i in 0..=MAX_LEVEL {
-            tokio::fs::create_dir_all(format!("{}/{}", db_path, i))
-                .await
-                .unwrap();
+            std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
         }
 
         let mut manager = TableManager {
             db_path,
             level_tables: [
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
-                tokio::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
+                std::sync::RwLock::default(),
             ],
         };
 
@@ -47,12 +45,12 @@ impl TableManager {
 
                     // Safety: i is in range [0, MAX_LEVEL]
                     unsafe {
-                        let mut guard = manager.level_tables.get_unchecked_mut(i).write().await;
+                        let mut guard = manager.level_tables.get_unchecked_mut(i).write().unwrap();
                         guard.insert(table_id, Arc::new(handle));
                     }
                 } else {
                     // remove temporary file.
-                    tokio::fs::remove_file(path).await.unwrap();
+                    std::fs::remove_file(path).unwrap();
                 }
             }
         }
@@ -62,19 +60,14 @@ impl TableManager {
     pub fn get_level_tables_lock(
         &self,
         level: usize,
-    ) -> &tokio::sync::RwLock<BTreeMap<u128, Arc<TableHandle>>> {
+    ) -> &std::sync::RwLock<BTreeMap<u128, Arc<TableHandle>>> {
         let lock = self.level_tables.get(level).unwrap();
         lock
     }
 
     /// Create a new sstable with `level`, `min_key` and `max_key`.
-    pub async fn create_table(
-        &self,
-        level: usize,
-        min_key: &str,
-        max_key: &str,
-    ) -> Arc<TableHandle> {
-        let mut table_guard = self.get_level_tables_lock(level).write().await;
+    pub fn create_table(&self, level: usize, min_key: &str, max_key: &str) -> Arc<TableHandle> {
+        let mut table_guard = self.get_level_tables_lock(level).write().unwrap();
         let next_table_id = match table_guard.last_key_value() {
             Some((k, _v)) => k + 1,
             None => 1,
@@ -86,16 +79,16 @@ impl TableManager {
     }
 
     /// Get sstable file count of `level`, used for judging whether need compacting.
-    pub async fn file_count(&self, level: usize) -> usize {
+    pub fn file_count(&self, level: usize) -> usize {
         let tables = self.level_tables.get(level).unwrap();
-        let guard = tables.read().await;
+        let guard = tables.read().unwrap();
         guard.len()
     }
 
     /// Return level0 tables to compact
     pub async fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableHandle>>, String, String) {
         let tables = unsafe { self.level_tables.get_unchecked(0) };
-        let guard = tables.read().await;
+        let guard = tables.read().unwrap();
 
         let mut tables = Vec::new();
         tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
@@ -104,7 +97,7 @@ impl TableManager {
         let mut min_key = "";
         let mut max_key = "";
         for (_id, table) in guard.iter() {
-            if table.test_and_set_compacting().await {
+            if table.test_and_set_compacting() {
                 tables.push(table.clone());
                 count += 1;
                 let keys = table.min_max_key();
@@ -130,7 +123,7 @@ impl TableManager {
         max_key: &String,
     ) -> VecDeque<Arc<TableHandle>> {
         let tables_lock = self.get_level_tables_lock(level);
-        let tables_guard = tables_lock.read().await;
+        let tables_guard = tables_lock.read().unwrap();
 
         let mut tables = VecDeque::new();
 

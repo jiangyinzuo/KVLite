@@ -28,14 +28,14 @@ pub struct KVLite<T: MemTable> {
     table_manager: Arc<TableManager>,
 
     level0_manager: Arc<Level0Manager>,
-    level0_writer_handle: JoinHandle<()>,
-    write_level0_channel: Sender<()>,
+    level0_writer_handle: Option<JoinHandle<()>>,
+    write_level0_channel: Option<Sender<()>>,
 }
 
 impl<T: 'static + MemTable> KVLite<T> {
-    pub async fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
+    pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
-        let table_manager = TableManager::open_tables(db_path.clone()).await;
+        let table_manager = TableManager::open_tables(db_path.clone());
         let table_manager = Arc::new(table_manager);
 
         let mut mut_mem_table = T::default();
@@ -63,8 +63,8 @@ impl<T: 'static + MemTable> KVLite<T> {
             imm_mem_table,
             table_manager,
             level0_manager,
-            level0_writer_handle,
-            write_level0_channel: channel.0,
+            level0_writer_handle: Some(level0_writer_handle),
+            write_level0_channel: Some(channel.0),
         })
     }
 
@@ -84,11 +84,13 @@ impl<T: 'static + MemTable> KVLite<T> {
                 .expect("error in RwLock on imm_tables");
 
             *lock = imm_table;
-            self.write_level0_channel.send(()).unwrap();
+            if let Some(chan) = &self.write_level0_channel {
+                chan.send(()).unwrap();
+            }
         }
     }
 
-    async fn query(&self, key: &String) -> Result<Option<String>> {
+    fn query(&self, key: &String) -> Result<Option<String>> {
         // query mutable memory table
         let mem_table_lock = self.mut_mem_table.read().unwrap();
         let option = mem_table_lock.get(key)?;
@@ -108,8 +110,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
 
         // query sstable
-
-        let option = self.level0_manager.query_level0_table(key).await.unwrap();
+        let option = self.level0_manager.query_level0_table(key).unwrap();
         if option.is_some() {
             return Ok(option);
         }
@@ -119,8 +120,8 @@ impl<T: 'static + MemTable> KVLite<T> {
 }
 
 impl<T: 'static + MemTable> KVLite<T> {
-    pub async fn get(&self, key: &String) -> Result<Option<String>> {
-        match self.query(key).await? {
+    pub fn get(&self, key: &String) -> Result<Option<String>> {
+        match self.query(key)? {
             Some(v) => {
                 if v.is_empty() {
                     Ok(None)
@@ -161,5 +162,14 @@ impl<T: 'static + MemTable> KVLite<T> {
             self.may_freeze(mem_table_guard);
         }
         Ok(())
+    }
+}
+
+impl<M: MemTable> Drop for KVLite<M> {
+    fn drop(&mut self) {
+        self.write_level0_channel.take();
+        if let Some(handle) = self.level0_writer_handle.take() {
+            handle.join().unwrap();
+        }
     }
 }
