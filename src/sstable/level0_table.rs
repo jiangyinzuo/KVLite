@@ -110,7 +110,10 @@ impl Level0Manager {
 
     /// Persistently write the `table` to disk.
     async fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let handle = self.table_manager.create_table(0).await;
+        let handle = self
+            .table_manager
+            .create_table(0, table.first_key().unwrap(), table.last_key().unwrap())
+            .await;
         self.write_sstable(handle, table)?;
         self.delete_imm_table_log()?;
         self.level0_compactor.may_compact().await;
@@ -124,40 +127,23 @@ impl Level0Manager {
 
         let (_write_guard, mut writer) = handle.create_buf_writer_with_pos();
 
-        macro_rules! write_kv_entries {
-            ($i:ident, $key:ident, $value:ident) => {
-                let (k, v) = ($key.as_bytes(), $value.as_bytes());
-                let (k_len, v_len) = (k.len() as u32, v.len() as u32);
-
-                // length of key | length of value | key | value
-                writer.write_all(&k_len.to_le_bytes())?;
-                writer.write_all(&v_len.to_le_bytes())?;
-                writer.write_all(k)?;
-                writer.write_all(v)?;
-                if count == MAX_BLOCK_KV_PAIRS || $i == table.len() - 1 {
-                    index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
-                    last_pos = writer.pos;
-                    count = 0;
-                } else {
-                    count += 1;
-                }
-            };
-        }
-
         // write Data Blocks
-        let mut last_key = "";
-        let mut last_value = "";
         for (i, (k, v)) in table.iter().enumerate() {
-            if i > 0 && last_key != k {
-                write_kv_entries!(i, last_key, last_value);
-            }
-            last_key = k;
-            last_value = v;
-        }
+            let (k, v) = (k.as_bytes(), v.as_bytes());
+            let (k_len, v_len) = (k.len() as u32, v.len() as u32);
 
-        if !table.is_empty() {
-            let last_id = table.len() - 1;
-            write_kv_entries!(last_id, last_key, last_value);
+            // length of key | length of value | key | value
+            writer.write_all(&k_len.to_le_bytes())?;
+            writer.write_all(&v_len.to_le_bytes())?;
+            writer.write_all(k)?;
+            writer.write_all(v)?;
+            if count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
+                index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
+                last_pos = writer.pos;
+                count = 0;
+            } else {
+                count += 1;
+            }
         }
 
         let index_block_offset = last_pos as u32;

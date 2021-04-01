@@ -43,7 +43,7 @@ impl TableManager {
 
                 // The file whose file_name is a number is considered as sstable.
                 if let Ok(table_id) = path.file_name().unwrap().to_str().unwrap().parse::<u128>() {
-                    let handle = TableHandle::new(&manager.db_path, i as _, table_id);
+                    let handle = TableHandle::open_table(&manager.db_path, i as _, table_id);
 
                     // Safety: i is in range [0, MAX_LEVEL]
                     unsafe {
@@ -67,13 +67,19 @@ impl TableManager {
         lock
     }
 
-    pub async fn create_table(&self, level: usize) -> Arc<TableHandle> {
+    /// Create a new sstable with `level`, `min_key` and `max_key`.
+    pub async fn create_table(
+        &self,
+        level: usize,
+        min_key: &str,
+        max_key: &str,
+    ) -> Arc<TableHandle> {
         let mut table_guard = self.get_level_tables_lock(level).write().await;
         let next_table_id = match table_guard.last_key_value() {
             Some((k, _v)) => k + 1,
             None => 1,
         };
-        let handle = TableHandle::new(&self.db_path, level as u8, next_table_id);
+        let handle = TableHandle::new(&self.db_path, level as u8, next_table_id, min_key, max_key);
         let handle = Arc::new(handle);
         table_guard.insert(next_table_id, handle.clone());
         handle
@@ -95,13 +101,13 @@ impl TableManager {
         tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
 
         let mut count = 0;
-        let mut min_key = String::new();
-        let mut max_key = String::new();
+        let mut min_key = "";
+        let mut max_key = "";
         for (_id, table) in guard.iter() {
             if table.test_and_set_compacting().await {
                 tables.push(table.clone());
                 count += 1;
-                let keys = table.get_min_max_key().await;
+                let keys = table.min_max_key();
                 min_key = min_key.min(keys.0);
                 max_key = if max_key.is_empty() {
                     keys.1
@@ -113,9 +119,27 @@ impl TableManager {
                 }
             }
         }
-        (tables, min_key, max_key)
+        (tables, min_key.to_string(), max_key.to_string())
     }
 
     /// Get tables in `level` that intersect with [`min_key`, `max_key`].
-    pub fn get_overlap_tables(&self, level: usize, min_key: &str, max_key: &str) {}
+    pub async fn get_overlap_tables(
+        &self,
+        level: usize,
+        min_key: &String,
+        max_key: &String,
+    ) -> Vec<Arc<TableHandle>> {
+        let tables_lock = self.get_level_tables_lock(level);
+        let tables_guard = tables_lock.read().await;
+
+        let mut tables = vec![];
+
+        // TODO: change this to O(logn)
+        for (_table_id, handle) in tables_guard.iter() {
+            if handle.is_overlapping(min_key, max_key) {
+                tables.push(handle.clone());
+            }
+        }
+        tables
+    }
 }

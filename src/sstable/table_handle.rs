@@ -1,6 +1,7 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::sstable::index_block::SSTableIndex;
 use crate::sstable::{get_min_key, get_value_from_data_block};
+use std::cmp::max;
 use std::fs::{File, OpenOptions};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -31,8 +32,39 @@ unsafe impl Send for TableHandle {}
 unsafe impl Sync for TableHandle {}
 
 impl TableHandle {
-    pub fn new(db_path: &str, level: u8, table_id: u128) -> TableHandle {
+    /// Create a table handle for existing sstable.
+    pub fn open_table(db_path: &str, level: u8, table_id: u128) -> TableHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
+
+        let mut file = File::open(&file_path).unwrap();
+        let sstable_index = SSTableIndex::load_index(&mut file);
+
+        let min_key = get_min_key(&mut file);
+        let max_key = sstable_index.max_key().to_string();
+
+        let handle = TableHandle {
+            file_path,
+            level,
+            table_id,
+            status: RwLock::new(TableStatus::Store),
+            file,
+            min_key,
+            max_key,
+            rw_lock: RwLock::default(),
+        };
+        handle
+    }
+
+    /// Create a table handle for new sstable.
+    pub fn new(
+        db_path: &str,
+        level: u8,
+        table_id: u128,
+        min_key: &str,
+        max_key: &str,
+    ) -> TableHandle {
+        let file_path = format!("{}/{}/{}", db_path, level, table_id);
+
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -40,14 +72,15 @@ impl TableHandle {
             .append(true)
             .open(&file_path)
             .unwrap();
+
         TableHandle {
             file_path,
             level,
             table_id,
             status: RwLock::new(TableStatus::Store),
             file,
-            min_key: String::new(),
-            max_key: String::new(),
+            min_key: min_key.to_string(),
+            max_key: max_key.to_string(),
             rw_lock: RwLock::default(),
         }
     }
@@ -101,13 +134,14 @@ impl TableHandle {
         }
     }
 
-    pub async fn get_min_max_key(&self) -> (String, String) {
-        let (_read_guard, mut buf_reader) = self.create_buf_reader_with_pos();
-        let sstable_index = SSTableIndex::load_index(&mut buf_reader);
-        (
-            get_min_key(&mut buf_reader),
-            sstable_index.max_key().to_string(),
-        )
+    #[inline]
+    pub fn min_max_key(&self) -> (&String, &String) {
+        (&self.min_key, &self.max_key)
+    }
+
+    pub fn is_overlapping(&self, min_key: &String, max_key: &String) -> bool {
+        self.min_key.le(min_key) && min_key.le(&self.max_key)
+            || self.min_key.le(max_key) && max_key.le(&self.max_key)
     }
 }
 

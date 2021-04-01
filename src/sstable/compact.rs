@@ -25,8 +25,10 @@ impl Level0Compacter {
         let table_manager = self.table_manager.clone();
         tokio::spawn(async move {
             let tables_fut = table_manager.assign_level0_tables_to_compact();
-            // level0
-            let (tables, min_key, max_key) = tables_fut.await;
+            let (level0_tables, min_key, max_key) = tables_fut.await;
+            let level1_tables = table_manager
+                .get_overlap_tables(1, &min_key, &max_key)
+                .await;
         });
     }
 }
