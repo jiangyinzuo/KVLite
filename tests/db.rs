@@ -77,9 +77,11 @@ fn test_read_log() {
 
     drop(db);
     let db = Arc::new(KVLite::<SkipMapMemTable>::open(path).unwrap());
+    for _ in 0..4 {
+        test_log(db.clone());
+    }
 
-    // FIXME: error in multiple-thread reading
-    let thread_cnt = 1;
+    let thread_cnt = 4;
     let barrier = Arc::new(Barrier::new(thread_cnt));
     let mut handles = vec![];
     for _ in 0..thread_cnt {

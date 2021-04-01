@@ -2,7 +2,6 @@ use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::sstable::index_block::SSTableIndex;
 use crate::sstable::{get_min_key, get_value_from_data_block};
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -21,7 +20,6 @@ pub struct TableHandle {
     level: u8,
     table_id: u128,
     status: RwLock<TableStatus>,
-    file: File,
     min_key: String,
     max_key: String,
     /// Ensure `file` has one writer or multiple readers.
@@ -49,7 +47,6 @@ impl TableHandle {
             level,
             table_id,
             status: RwLock::new(TableStatus::Store),
-            file: buf_reader.into_inner(),
             min_key,
             max_key,
             rw_lock: RwLock::default(),
@@ -66,21 +63,11 @@ impl TableHandle {
         max_key: &str,
     ) -> TableHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
-
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .append(true)
-            .open(&file_path)
-            .unwrap();
-
         TableHandle {
             file_path,
             level,
             table_id,
             status: RwLock::new(TableStatus::Store),
-            file,
             min_key: min_key.to_string(),
             max_key: max_key.to_string(),
             rw_lock: RwLock::default(),
@@ -89,20 +76,22 @@ impl TableHandle {
 
     /// Used for read sstable
     pub fn create_buf_reader_with_pos(&self) -> (RwLockReadGuard<()>, BufReaderWithPos<File>) {
-        let mut file = self.file.try_clone().unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-        (
-            self.rw_lock.read().unwrap(),
-            BufReaderWithPos::new(file).unwrap(),
-        )
+        let lock = self.rw_lock.read().unwrap();
+        let file = File::open(&self.file_path).unwrap();
+        (lock, BufReaderWithPos::new(file).unwrap())
     }
 
     /// Used for write sstable
     pub fn create_buf_writer_with_pos(&self) -> (RwLockWriteGuard<()>, BufWriterWithPos<File>) {
-        (
-            self.rw_lock.write().unwrap(),
-            BufWriterWithPos::new(self.file.try_clone().unwrap()).unwrap(),
-        )
+        let lock = self.rw_lock.write().unwrap();
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&self.file_path)
+            .unwrap();
+        (lock, BufWriterWithPos::new(file).unwrap())
     }
 
     #[inline]
