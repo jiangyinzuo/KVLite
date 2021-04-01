@@ -53,7 +53,10 @@ async fn _test_command<M: 'static + MemTable>() {
 
 #[tokio::test]
 async fn test_read_log() -> Result<()> {
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("read_log")
+        .tempdir()
+        .unwrap();
     let path = temp_dir.path();
 
     {

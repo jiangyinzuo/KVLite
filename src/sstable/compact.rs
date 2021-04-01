@@ -1,6 +1,8 @@
 use crate::sstable::manager::TableManager;
+use crate::sstable::table_handle::TableHandle;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;
@@ -29,6 +31,15 @@ impl Level0Compacter {
             let level1_tables = table_manager
                 .get_overlap_tables(1, &min_key, &max_key)
                 .await;
+            let new_table = table_manager.create_table(1, &min_key, &max_key).await;
+            compact_to(new_table, level0_tables, level1_tables);
         });
     }
+}
+
+fn compact_to(
+    new_table: Arc<TableHandle>,
+    level0_tables: Vec<Arc<TableHandle>>,
+    level1_tables: VecDeque<Arc<TableHandle>>,
+) {
 }

@@ -1,7 +1,7 @@
 use crate::db::MAX_LEVEL;
 use crate::sstable::table_handle::TableHandle;
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 /// Struct for adding and removing sstable files.
@@ -128,16 +128,16 @@ impl TableManager {
         level: usize,
         min_key: &String,
         max_key: &String,
-    ) -> Vec<Arc<TableHandle>> {
+    ) -> VecDeque<Arc<TableHandle>> {
         let tables_lock = self.get_level_tables_lock(level);
         let tables_guard = tables_lock.read().await;
 
-        let mut tables = vec![];
+        let mut tables = VecDeque::new();
 
         // TODO: change this to O(logn)
         for (_table_id, handle) in tables_guard.iter() {
             if handle.is_overlapping(min_key, max_key) {
-                tables.push(handle.clone());
+                tables.push_back(handle.clone());
             }
         }
         tables
