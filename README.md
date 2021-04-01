@@ -1,5 +1,5 @@
 # KVLite
-[![build](https://github.com/ChiangYintso/KVLite/actions/workflows/ci.yml/badge.svg)](https://github.com/ChiangYintso/KVLite/actions/workflows/ci.yml)
+[![Build Status](https://travis-ci.com/ChiangYintso/KVLite.svg?branch=main)](https://travis-ci.com/ChiangYintso/KVLite)
 [![codecov](https://codecov.io/gh/ChiangYintso/KVLite/branch/main/graph/badge.svg?token=VVR3RGGX5M)](https://codecov.io/gh/ChiangYintso/KVLite)  
 
 A toy key-value storage for DB study
