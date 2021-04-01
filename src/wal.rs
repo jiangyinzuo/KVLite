@@ -107,7 +107,7 @@ fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::command::WriteCommand;
-    use crate::memory::{MemTable, SkipMapMemTable};
+    use crate::memory::{KeyValue, MemTable, SkipMapMemTable};
     use crate::wal::WriteAheadLog;
     use tempfile::TempDir;
 

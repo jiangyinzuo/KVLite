@@ -82,19 +82,22 @@ fn test_read_log() {
     }
 
     let thread_cnt = 4;
-    let barrier = Arc::new(Barrier::new(thread_cnt));
-    let mut handles = vec![];
-    for _ in 0..thread_cnt {
-        let db = db.clone();
-        let barrier = barrier.clone();
-        let handle = std::thread::spawn(move || {
-            barrier.wait();
-            test_log(db);
-        });
-        handles.push(handle);
-    }
-    for handle in handles {
-        handle.join().unwrap();
+
+    for _ in 0..10 {
+        let barrier = Arc::new(Barrier::new(thread_cnt));
+        let mut handles = vec![];
+        for _ in 0..thread_cnt {
+            let db = db.clone();
+            let barrier = barrier.clone();
+            let handle = std::thread::spawn(move || {
+                barrier.wait();
+                test_log(db);
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
 

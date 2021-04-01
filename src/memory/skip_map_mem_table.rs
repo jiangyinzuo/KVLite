@@ -1,16 +1,19 @@
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::DBCommandMut;
 use crate::error::KVLiteError::KeyNotFound;
-use crate::memory::MemTable;
+use crate::memory::{KeyValue, MemTable};
 use crate::Result;
+use std::sync::RwLock;
 
 #[derive(Default)]
 pub struct SkipMapMemTable {
+    rw_lock: RwLock<()>,
     inner: SkipMap<String, String>,
 }
 
 impl DBCommandMut for SkipMapMemTable {
     fn get(&self, key: &str) -> Result<Option<String>> {
+        let _guard = self.rw_lock.read().unwrap();
         let node = self.inner.find_first_ge(&key.to_string(), None);
         if node.is_null() {
             Ok(None)
@@ -26,11 +29,13 @@ impl DBCommandMut for SkipMapMemTable {
     }
 
     fn set(&mut self, key: String, value: String) -> Result<()> {
+        let _guard = self.rw_lock.write().unwrap();
         self.inner.insert(key, value);
         Ok(())
     }
 
     fn remove(&mut self, key: String) -> Result<()> {
+        let _guard = self.rw_lock.write().unwrap();
         if self.inner.insert(key, String::new()) {
             Ok(())
         } else {
@@ -39,7 +44,7 @@ impl DBCommandMut for SkipMapMemTable {
     }
 }
 
-impl MemTable for SkipMapMemTable {
+impl KeyValue for SkipMapMemTable {
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -60,3 +65,5 @@ impl MemTable for SkipMapMemTable {
         self.inner.last_key_value().map(|entry| &entry.key)
     }
 }
+
+impl MemTable for SkipMapMemTable {}

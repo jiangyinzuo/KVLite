@@ -1,3 +1,4 @@
+use crate::collections::skip_list::skipmap::SkipMap;
 use crate::sstable::manager::TableManager;
 use crate::sstable::table_handle::TableHandle;
 use std::collections::VecDeque;
@@ -30,20 +31,42 @@ impl Level0Compacter {
         let table_manager = self.table_manager.clone();
 
         self.rt.spawn(async move {
-            let tables_fut = table_manager.assign_level0_tables_to_compact();
-            let (level0_tables, min_key, max_key) = tables_fut.await;
-            let level1_tables = table_manager
-                .get_overlap_tables(1, &min_key, &max_key)
-                .await;
+            let (level0_tables, min_key, max_key) = table_manager.assign_level0_tables_to_compact();
+            let level1_tables = table_manager.get_overlap_tables(1, &min_key, &max_key);
             let new_table = table_manager.create_table(1, &min_key, &max_key);
-            compact_to(new_table, level0_tables, level1_tables);
+            compact_to(&table_manager, new_table, level0_tables, level1_tables);
         });
     }
 }
 
+/// Merge all the `level0_tables` and `level1_tables` to `new_table`
 fn compact_to(
+    table_manager: &Arc<TableManager>,
     new_table: Arc<TableHandle>,
     level0_tables: Vec<Arc<TableHandle>>,
     level1_tables: VecDeque<Arc<TableHandle>>,
 ) {
+    let skip_map = merge_level0_tables(&level0_tables);
+    let mut level0_kvs = skip_map.iter();
+    let level0_entry = level0_kvs.next();
+
+    if level1_tables.is_empty() {
+        new_table.write_sstable(&skip_map).unwrap();
+    }
+
+    // TODO
+    // while level0_entry.is_some() && !level1_tables.is_empty() {}
+    for table in level0_tables {
+        table_manager.ready_to_delete(0, table.table_id());
+    }
+}
+
+fn merge_level0_tables(level0_tables: &Vec<Arc<TableHandle>>) -> SkipMap<String, String> {
+    let mut skip_map = SkipMap::new();
+    for table in level0_tables {
+        for (key, value) in table.iter() {
+            skip_map.insert(key, value);
+        }
+    }
+    skip_map
 }

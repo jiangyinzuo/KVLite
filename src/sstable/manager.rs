@@ -86,7 +86,7 @@ impl TableManager {
     }
 
     /// Return level0 tables to compact
-    pub async fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableHandle>>, String, String) {
+    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableHandle>>, String, String) {
         let tables = unsafe { self.level_tables.get_unchecked(0) };
         let guard = tables.read().unwrap();
 
@@ -116,7 +116,7 @@ impl TableManager {
     }
 
     /// Get tables in `level` that intersect with [`min_key`, `max_key`].
-    pub async fn get_overlap_tables(
+    pub fn get_overlap_tables(
         &self,
         level: usize,
         min_key: &String,
@@ -130,9 +130,17 @@ impl TableManager {
         // TODO: change this to O(logn)
         for (_table_id, handle) in tables_guard.iter() {
             if handle.is_overlapping(min_key, max_key) {
-                tables.push_back(handle.clone());
+                let handle = handle.clone();
+                tables.push_back(handle);
             }
         }
         tables
+    }
+
+    pub fn ready_to_delete(&self, level: usize, table_id: u128) {
+        let lock = self.get_level_tables_lock(level);
+        let mut guard = lock.write().unwrap();
+        let table_handle = guard.remove(&table_id).unwrap();
+        table_handle.ready_to_delete();
     }
 }

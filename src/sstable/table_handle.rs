@@ -1,11 +1,15 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
-use crate::sstable::index_block::SSTableIndex;
-use crate::sstable::{get_min_key, get_value_from_data_block};
+use crate::memory::{KeyValue, MemTable};
+use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
+use crate::sstable::footer::Footer;
+use crate::sstable::index_block::{IndexBlock, SSTableIndex};
+use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum TableStatus {
     /// Normally store in disk.
     Store,
@@ -115,6 +119,46 @@ impl TableHandle {
         None
     }
 
+    pub fn write_sstable(&self, table: &impl KeyValue) -> crate::Result<()> {
+        let mut count = 0;
+        let mut last_pos = 0;
+        let mut index_block = IndexBlock::default();
+
+        let (_write_guard, mut writer) = self.create_buf_writer_with_pos();
+
+        // write Data Blocks
+        for (i, (k, v)) in table.iter().enumerate() {
+            let (k, v) = (k.as_bytes(), v.as_bytes());
+            let (k_len, v_len) = (k.len() as u32, v.len() as u32);
+
+            // length of key | length of value | key | value
+            writer.write_all(&k_len.to_le_bytes())?;
+            writer.write_all(&v_len.to_le_bytes())?;
+            writer.write_all(k)?;
+            writer.write_all(v)?;
+            if count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
+                index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
+                last_pos = writer.pos;
+                count = 0;
+            } else {
+                count += 1;
+            }
+        }
+
+        let index_block_offset = last_pos as u32;
+
+        index_block.write_to_file(&mut writer)?;
+
+        // write footer
+        let footer = Footer {
+            index_block_offset,
+            index_block_length: writer.pos as u32 - index_block_offset,
+        };
+        footer.write_to_file(&mut writer)?;
+        writer.flush()?;
+        Ok(())
+    }
+
     /// Check whether status of sstable is `Store`.
     /// If it is, change the status to `Compacting` and return true; or else return false.
     pub fn test_and_set_compacting(&self) -> bool {
@@ -127,14 +171,29 @@ impl TableHandle {
         }
     }
 
+    pub(super) fn ready_to_delete(&self) {
+        let mut guard = self.status.write().unwrap();
+        debug_assert_eq!(*guard, TableStatus::Compacting);
+        *guard = TableStatus::ToDelete;
+    }
+
     #[inline]
     pub fn min_max_key(&self) -> (&String, &String) {
         (&self.min_key, &self.max_key)
     }
 
+    #[inline]
+    pub fn max_key(&self) -> &String {
+        &self.max_key
+    }
+
     pub fn is_overlapping(&self, min_key: &String, max_key: &String) -> bool {
         self.min_key.le(min_key) && min_key.le(&self.max_key)
             || self.min_key.le(max_key) && max_key.le(&self.max_key)
+    }
+
+    pub fn iter(&self) -> Iter {
+        Iter::new(self)
     }
 }
 
@@ -142,6 +201,42 @@ impl Drop for TableHandle {
     fn drop(&mut self) {
         if let TableStatus::ToDelete = self.status() {
             std::fs::remove_file(&self.file_path).unwrap();
+        }
+    }
+}
+
+pub struct Iter<'table> {
+    read_guard: RwLockReadGuard<'table, ()>,
+    reader: BufReaderWithPos<File>,
+    max_key: &'table str,
+    end: bool,
+}
+
+impl<'table> Iter<'table> {
+    fn new(handle: &'table TableHandle) -> Iter<'table> {
+        let (guard, reader) = handle.create_buf_reader_with_pos();
+        Iter {
+            read_guard: guard,
+            reader,
+            max_key: &handle.max_key,
+            end: false,
+        }
+    }
+}
+
+impl<'table> Iterator for Iter<'table> {
+    /// key, value
+    type Item = (String, String);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.end {
+            None
+        } else {
+            let (k, v) = get_next_key_value(&mut self.reader);
+            if k == self.max_key {
+                self.end = true;
+            }
+            Some((k, v))
         }
     }
 }

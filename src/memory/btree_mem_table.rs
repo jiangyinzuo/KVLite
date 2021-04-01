@@ -1,6 +1,6 @@
 use crate::db::DBCommandMut;
 use crate::error::KVLiteError::KeyNotFound;
-use crate::memory::MemTable;
+use crate::memory::{KeyValue, MemTable};
 use crate::Result;
 use std::collections::BTreeMap;
 use std::sync::RwLock;
@@ -41,7 +41,7 @@ impl Default for BTreeMemTable {
     }
 }
 
-impl MemTable for BTreeMemTable {
+impl KeyValue for BTreeMemTable {
     fn len(&self) -> usize {
         let _lock = self.rw_lock.read().unwrap();
         self.inner.len()
@@ -69,10 +69,12 @@ impl MemTable for BTreeMemTable {
     }
 }
 
+impl MemTable for BTreeMemTable {}
+
 #[cfg(test)]
 mod tests {
     use crate::db::DBCommandMut;
-    use crate::memory::{BTreeMemTable, MemTable};
+    use crate::memory::{BTreeMemTable, KeyValue};
     use crate::Result;
 
     #[test]
