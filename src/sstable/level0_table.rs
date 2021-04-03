@@ -84,28 +84,15 @@ impl Level0Manager {
         (manager, handle)
     }
 
-    pub fn query_level0_table(&self, key: &String) -> Result<Option<String>> {
-        let tables_lock = self.table_manager.get_level_tables_lock(0);
-        let tables_guard = tables_lock.read().unwrap();
-
-        // query the latest table first
-        for table in tables_guard.values().rev() {
-            let option = table.query_sstable(key);
-            if option.is_some() {
-                return Ok(option);
-            }
-        }
-        Ok(None)
-    }
-
     /// Persistently write the `table` to disk.
     fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let handle = self.table_manager.create_table(
+        let handle = self.table_manager.create_table_handle(
             0,
             table.first_key().unwrap(),
             table.last_key().unwrap(),
         );
         handle.write_sstable(table)?;
+        self.table_manager.insert_table_handle(handle);
         self.delete_imm_table_log()?;
         self.level0_compactor.may_compact();
         Ok(())
@@ -122,7 +109,7 @@ impl Level0Manager {
 #[cfg(test)]
 mod tests {
     use crate::db::{DBCommandMut, ACTIVE_SIZE_THRESHOLD};
-    use crate::memory::{KeyValue, MemTable, SkipMapMemTable};
+    use crate::memory::{KeyValue, SkipMapMemTable};
     use crate::sstable::level0_table::Level0Manager;
     use crate::sstable::manager::TableManager;
     use crate::wal::WriteAheadLog;
@@ -158,7 +145,7 @@ mod tests {
 
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,
-            table_manager,
+            table_manager.clone(),
             Arc::new(Mutex::new(wal)),
             imm_mem.clone(),
             receiver,
@@ -178,7 +165,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(1));
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
-            let v = manager.query_level0_table(&format!("key{}", i)).unwrap();
+            let v = table_manager.query_tables(&format!("key{}", i)).unwrap();
             assert_eq!(format!("value{}", i), v.unwrap());
         }
 

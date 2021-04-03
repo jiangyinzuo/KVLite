@@ -1,6 +1,7 @@
 use crate::Result;
 use std::fs::File;
 use std::io;
+use std::io::SeekFrom::Start;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 pub struct BufReaderWithPos<R: Read + Seek> {
@@ -12,9 +13,13 @@ pub struct BufReaderWithPos<R: Read + Seek> {
 
 impl<R: Read + Seek> BufReaderWithPos<R> {
     pub(crate) fn new(mut inner: R) -> Result<Self> {
-        #[cfg(debug_assertions)]
-        let end = inner.seek(SeekFrom::End(0))?;
         let pos = inner.seek(SeekFrom::Current(0))?;
+        #[cfg(debug_assertions)]
+        let end = {
+            let end = inner.seek(SeekFrom::End(0))?;
+            inner.seek(SeekFrom::Start(pos))?;
+            end
+        };
 
         Ok(BufReaderWithPos {
             reader: BufReader::new(inner),
@@ -83,7 +88,12 @@ impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
 #[inline]
 pub fn read_u32(reader: &mut BufReaderWithPos<File>) -> u32 {
     let mut nums = [0u8; 4];
-    debug_assert!(reader.pos + 4 <= reader.end);
+    debug_assert!(
+        reader.pos + 4 <= reader.end,
+        "pos: {}, end: {}",
+        reader.pos,
+        reader.end
+    );
     reader
         .read_exact(&mut nums)
         .unwrap_or_else(|e| panic!("{:#?}\n pos: {}, end: {}", e, reader.pos, reader.end));

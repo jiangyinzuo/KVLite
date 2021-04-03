@@ -1,11 +1,11 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
-use crate::memory::{KeyValue, MemTable};
+use crate::memory::KeyValue;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
 use crate::sstable::footer::Footer;
 use crate::sstable::index_block::{IndexBlock, SSTableIndex};
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -21,7 +21,7 @@ pub enum TableStatus {
 
 pub struct TableHandle {
     file_path: String,
-    level: u8,
+    level: usize,
     table_id: u128,
     status: RwLock<TableStatus>,
     min_key: String,
@@ -35,7 +35,7 @@ unsafe impl Sync for TableHandle {}
 
 impl TableHandle {
     /// Create a table handle for existing sstable.
-    pub fn open_table(db_path: &str, level: u8, table_id: u128) -> TableHandle {
+    pub fn open_table(db_path: &str, level: usize, table_id: u128) -> TableHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
 
         let file = File::open(&file_path).unwrap();
@@ -61,7 +61,7 @@ impl TableHandle {
     /// Create a table handle for new sstable.
     pub fn new(
         db_path: &str,
-        level: u8,
+        level: usize,
         table_id: u128,
         min_key: &str,
         max_key: &str,
@@ -78,29 +78,42 @@ impl TableHandle {
         }
     }
 
+    pub(crate) fn rename(&self) {
+        std::fs::rename(temp_file_name(&self.file_path), &self.file_path)
+            .unwrap_or_else(|e| panic!("{:#?}, file_path: {}", e, &self.file_path));
+    }
+
     /// Used for read sstable
     pub fn create_buf_reader_with_pos(&self) -> (RwLockReadGuard<()>, BufReaderWithPos<File>) {
         let lock = self.rw_lock.read().unwrap();
-        let file = File::open(&self.file_path).unwrap();
+        let mut file = File::open(&self.file_path)
+            .unwrap_or_else(|e| panic!("{:#?}\n\n file_path: {}", e, &self.file_path));
+        file.seek(SeekFrom::Start(0)).unwrap();
         (lock, BufReaderWithPos::new(file).unwrap())
     }
 
     /// Used for write sstable
     pub fn create_buf_writer_with_pos(&self) -> (RwLockWriteGuard<()>, BufWriterWithPos<File>) {
         let lock = self.rw_lock.write().unwrap();
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .read(true)
             .append(true)
-            .open(&self.file_path)
+            .open(temp_file_name(&self.file_path))
             .unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
         (lock, BufWriterWithPos::new(file).unwrap())
     }
 
     #[inline]
     pub fn table_id(&self) -> u128 {
         self.table_id
+    }
+
+    #[inline]
+    pub fn level(&self) -> usize {
+        self.level
     }
 
     pub fn status(&self) -> TableStatus {
@@ -127,7 +140,7 @@ impl TableHandle {
         let (_write_guard, mut writer) = self.create_buf_writer_with_pos();
 
         // write Data Blocks
-        for (i, (k, v)) in table.iter().enumerate() {
+        for (i, (k, v)) in table.kv_iter().enumerate() {
             let (k, v) = (k.as_bytes(), v.as_bytes());
             let (k_len, v_len) = (k.len() as u32, v.len() as u32);
 
@@ -203,6 +216,10 @@ impl Drop for TableHandle {
             std::fs::remove_file(&self.file_path).unwrap();
         }
     }
+}
+
+fn temp_file_name(file_name: &str) -> String {
+    format!("{}_temp", file_name)
 }
 
 pub struct Iter<'table> {

@@ -49,7 +49,7 @@ impl KeyValue for SkipMapMemTable {
         self.inner.len()
     }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
         Box::new(
             self.inner
                 .iter()

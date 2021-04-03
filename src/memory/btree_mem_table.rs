@@ -47,7 +47,7 @@ impl KeyValue for BTreeMemTable {
         self.inner.len()
     }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
         let _lock = self.rw_lock.read().unwrap();
         Box::new(self.inner.iter())
     }
@@ -84,7 +84,7 @@ mod tests {
             mem_table.set(format!("a{}", i), i.to_string())?;
         }
 
-        for (key, value) in mem_table.iter() {
+        for (key, value) in mem_table.kv_iter() {
             assert_eq!(key, &format!("a{}", value));
         }
         Ok(())

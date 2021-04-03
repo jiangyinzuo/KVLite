@@ -5,7 +5,7 @@ mod skip_map_mem_table;
 
 use crate::db::DBCommandMut;
 
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{Node, SkipMap};
 pub use btree_mem_table::BTreeMemTable;
 pub use skip_map_mem_table::SkipMapMemTable;
 
@@ -20,7 +20,7 @@ pub trait KeyValue {
         self.len() == 0
     }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_>;
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_>;
 
     fn first_key(&self) -> Option<&String>;
 
@@ -32,7 +32,7 @@ impl KeyValue for SkipMap<String, String> {
         self.len()
     }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = (&String, &String)>> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&String, &String)>> {
         Box::new(
             self.iter()
                 .map(|node| unsafe { (&(*node).entry.key, &(*node).entry.value) }),
@@ -40,16 +40,10 @@ impl KeyValue for SkipMap<String, String> {
     }
 
     fn first_key(&self) -> Option<&String> {
-        match self.first_key_value() {
-            Some(entry) => Some(&entry.key),
-            None => None,
-        }
+        self.first_key_value().map(|entry| &entry.key)
     }
 
     fn last_key(&self) -> Option<&String> {
-        match self.last_key_value() {
-            Some(entry) => Some(&entry.key),
-            None => None,
-        }
+        self.last_key_value().map(|entry| &entry.key)
     }
 }

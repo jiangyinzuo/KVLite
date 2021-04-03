@@ -1,6 +1,7 @@
 use crate::db::MAX_LEVEL;
 use crate::sstable::table_handle::TableHandle;
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
+use crate::Result;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -65,17 +66,61 @@ impl TableManager {
         lock
     }
 
+    fn query_level0_tables(&self, key: &String) -> Result<Option<String>> {
+        let tables_lock = self.get_level_tables_lock(0);
+        let tables_guard = tables_lock.read().unwrap();
+
+        // query the latest table first
+        for table in tables_guard.values().rev() {
+            let option = table.query_sstable(key);
+            if option.is_some() {
+                return Ok(option);
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn query_tables(&self, key: &String) -> Result<Option<String>> {
+        let option = self.query_level0_tables(key)?;
+        if option.is_some() {
+            return Ok(option);
+        }
+
+        for level in 1..=MAX_LEVEL {
+            let tables_lock = self.get_level_tables_lock(level);
+            let tables_guard = tables_lock.read().unwrap();
+
+            // query the latest table first
+            for table in tables_guard.values().rev() {
+                let option = table.query_sstable(key);
+                if option.is_some() {
+                    return Ok(option);
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Create a new sstable with `level`, `min_key` and `max_key`.
-    pub fn create_table(&self, level: usize, min_key: &str, max_key: &str) -> Arc<TableHandle> {
-        let mut table_guard = self.get_level_tables_lock(level).write().unwrap();
+    pub fn create_table_handle(
+        &self,
+        level: usize,
+        min_key: &str,
+        max_key: &str,
+    ) -> Arc<TableHandle> {
+        let table_guard = self.get_level_tables_lock(level).read().unwrap();
         let next_table_id = match table_guard.last_key_value() {
             Some((k, _v)) => k + 1,
             None => 1,
         };
-        let handle = TableHandle::new(&self.db_path, level as u8, next_table_id, min_key, max_key);
-        let handle = Arc::new(handle);
-        table_guard.insert(next_table_id, handle.clone());
-        handle
+        let handle = TableHandle::new(&self.db_path, level, next_table_id, min_key, max_key);
+        Arc::new(handle)
+    }
+
+    pub fn insert_table_handle(&self, handle: Arc<TableHandle>) {
+        let mut table_guard = self.get_level_tables_lock(handle.level()).write().unwrap();
+        handle.rename();
+        table_guard.insert(handle.table_id(), handle);
     }
 
     /// Get sstable file count of `level`, used for judging whether need compacting.
@@ -142,5 +187,6 @@ impl TableManager {
         let mut guard = lock.write().unwrap();
         let table_handle = guard.remove(&table_id).unwrap();
         table_handle.ready_to_delete();
+        debug!("count of TableHandle: {}", Arc::strong_count(&table_handle));
     }
 }

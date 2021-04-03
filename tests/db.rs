@@ -41,7 +41,12 @@ fn _test_command<M: 'static + MemTable>() {
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
         let v = db.get(&format!("key{}", i));
         let value = v.unwrap();
-        assert_eq!(format!("value{}", i), value.unwrap(), "kv {}", i);
+        assert_eq!(
+            format!("value{}", i),
+            value.unwrap_or_else(|| panic!("kv{}", i)),
+            "kv {}",
+            i
+        );
     }
 }
 

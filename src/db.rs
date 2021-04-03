@@ -110,7 +110,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
 
         // query sstable
-        let option = self.level0_manager.query_level0_table(key).unwrap();
+        let option = self.table_manager.query_tables(key).unwrap();
         Ok(option)
     }
 }
