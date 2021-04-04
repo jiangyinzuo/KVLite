@@ -54,7 +54,7 @@ impl TableWriteHandle {
         for (i, (k, v)) in table.kv_iter().enumerate() {
             table_writer.write_key_value(k, v);
             if table_writer.count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
-                table_writer.add_index(k);
+                table_writer.add_index(k.clone());
             }
         }
         table_writer.write_index_and_footer();
@@ -69,7 +69,29 @@ impl TableWriteHandle {
         for (i, (k, v)) in kvs.iter().enumerate() {
             table_writer.write_key_value(k, v);
             if table_writer.count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
-                table_writer.add_index(k);
+                table_writer.add_index(k.to_string());
+            }
+        }
+        table_writer.write_index_and_footer();
+        Ok(())
+    }
+
+    pub fn write_sstable_from_iter(
+        &self,
+        kv_iter: crate::collections::skip_list::skipmap::Iter<String, String>,
+    ) -> crate::Result<()> {
+        let writer = self.create_buf_writer_with_pos();
+        let mut table_writer = TableWriter::new(writer);
+
+        // write Data Blocks
+        for (i, node) in kv_iter.enumerate() {
+            let k = unsafe { &(*node).entry.key };
+            let v = unsafe { &(*node).entry.value };
+            table_writer.write_key_value(k, v);
+            unsafe {
+                if table_writer.count == MAX_BLOCK_KV_PAIRS || (*node).get_next(0).is_null() {
+                    table_writer.add_index(k.to_string());
+                }
             }
         }
         table_writer.write_index_and_footer();
@@ -187,6 +209,10 @@ impl TableReadHandle {
     #[inline]
     pub fn min_max_key(&self) -> (&String, &String) {
         (&self.min_key, &self.max_key)
+    }
+
+    pub fn max_key(&self) -> &String {
+        &self.max_key
     }
 
     pub fn is_overlapping(&self, min_key: &String, max_key: &String) -> bool {

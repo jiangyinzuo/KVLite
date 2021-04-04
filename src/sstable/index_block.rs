@@ -2,18 +2,18 @@ use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 use crate::sstable::footer::Footer;
 use crate::Result;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 
 #[derive(Default)]
-pub(crate) struct IndexBlock<'a> {
+pub(crate) struct IndexBlock {
     /// offset, length, max key length, max key
-    indexes: Vec<(u32, u32, u32, &'a [u8])>,
+    indexes: Vec<(u32, u32, u32, String)>,
 }
 
-impl<'a> IndexBlock<'a> {
-    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: &'a String) {
+impl IndexBlock {
+    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: String) {
         self.indexes
-            .push((offset, length, max_key.len() as u32, max_key.as_bytes()));
+            .push((offset, length, max_key.len() as u32, max_key));
     }
 
     pub(crate) fn write_to_file(&mut self, writer: &mut (impl Write + Seek)) -> Result<()> {
@@ -21,7 +21,7 @@ impl<'a> IndexBlock<'a> {
             writer.write_all(&index.0.to_le_bytes())?;
             writer.write_all(&index.1.to_le_bytes())?;
             writer.write_all(&index.2.to_le_bytes())?;
-            writer.write_all(index.3)?;
+            writer.write_all(index.3.as_bytes())?;
         }
         Ok(())
     }

@@ -94,15 +94,15 @@ pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {
     format!("{}/{}/{}", db_path, level, table_id)
 }
 
-pub(crate) struct TableWriter<'a> {
+pub(crate) struct TableWriter {
     pub count: u64,
     pub last_pos: u64,
-    pub index_block: IndexBlock<'a>,
+    pub index_block: IndexBlock,
     pub writer: BufWriterWithPos<File>,
 }
 
-impl<'a> TableWriter<'a> {
-    pub(crate) fn new(writer: BufWriterWithPos<File>) -> TableWriter<'a> {
+impl TableWriter {
+    pub(crate) fn new(writer: BufWriterWithPos<File>) -> TableWriter {
         TableWriter {
             count: 0,
             last_pos: 0,
@@ -123,7 +123,7 @@ impl<'a> TableWriter<'a> {
         self.count += 1;
     }
 
-    pub(crate) fn add_index(&mut self, max_key: &'a String) {
+    pub(crate) fn add_index(&mut self, max_key: String) {
         self.index_block.add_index(
             self.last_pos as u32,
             (self.writer.pos - self.last_pos) as u32,
@@ -133,10 +133,10 @@ impl<'a> TableWriter<'a> {
         self.count = 0;
     }
 
-    pub(crate) fn write_key_value_and_try_add_index(&mut self, k: &'a String, v: &String) {
+    pub(crate) fn write_key_value_and_try_add_index(&mut self, k: &String, v: &String) {
         self.write_key_value(k, v);
         if self.count == MAX_BLOCK_KV_PAIRS {
-            self.add_index(k);
+            self.add_index(k.clone());
         }
     }
 
