@@ -1,6 +1,7 @@
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::sstable::manager::TableManager;
 use crate::sstable::table_handle::TableHandle;
+use crossbeam_channel::Receiver;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -9,38 +10,48 @@ pub const LEVEL0_FILES_THRESHOLD: usize = 7;
 
 pub struct Level0Compacter {
     table_manager: std::sync::Arc<TableManager>,
+    sender: crossbeam_channel::Sender<()>,
     rt: Runtime,
 }
 
 impl Level0Compacter {
     pub fn new(table_manager: Arc<TableManager>) -> Level0Compacter {
-        Level0Compacter {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        let compactor = Level0Compacter {
             table_manager,
+            sender,
             rt: tokio::runtime::Builder::new_multi_thread().build().unwrap(),
-        }
+        };
+        compactor.start_compacting_task(receiver);
+        compactor
     }
 
     pub fn may_compact(&self) {
         let table_count = self.table_manager.file_count(0);
         if table_count > LEVEL0_FILES_THRESHOLD {
-            self.start_compacting_task();
+            self.sender.send(()).unwrap();
         }
     }
 
-    fn start_compacting_task(&self) {
+    fn start_compacting_task(&self, receiver: Receiver<()>) {
         let table_manager = self.table_manager.clone();
 
         self.rt.spawn(async move {
-            let (level0_tables, min_key, max_key) = table_manager.assign_level0_tables_to_compact();
-            let level1_tables = table_manager.get_overlap_tables(1, &min_key, &max_key);
-
-            compact_and_insert(
-                &table_manager,
-                level0_tables,
-                level1_tables,
-                &min_key,
-                &max_key,
-            );
+            while let Ok(()) = receiver.recv() {
+                let table_count = table_manager.file_count(0);
+                if table_count > LEVEL0_FILES_THRESHOLD {
+                    let (level0_tables, min_key, max_key) =
+                        table_manager.assign_level0_tables_to_compact();
+                    let level1_tables = table_manager.get_overlap_tables(1, &min_key, &max_key);
+                    compact_and_insert(
+                        &table_manager,
+                        level0_tables,
+                        level1_tables,
+                        &min_key,
+                        &max_key,
+                    );
+                }
+            }
         });
     }
 }
@@ -65,7 +76,18 @@ fn compact_and_insert(
             table_manager.insert_table_handle(new_table);
         } else {
             let mut level0_kvs = level0_skip_map.iter();
-            for (i, kv) in level0_kvs.enumerate() {}
+            let mut temp_kvs = vec![];
+            for (i, kv) in level0_kvs.enumerate() {
+                unsafe {
+                    temp_kvs.push((&(*kv).entry.key, &(*kv).entry.value));
+                }
+                if (i + 1) % level1_table_size == 0 {
+                    let new_table = table_manager.create_table_handle(1, &min_key, &max_key);
+                    new_table.write_sstable_from_vec(temp_kvs).unwrap();
+                    table_manager.insert_table_handle(new_table);
+                    temp_kvs = vec![];
+                }
+            }
         }
     } else {
         // let level0_entry = level0_kvs.next();
@@ -78,7 +100,7 @@ fn compact_and_insert(
     // }
 }
 
-fn merge_level0_tables(level0_tables: &Vec<Arc<TableHandle>>) -> SkipMap<String, String> {
+fn merge_level0_tables(level0_tables: &[Arc<TableHandle>]) -> SkipMap<String, String> {
     let mut skip_map = SkipMap::new();
     for table in level0_tables {
         for (key, value) in table.iter() {

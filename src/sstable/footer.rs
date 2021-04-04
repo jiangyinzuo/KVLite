@@ -1,5 +1,5 @@
 use crate::error::KVLiteError;
-use crate::ioutils::{read_u32, BufReaderWithPos};
+use crate::ioutils::{read_u32, BufReaderWithPos, BufWriterWithPos};
 use crate::Result;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
@@ -46,4 +46,12 @@ impl Footer {
 
         Ok(footer)
     }
+}
+
+pub(super) fn write_footer(index_block_offset: u32, writer: &mut BufWriterWithPos<File>) {
+    let footer = Footer {
+        index_block_offset,
+        index_block_length: writer.pos as u32 - index_block_offset,
+    };
+    footer.write_to_file(writer).unwrap();
 }

@@ -1,7 +1,7 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::KeyValue;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
-use crate::sstable::footer::Footer;
+use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::{IndexBlock, SSTableIndex};
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
@@ -161,13 +161,41 @@ impl TableHandle {
         let index_block_offset = last_pos as u32;
 
         index_block.write_to_file(&mut writer)?;
+        write_footer(index_block_offset, &mut writer);
+        writer.flush()?;
+        Ok(())
+    }
 
-        // write footer
-        let footer = Footer {
-            index_block_offset,
-            index_block_length: writer.pos as u32 - index_block_offset,
-        };
-        footer.write_to_file(&mut writer)?;
+    pub fn write_sstable_from_vec(&self, kvs: Vec<(&String, &String)>) -> crate::Result<()> {
+        let mut count = 0;
+        let mut last_pos = 0;
+        let mut index_block = IndexBlock::default();
+
+        let (_write_guard, mut writer) = self.create_buf_writer_with_pos();
+
+        // write Data Blocks
+        for (i, (k, v)) in kvs.iter().enumerate() {
+            let (k, v) = (k.as_bytes(), v.as_bytes());
+            let (k_len, v_len) = (k.len() as u32, v.len() as u32);
+
+            // length of key | length of value | key | value
+            writer.write_all(&k_len.to_le_bytes())?;
+            writer.write_all(&v_len.to_le_bytes())?;
+            writer.write_all(k)?;
+            writer.write_all(v)?;
+            if count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
+                index_block.add_index(last_pos as u32, (writer.pos - last_pos) as u32, k);
+                last_pos = writer.pos;
+                count = 0;
+            } else {
+                count += 1;
+            }
+        }
+
+        let index_block_offset = last_pos as u32;
+
+        index_block.write_to_file(&mut writer)?;
+        write_footer(index_block_offset, &mut writer);
         writer.flush()?;
         Ok(())
     }
