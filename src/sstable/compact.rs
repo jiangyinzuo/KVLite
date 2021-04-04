@@ -1,7 +1,9 @@
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{Iter, SkipMap};
 use crate::sstable::manager::TableManager;
-use crate::sstable::table_handle::TableHandle;
+use crate::sstable::table_handle::TableReadHandle;
+use crate::sstable::{TableWriter, MAX_BLOCK_KV_PAIRS};
 use crossbeam_channel::Receiver;
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -47,8 +49,8 @@ impl Level0Compacter {
                         &table_manager,
                         level0_tables,
                         level1_tables,
-                        &min_key,
-                        &max_key,
+                        min_key,
+                        max_key,
                     );
                 }
             }
@@ -60,10 +62,10 @@ impl Level0Compacter {
 /// then insert `new_table` to `TableManager`.
 fn compact_and_insert(
     table_manager: &Arc<TableManager>,
-    level0_tables: Vec<Arc<TableHandle>>,
-    level1_tables: VecDeque<Arc<TableHandle>>,
-    min_key: &String,
-    max_key: &String,
+    level0_tables: Vec<Arc<TableReadHandle>>,
+    mut level1_tables: VecDeque<Arc<TableReadHandle>>,
+    level0_min_key: String,
+    level0_max_key: String,
 ) {
     let level0_skip_map = merge_level0_tables(&level0_tables);
 
@@ -71,28 +73,34 @@ fn compact_and_insert(
         let level1_table_size = level0_skip_map.len() / LEVEL0_FILES_THRESHOLD;
         if level1_table_size == 0 {
             // create only one level1 table
-            let new_table = table_manager.create_table_handle(1, &min_key, &max_key);
+            let new_table = table_manager.create_table_write_handle(1);
             new_table.write_sstable(&level0_skip_map).unwrap();
-            table_manager.insert_table_handle(new_table);
+            table_manager.insert_table_handle(new_table, level0_min_key, level0_max_key);
         } else {
-            let mut level0_kvs = level0_skip_map.iter();
+            let level0_kvs = level0_skip_map.iter();
             let mut temp_kvs = vec![];
             for (i, kv) in level0_kvs.enumerate() {
                 unsafe {
                     temp_kvs.push((&(*kv).entry.key, &(*kv).entry.value));
                 }
                 if (i + 1) % level1_table_size == 0 {
-                    let new_table = table_manager.create_table_handle(1, &min_key, &max_key);
+                    let min_key = temp_kvs.first().unwrap().0;
+                    let max_key = temp_kvs.last().unwrap().0;
+                    let new_table = table_manager.create_table_write_handle(1);
                     new_table.write_sstable_from_vec(temp_kvs).unwrap();
-                    table_manager.insert_table_handle(new_table);
+                    table_manager.insert_table_handle(new_table, min_key.clone(), max_key.clone());
                     temp_kvs = vec![];
                 }
             }
         }
     } else {
-        // let level0_entry = level0_kvs.next();
-
-        // while level0_entry.is_some() && !level1_tables.is_empty() {}
+        while !level1_tables.is_empty() {
+            let level0_iter = level0_skip_map.iter();
+            let level1_table = match level1_tables.pop_front() {
+                Some(elem) => elem,
+                None => unsafe { std::hint::unreachable_unchecked() },
+            };
+        }
     }
 
     // for table in level0_tables {
@@ -100,7 +108,7 @@ fn compact_and_insert(
     // }
 }
 
-fn merge_level0_tables(level0_tables: &[Arc<TableHandle>]) -> SkipMap<String, String> {
+fn merge_level0_tables(level0_tables: &[Arc<TableReadHandle>]) -> SkipMap<String, String> {
     let mut skip_map = SkipMap::new();
     for table in level0_tables {
         for (key, value) in table.iter() {
@@ -108,4 +116,55 @@ fn merge_level0_tables(level0_tables: &[Arc<TableHandle>]) -> SkipMap<String, St
         }
     }
     skip_map
+}
+
+fn merge_to_level1_table(
+    level0_iter: &mut Iter<String, String>,
+    level1_table: Arc<TableReadHandle>,
+    table_manager: &Arc<TableManager>,
+) {
+    let level1_iter = level1_table.iter();
+    let mut cur_level0_node = level0_iter.next_no_consume();
+    let new_table = table_manager.create_table_write_handle(1);
+    let writer = new_table.create_buf_writer_with_pos();
+    let mut table_writer = TableWriter::new(writer);
+    for (level1_key, level1_value) in level1_iter {
+        loop {
+            if cur_level0_node.is_null() {
+                table_writer.write_key_value(&level1_key, &level1_value);
+                if table_writer.count == MAX_BLOCK_KV_PAIRS {
+                    // table_writer.add_index(&level1_key);
+                }
+                break;
+            } else {
+                unsafe {
+                    let level0_key = &(*cur_level0_node).entry.key;
+                    let level0_value = &(*cur_level0_node).entry.value;
+                    match level0_key.cmp(&level1_key) {
+                        // update level1_value to level0_value
+                        Ordering::Equal => {
+                            table_writer
+                                .write_key_value_and_try_add_index(level0_key, level0_value);
+                            break;
+                        }
+                        // insert level1_value
+                        Ordering::Greater => {
+                            // table_writer
+                            //     .write_key_value_and_try_add_index(&level1_key, &level1_value);
+                            break;
+                        }
+                        // insert level0_value
+                        Ordering::Less => {
+                            table_writer
+                                .write_key_value_and_try_add_index(level0_key, level0_value);
+                            cur_level0_node = level0_iter.next_node();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if table_writer.count > 0 {
+        // table_writer.add_index();
+    }
 }

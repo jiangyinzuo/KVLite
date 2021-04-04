@@ -1,5 +1,5 @@
 use crate::db::MAX_LEVEL;
-use crate::sstable::table_handle::TableHandle;
+use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::Result;
 use std::collections::{BTreeMap, VecDeque};
@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// Struct for adding and removing sstable files.
 pub struct TableManager {
     db_path: String,
-    level_tables: [std::sync::RwLock<BTreeMap<u128, Arc<TableHandle>>>; MAX_LEVEL + 1],
+    level_tables: [std::sync::RwLock<BTreeMap<u128, Arc<TableReadHandle>>>; MAX_LEVEL + 1],
 }
 
 unsafe impl Sync for TableManager {}
@@ -42,7 +42,7 @@ impl TableManager {
 
                 // The file whose file_name is a number is considered as sstable.
                 if let Ok(table_id) = path.file_name().unwrap().to_str().unwrap().parse::<u128>() {
-                    let handle = TableHandle::open_table(&manager.db_path, i as _, table_id);
+                    let handle = TableReadHandle::open_table(&manager.db_path, i as _, table_id);
 
                     // Safety: i is in range [0, MAX_LEVEL]
                     unsafe {
@@ -61,7 +61,7 @@ impl TableManager {
     pub fn get_level_tables_lock(
         &self,
         level: usize,
-    ) -> &std::sync::RwLock<BTreeMap<u128, Arc<TableHandle>>> {
+    ) -> &std::sync::RwLock<BTreeMap<u128, Arc<TableReadHandle>>> {
         let lock = self.level_tables.get(level).unwrap();
         lock
     }
@@ -101,26 +101,25 @@ impl TableManager {
         Ok(None)
     }
 
-    /// Create a new sstable with `level`, `min_key` and `max_key`.
-    pub fn create_table_handle(
-        &self,
-        level: usize,
-        min_key: &str,
-        max_key: &str,
-    ) -> Arc<TableHandle> {
+    fn get_next_table_id(&self, level: usize) -> u128 {
         let table_guard = self.get_level_tables_lock(level).read().unwrap();
-        let next_table_id = match table_guard.last_key_value() {
+        match table_guard.last_key_value() {
             Some((k, _v)) => k + 1,
             None => 1,
-        };
-        let handle = TableHandle::new(&self.db_path, level, next_table_id, min_key, max_key);
-        Arc::new(handle)
+        }
     }
 
-    pub fn insert_table_handle(&self, handle: Arc<TableHandle>) {
+    pub fn insert_table_handle(&self, handle: TableWriteHandle, min_key: String, max_key: String) {
         let mut table_guard = self.get_level_tables_lock(handle.level()).write().unwrap();
         handle.rename();
-        table_guard.insert(handle.table_id(), handle);
+        let handle = TableReadHandle::from_table_write_handle(handle, min_key, max_key);
+        table_guard.insert(handle.table_id(), Arc::new(handle));
+    }
+
+    /// Create a new sstable without `min_key` or `max_key`
+    pub fn create_table_write_handle(&self, level: usize) -> TableWriteHandle {
+        let next_table_id = self.get_next_table_id(level);
+        TableWriteHandle::new(&self.db_path, level, next_table_id)
     }
 
     /// Get sstable file count of `level`, used for judging whether need compacting.
@@ -131,7 +130,7 @@ impl TableManager {
     }
 
     /// Return level0 tables to compact
-    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableHandle>>, String, String) {
+    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableReadHandle>>, String, String) {
         let tables = unsafe { self.level_tables.get_unchecked(0) };
         let guard = tables.read().unwrap();
 
@@ -166,7 +165,7 @@ impl TableManager {
         level: usize,
         min_key: &String,
         max_key: &String,
-    ) -> VecDeque<Arc<TableHandle>> {
+    ) -> VecDeque<Arc<TableReadHandle>> {
         let tables_lock = self.get_level_tables_lock(level);
         let tables_guard = tables_lock.read().unwrap();
 

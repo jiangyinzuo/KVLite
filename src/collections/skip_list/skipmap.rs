@@ -305,6 +305,23 @@ pub struct Iter<K: Ord + Default, V: Default> {
     node: *const Node<K, V>,
 }
 
+impl<K: Ord + Default, V: Default> Iter<K, V> {
+    pub fn next_no_consume(&self) -> *const Node<K, V> {
+        self.node
+    }
+    
+    /// # Notice
+    /// 
+    /// Make sure `self.node` is not null.
+    pub fn next_node(&mut self) -> *const Node<K, V> {
+        debug_assert!(!self.node.is_null());
+        unsafe {
+            self.node = (*self.node).get_next(0); 
+        }
+        self.node
+    }
+}
+
 impl<K: Ord + Default, V: Default> Iterator for Iter<K, V> {
     type Item = *const Node<K, V>;
 

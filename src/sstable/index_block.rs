@@ -11,9 +11,9 @@ pub(crate) struct IndexBlock<'a> {
 }
 
 impl<'a> IndexBlock<'a> {
-    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: &'a [u8]) {
+    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: &'a String) {
         self.indexes
-            .push((offset, length, max_key.len() as u32, max_key));
+            .push((offset, length, max_key.len() as u32, max_key.as_bytes()));
     }
 
     pub(crate) fn write_to_file(&mut self, writer: &mut (impl Write + Seek)) -> Result<()> {

@@ -86,13 +86,13 @@ impl Level0Manager {
 
     /// Persistently write the `table` to disk.
     fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let handle = self.table_manager.create_table_handle(
-            0,
-            table.first_key().unwrap(),
-            table.last_key().unwrap(),
-        );
+        let handle = self.table_manager.create_table_write_handle(0);
         handle.write_sstable(table)?;
-        self.table_manager.insert_table_handle(handle);
+        self.table_manager.insert_table_handle(
+            handle,
+            table.first_key().unwrap().to_string(),
+            table.last_key().unwrap().to_string(),
+        );
         self.delete_imm_table_log()?;
         self.level0_compactor.may_compact();
         Ok(())
