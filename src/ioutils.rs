@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io;
 use std::io::SeekFrom::Start;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::{fs, path::PathBuf};
 
 pub struct BufReaderWithPos<R: Read + Seek> {
     reader: BufReader<R>,

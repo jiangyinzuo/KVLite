@@ -71,11 +71,12 @@ use crate::sstable::index_block::IndexBlock;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 
-mod compact;
 pub(super) mod data_block;
 pub(crate) mod footer;
 pub(crate) mod index_block;
+mod level0_compact;
 pub mod level0_table;
+mod level_compact;
 pub(crate) mod manager;
 pub(crate) mod table_handle;
 
@@ -92,58 +93,4 @@ fn get_min_key(reader: &mut BufReaderWithPos<File>) -> String {
 
 pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {
     format!("{}/{}/{}", db_path, level, table_id)
-}
-
-pub(crate) struct TableWriter {
-    pub count: u64,
-    pub last_pos: u64,
-    pub index_block: IndexBlock,
-    pub writer: BufWriterWithPos<File>,
-}
-
-impl TableWriter {
-    pub(crate) fn new(writer: BufWriterWithPos<File>) -> TableWriter {
-        TableWriter {
-            count: 0,
-            last_pos: 0,
-            index_block: IndexBlock::default(),
-            writer,
-        }
-    }
-
-    pub(crate) fn write_key_value(&mut self, k: &String, v: &String) {
-        let (k, v) = (k.as_bytes(), v.as_bytes());
-        let (k_len, v_len) = (k.len() as u32, v.len() as u32);
-
-        // length of key | length of value | key | value
-        self.writer.write_all(&k_len.to_le_bytes()).unwrap();
-        self.writer.write_all(&v_len.to_le_bytes()).unwrap();
-        self.writer.write_all(k).unwrap();
-        self.writer.write_all(v).unwrap();
-        self.count += 1;
-    }
-
-    pub(crate) fn add_index(&mut self, max_key: String) {
-        self.index_block.add_index(
-            self.last_pos as u32,
-            (self.writer.pos - self.last_pos) as u32,
-            max_key,
-        );
-        self.last_pos = self.writer.pos;
-        self.count = 0;
-    }
-
-    pub(crate) fn write_key_value_and_try_add_index(&mut self, k: &String, v: &String) {
-        self.write_key_value(k, v);
-        if self.count == MAX_BLOCK_KV_PAIRS {
-            self.add_index(k.clone());
-        }
-    }
-
-    pub(crate) fn write_index_and_footer(&mut self) {
-        let index_block_offset = self.last_pos as u32;
-        self.index_block.write_to_file(&mut self.writer).unwrap();
-        write_footer(index_block_offset, &mut self.writer);
-        self.writer.flush().unwrap();
-    }
 }

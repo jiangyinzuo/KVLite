@@ -13,7 +13,6 @@ pub mod error;
 mod ioutils;
 pub mod memory;
 pub mod sstable;
-mod version;
 mod wal;
 
 pub type Result<T> = std::result::Result<T, error::KVLiteError>;

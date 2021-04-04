@@ -1,10 +1,11 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::KeyValue;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
-use crate::sstable::index_block::SSTableIndex;
-use crate::sstable::{get_min_key, TableWriter, MAX_BLOCK_KV_PAIRS};
+use crate::sstable::footer::write_footer;
+use crate::sstable::index_block::{IndexBlock, SSTableIndex};
+use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom};
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::Deref;
 use std::sync::RwLock;
 
@@ -18,83 +19,77 @@ pub enum TableStatus {
     ToDelete,
 }
 
-/// Handle of new sstable for writing.
+/// Handle of new sstable for single-thread writing.
 pub struct TableWriteHandle {
     file_path: String,
     level: usize,
     table_id: u128,
+    pub(crate) writer: TableWriter,
 }
 
 impl TableWriteHandle {
     pub(super) fn new(db_path: &str, level: usize, table_id: u128) -> TableWriteHandle {
+        let file_path = format!("{}/{}/{}", db_path, level, table_id);
+        let writer = {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(temp_file_name(&file_path))
+                .unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            let buf_writer = BufWriterWithPos::new(file).unwrap();
+            TableWriter::new(buf_writer)
+        };
+
         TableWriteHandle {
-            file_path: format!("{}/{}/{}", db_path, level, table_id),
+            file_path,
             level,
             table_id,
+            writer,
         }
     }
 
-    /// Used for write sstable
-    pub fn create_buf_writer_with_pos(&self) -> BufWriterWithPos<File> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(true)
-            .open(temp_file_name(&self.file_path))
-            .unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-        BufWriterWithPos::new(file).unwrap()
-    }
-
-    pub fn write_sstable(&self, table: &impl KeyValue) -> crate::Result<()> {
-        let writer = self.create_buf_writer_with_pos();
-        let mut table_writer = TableWriter::new(writer);
-
+    pub fn write_sstable(&mut self, table: &impl KeyValue) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in table.kv_iter().enumerate() {
-            table_writer.write_key_value(k, v);
-            if table_writer.count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
-                table_writer.add_index(k.clone());
+            self.writer.write_key_value(k, v);
+            if self.writer.count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
+                self.writer.add_index(k.clone());
             }
         }
-        table_writer.write_index_and_footer();
+        self.writer.write_index_and_footer();
         Ok(())
     }
 
-    pub fn write_sstable_from_vec(&self, kvs: Vec<(&String, &String)>) -> crate::Result<()> {
-        let writer = self.create_buf_writer_with_pos();
-        let mut table_writer = TableWriter::new(writer);
-
+    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(&String, &String)>) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in kvs.iter().enumerate() {
-            table_writer.write_key_value(k, v);
-            if table_writer.count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
-                table_writer.add_index(k.to_string());
+            self.writer.write_key_value(k, v);
+            if self.writer.count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
+                self.writer.add_index(k.to_string());
             }
         }
-        table_writer.write_index_and_footer();
+        self.writer.write_index_and_footer();
         Ok(())
     }
 
     pub fn write_sstable_from_iter(
-        &self,
+        &mut self,
         kv_iter: crate::collections::skip_list::skipmap::Iter<String, String>,
     ) -> crate::Result<()> {
-        let writer = self.create_buf_writer_with_pos();
-        let mut table_writer = TableWriter::new(writer);
-
         // write Data Blocks
         for (i, node) in kv_iter.enumerate() {
             let k = unsafe { &(*node).entry.key };
             let v = unsafe { &(*node).entry.value };
-            table_writer.write_key_value(k, v);
+            self.writer.write_key_value(k, v);
             unsafe {
-                if table_writer.count == MAX_BLOCK_KV_PAIRS || (*node).get_next(0).is_null() {
-                    table_writer.add_index(k.to_string());
+                if self.writer.count == MAX_BLOCK_KV_PAIRS || (*node).get_next(0).is_null() {
+                    self.writer.add_index(k.to_string());
                 }
             }
         }
-        table_writer.write_index_and_footer();
+        self.writer.write_index_and_footer();
         Ok(())
     }
 
@@ -109,6 +104,60 @@ impl TableWriteHandle {
     }
 }
 
+pub(crate) struct TableWriter {
+    pub(crate) count: u64,
+    pub(crate) last_pos: u64,
+    pub(crate) index_block: IndexBlock,
+    pub(crate) writer: BufWriterWithPos<File>,
+}
+
+impl TableWriter {
+    fn new(writer: BufWriterWithPos<File>) -> TableWriter {
+        TableWriter {
+            count: 0,
+            last_pos: 0,
+            index_block: IndexBlock::default(),
+            writer,
+        }
+    }
+
+    pub(crate) fn write_key_value(&mut self, k: &String, v: &String) {
+        let (k, v) = (k.as_bytes(), v.as_bytes());
+        let (k_len, v_len) = (k.len() as u32, v.len() as u32);
+
+        // length of key | length of value | key | value
+        self.writer.write_all(&k_len.to_le_bytes()).unwrap();
+        self.writer.write_all(&v_len.to_le_bytes()).unwrap();
+        self.writer.write_all(k).unwrap();
+        self.writer.write_all(v).unwrap();
+        self.count += 1;
+    }
+
+    pub(crate) fn add_index(&mut self, max_key: String) {
+        self.index_block.add_index(
+            self.last_pos as u32,
+            (self.writer.pos - self.last_pos) as u32,
+            max_key,
+        );
+        self.last_pos = self.writer.pos;
+        self.count = 0;
+    }
+
+    pub(crate) fn write_key_value_and_try_add_index(&mut self, k: &String, v: &String) {
+        self.write_key_value(k, v);
+        if self.count == MAX_BLOCK_KV_PAIRS {
+            self.add_index(k.clone());
+        }
+    }
+
+    pub(crate) fn write_index_and_footer(&mut self) {
+        let index_block_offset = self.last_pos as u32;
+        self.index_block.write_to_file(&mut self.writer).unwrap();
+        write_footer(index_block_offset, &mut self.writer);
+        self.writer.flush().unwrap();
+    }
+}
+
 pub struct TableReadHandle {
     file_path: String,
     level: usize,
@@ -116,6 +165,7 @@ pub struct TableReadHandle {
     status: RwLock<TableStatus>,
     min_key: String,
     max_key: String,
+    file_size: u64,
 }
 
 unsafe impl Send for TableReadHandle {}
@@ -127,6 +177,7 @@ impl TableReadHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
 
         let file = File::open(&file_path).unwrap();
+        let file_size = file.metadata().unwrap().len();
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
 
         let sstable_index = SSTableIndex::load_index(&mut buf_reader);
@@ -141,14 +192,21 @@ impl TableReadHandle {
             status: RwLock::new(TableStatus::Store),
             min_key,
             max_key,
+            file_size,
         }
     }
 
+    /// # Notice
+    ///
+    /// position of `table_write_handle` should be at the end.
     pub fn from_table_write_handle(
         table_write_handle: TableWriteHandle,
         min_key: String,
         max_key: String,
     ) -> Self {
+        let file_size = table_write_handle.writer.writer.pos;
+        debug_assert!(file_size > 0);
+
         TableReadHandle {
             file_path: table_write_handle.file_path,
             level: table_write_handle.level,
@@ -156,6 +214,7 @@ impl TableReadHandle {
             status: RwLock::new(TableStatus::Store),
             min_key,
             max_key,
+            file_size,
         }
     }
 
@@ -170,6 +229,16 @@ impl TableReadHandle {
     #[inline]
     pub fn table_id(&self) -> u128 {
         self.table_id
+    }
+
+    #[inline]
+    pub fn level(&self) -> usize {
+        self.level
+    }
+
+    #[inline]
+    pub fn file_size(&self) -> u64 {
+        self.file_size
     }
 
     pub fn status(&self) -> TableStatus {

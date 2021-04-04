@@ -30,6 +30,7 @@ pub struct KVLite<T: MemTable> {
     level0_manager: Arc<Level0Manager>,
     level0_writer_handle: Option<JoinHandle<()>>,
     write_level0_channel: Option<Sender<()>>,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 impl<T: 'static + MemTable> KVLite<T> {
@@ -48,12 +49,15 @@ impl<T: 'static + MemTable> KVLite<T> {
 
         let imm_mem_table = Arc::new(RwLock::new(imm_mem_table));
         let channel = crossbeam_channel::unbounded();
+        let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().build().unwrap());
+
         let (level0_manager, level0_writer_handle) = Level0Manager::start_task_write_level0(
             db_path.clone(),
             table_manager.clone(),
             wal.clone(),
             imm_mem_table.clone(),
             channel.1,
+            runtime.clone(),
         );
 
         Ok(KVLite {
@@ -65,6 +69,7 @@ impl<T: 'static + MemTable> KVLite<T> {
             level0_manager,
             level0_writer_handle: Some(level0_writer_handle),
             write_level0_channel: Some(channel.0),
+            runtime,
         })
     }
 

@@ -1,5 +1,5 @@
 use crate::memory::MemTable;
-use crate::sstable::compact::Level0Compacter;
+use crate::sstable::level0_compact::Level0Compactor;
 use crate::sstable::manager::TableManager;
 use crate::wal::WriteAheadLog;
 use crate::Result;
@@ -14,7 +14,7 @@ pub struct Level0Manager {
     db_path: String,
 
     table_manager: Arc<TableManager>,
-    level0_compactor: Arc<Level0Compacter>,
+    level0_compactor: Arc<Level0Compactor>,
 
     /// Table ID is increasing order.
     wal: Arc<Mutex<WriteAheadLog>>,
@@ -25,6 +25,7 @@ impl Level0Manager {
         db_path: String,
         table_manager: Arc<TableManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
+        rt: Arc<tokio::runtime::Runtime>,
     ) -> Result<Level0Manager> {
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
         let mut tables: Vec<u128> = dir
@@ -41,7 +42,7 @@ impl Level0Manager {
             })
             .collect();
         tables.sort_unstable();
-        let level0_compactor = Arc::new(Level0Compacter::new(table_manager.clone()));
+        let level0_compactor = Arc::new(Level0Compactor::new(table_manager.clone(), rt));
         Ok(Level0Manager {
             db_path,
             table_manager,
@@ -57,8 +58,9 @@ impl Level0Manager {
         wal: Arc<Mutex<WriteAheadLog>>,
         imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
         recv: Receiver<()>,
+        rt: Arc<tokio::runtime::Runtime>,
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
-        let manager = Arc::new(Self::new(db_path, table_manager, wal).unwrap());
+        let manager = Arc::new(Self::new(db_path, table_manager, wal, rt).unwrap());
         let manager2 = manager.clone();
 
         let handle = thread::Builder::new()
@@ -86,7 +88,7 @@ impl Level0Manager {
 
     /// Persistently write the `table` to disk.
     fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let handle = self.table_manager.create_table_write_handle(0);
+        let mut handle = self.table_manager.create_table_write_handle(0);
         handle.write_sstable(table)?;
         self.table_manager.insert_table_handle(
             handle,
@@ -132,6 +134,10 @@ mod tests {
 
     fn test_query(path: String, insert_value: bool) {
         let table_manager = Arc::new(TableManager::open_tables(path.clone()));
+        if insert_value {
+            assert_eq!(table_manager.level_size(0), 0);
+        }
+
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
 
@@ -142,13 +148,14 @@ mod tests {
         assert!(mut_mem.is_empty());
 
         let imm_mem = Arc::new(RwLock::new(imm_mem));
-
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,
             table_manager.clone(),
             Arc::new(Mutex::new(wal)),
             imm_mem.clone(),
             receiver,
+            rt,
         );
 
         if insert_value {
@@ -163,6 +170,8 @@ mod tests {
 
         // wait for writing data
         std::thread::sleep(Duration::from_secs(1));
+
+        assert!(manager.table_manager.level_size(0) > 0);
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
             let v = table_manager.query_tables(&format!("key{}", i)).unwrap();

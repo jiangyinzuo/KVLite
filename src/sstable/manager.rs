@@ -3,12 +3,14 @@ use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::Result;
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Struct for adding and removing sstable files.
 pub struct TableManager {
     db_path: String,
     level_tables: [std::sync::RwLock<BTreeMap<u128, Arc<TableReadHandle>>>; MAX_LEVEL + 1],
+    level_sizes: [AtomicU64; MAX_LEVEL + 1],
 }
 
 unsafe impl Sync for TableManager {}
@@ -33,13 +35,24 @@ impl TableManager {
                 std::sync::RwLock::default(),
                 std::sync::RwLock::default(),
             ],
+            level_sizes: [
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+            ],
         };
 
         for i in 0..=MAX_LEVEL {
             let dir = std::fs::read_dir(format!("{}/{}", &manager.db_path, i)).unwrap();
+            let mut file_size = 0;
             for d in dir {
-                let path = d.unwrap().path();
-
+                let d = d.unwrap();
+                let path = d.path();
                 // The file whose file_name is a number is considered as sstable.
                 if let Ok(table_id) = path.file_name().unwrap().to_str().unwrap().parse::<u128>() {
                     let handle = TableReadHandle::open_table(&manager.db_path, i as _, table_id);
@@ -49,10 +62,17 @@ impl TableManager {
                         let mut guard = manager.level_tables.get_unchecked_mut(i).write().unwrap();
                         guard.insert(table_id, Arc::new(handle));
                     }
+                    file_size += d.metadata().unwrap().len();
                 } else {
                     // remove temporary file.
                     std::fs::remove_file(path).unwrap();
                 }
+            }
+            unsafe {
+                manager
+                    .level_sizes
+                    .get_unchecked(i)
+                    .store(file_size, Ordering::Release);
             }
         }
         manager
@@ -110,10 +130,19 @@ impl TableManager {
     }
 
     pub fn insert_table_handle(&self, handle: TableWriteHandle, min_key: String, max_key: String) {
-        let mut table_guard = self.get_level_tables_lock(handle.level()).write().unwrap();
+        let file_size = handle.writer.writer.pos;
+        debug_assert!(file_size > 0);
+
+        let level = handle.level();
+        let mut table_guard = self.get_level_tables_lock(level).write().unwrap();
         handle.rename();
         let handle = TableReadHandle::from_table_write_handle(handle, min_key, max_key);
         table_guard.insert(handle.table_id(), Arc::new(handle));
+        unsafe {
+            self.level_sizes
+                .get_unchecked(level)
+                .fetch_add(file_size, Ordering::Release);
+        }
     }
 
     /// Create a new sstable without `min_key` or `max_key`
@@ -185,7 +214,23 @@ impl TableManager {
         let lock = self.get_level_tables_lock(level);
         let mut guard = lock.write().unwrap();
         let table_handle = guard.remove(&table_id).unwrap();
+
+        unsafe {
+            self.level_sizes
+                .get_unchecked(level)
+                .fetch_sub(table_handle.file_size(), Ordering::Release);
+        }
+
         table_handle.ready_to_delete();
         debug!("count of TableHandle: {}", Arc::strong_count(&table_handle));
+    }
+
+    /// Get total size of sstables in `level`
+    pub(crate) fn level_size(&self, level: usize) -> u64 {
+        unsafe {
+            self.level_sizes
+                .get_unchecked(level)
+                .load(Ordering::Acquire)
+        }
     }
 }
