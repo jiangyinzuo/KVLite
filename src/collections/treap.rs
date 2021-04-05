@@ -2,7 +2,7 @@ use crate::collections::Entry;
 use std::cmp::Ordering;
 use std::mem;
 
-struct TreapNode<K: Ord, V> {
+pub struct TreapNode<K: Ord, V> {
     entry: Entry<K, V>,
     priority: u32,
     left_son: Option<Box<TreapNode<K, V>>>,
@@ -179,6 +179,10 @@ impl<K: Ord, V> TreapMap<K, V> {
     pub fn remove(&mut self, key: &K) -> Option<V> {
         TreapNode::remove(&mut self.root, key)
     }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
 }
 
 impl<K: Ord, V> Default for TreapMap<K, V> {
@@ -197,8 +201,9 @@ mod tests {
         treap.insert(3, 3);
         let value = treap.get(&3).unwrap();
         assert_eq!(3, *value);
-        for i in 50..100 {
+        for i in 50..100i32 {
             treap.insert(i, i + 1);
+            assert_eq!(treap.len(), 1 + i as usize - 49);
         }
         for i in 30..60 {
             treap.insert(i, i);
@@ -215,6 +220,6 @@ mod tests {
             let value = treap.remove(&i).unwrap();
             assert_eq!(i + 1, value);
         }
-        assert!(treap.get(&-3).is_none());
+        assert!(treap.get(&-3i32).is_none());
     }
 }

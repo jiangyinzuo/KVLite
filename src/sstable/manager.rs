@@ -1,7 +1,9 @@
+use crate::collections::treap::TreapMap;
 use crate::db::MAX_LEVEL;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::Result;
+use rand::Rng;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -202,7 +204,7 @@ impl TableManager {
 
         // TODO: change this to O(logn)
         for (_table_id, handle) in tables_guard.iter() {
-            if handle.is_overlapping(min_key, max_key) {
+            if handle.is_overlapping(min_key, max_key) && handle.test_and_set_compacting() {
                 let handle = handle.clone();
                 tables.push_back(handle);
             }
@@ -222,7 +224,12 @@ impl TableManager {
         }
 
         table_handle.ready_to_delete();
-        debug!("count of TableHandle: {}", Arc::strong_count(&table_handle));
+        debug!(
+            "count of TableHandle `level {}, table_id {}` : {}",
+            level,
+            table_id,
+            Arc::strong_count(&table_handle)
+        );
     }
 
     /// Get total size of sstables in `level`
@@ -232,5 +239,20 @@ impl TableManager {
                 .get_unchecked(level)
                 .load(Ordering::Acquire)
         }
+    }
+
+    /// If total size of `level` is larger than 10^i MB, it should be compacted.
+    pub fn size_over(&self, level: usize) -> bool {
+        let size = self.level_size(level);
+        size > 10u64.pow(level as u32) * 1024 * 1024
+    }
+
+    pub fn random_handle(&self, level: usize) -> Arc<TableReadHandle> {
+        let lock = self.get_level_tables_lock(level);
+        let guard = lock.read().unwrap();
+        let mut rng = rand::thread_rng();
+        let id = rng.gen_range(0..guard.len());
+        let v = guard.values().nth(id).unwrap();
+        v.clone()
     }
 }

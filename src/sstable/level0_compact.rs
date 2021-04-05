@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-pub const LEVEL0_FILES_THRESHOLD: usize = 7;
+pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 
 pub struct Level0Compactor {
     table_manager: std::sync::Arc<TableManager>,
@@ -30,7 +30,7 @@ impl Level0Compactor {
 
     pub fn may_compact(&self) {
         let table_count = self.table_manager.file_count(0);
-        if table_count > LEVEL0_FILES_THRESHOLD {
+        if table_count > LEVEL0_FILES_THRESHOLD || self.table_manager.size_over(0) {
             self.sender.send(()).unwrap();
         }
     }
@@ -107,8 +107,12 @@ fn compact_and_insert(
                 Some(elem) => elem,
                 None => unsafe { std::hint::unreachable_unchecked() },
             };
+            let id = level1_table.table_id();
             merge_to_level1_table(&mut level0_iter, level1_table, table_manager);
+            table_manager.ready_to_delete(1, id);
         }
+
+        // write all the remain key-values in level0 table.
         if !level0_iter.next_no_consume().is_null() {
             let mut new_table = table_manager.create_table_write_handle(1);
             new_table.write_sstable_from_iter(level0_iter).unwrap();

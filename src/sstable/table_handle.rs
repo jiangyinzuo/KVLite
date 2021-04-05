@@ -271,7 +271,7 @@ impl TableReadHandle {
 
     pub(super) fn ready_to_delete(&self) {
         let mut guard = self.status.write().unwrap();
-        debug_assert_eq!(*guard, TableStatus::Compacting);
+        debug_assert_eq!(*guard, TableStatus::Compacting, "invalid table status");
         *guard = TableStatus::ToDelete;
     }
 

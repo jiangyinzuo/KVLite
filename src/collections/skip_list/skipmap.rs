@@ -185,9 +185,7 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
             if (*(*prev_nodes.get_unchecked(0))).get_next(0).is_null() {
                 self.tail.store(new_node, Ordering::Release);
             }
-        }
 
-        unsafe {
             for i in 0..=level {
                 // set next of new_node first to ensure concurrent read is correct.
                 (*new_node).set_next(i, (*(prev_nodes[i])).get_next(i));

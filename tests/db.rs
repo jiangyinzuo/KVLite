@@ -2,19 +2,21 @@ use kvlite::db::KVLite;
 use kvlite::db::ACTIVE_SIZE_THRESHOLD;
 use kvlite::error::KVLiteError;
 use kvlite::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
 #[test]
 fn test_command() {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let path = temp_dir.path();
     let _ = env_logger::try_init();
-    _test_command::<BTreeMemTable>();
-    _test_command::<SkipMapMemTable>();
+    _test_command::<BTreeMemTable>(path);
+    _test_command::<SkipMapMemTable>(path);
 }
 
-fn _test_command<M: 'static + MemTable>() {
-    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-    let db = KVLite::<M>::open(temp_dir.path()).unwrap();
+fn _test_command<M: 'static + MemTable>(path: &Path) {
+    let db = KVLite::<M>::open(path).unwrap();
     db.set("hello".into(), "world".into()).unwrap();
     assert_eq!(
         KVLiteError::KeyNotFound,
