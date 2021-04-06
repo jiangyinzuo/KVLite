@@ -4,6 +4,22 @@
 
 A toy key-value storage for DB study
 
+## Examples
+
+```rust
+use kvlite::memory::SkipMapMemTable;
+use kvlite::KVLite;
+use tempfile::TempDir;
+
+fn main() {
+    let temp_dir = TempDir::new().unwrap();
+    let db = KVLite::<SkipMapMemTable>::open(temp_dir.path()).unwrap();
+    db.set("hello".to_string(), "value1".to_string()).unwrap();
+
+    println!("{:?}", db.get(&"hello".into()).unwrap()); // Some("value1")
+}
+```
+
 ## Run tests 
 ```shell
 RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-linux-gnu

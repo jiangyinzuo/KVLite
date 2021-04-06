@@ -56,20 +56,18 @@
 //! Length of Footer is fixed (64bit).
 //!
 //! ```text
-//! +-----------------------------------------------------------------+
-//! | IndexBlock offset | IndexBlock length | Magic Number 0xdb991122 |
-//! +-----------------------------------------------------------------+
-//! \------------------/\-------------------/\------------------------/
-//!         u32                  u32                    u32
+//! +----------------------------------------------------------------------------+
+//! | IndexBlock offset | IndexBlock length | kv_total | Magic Number 0xdb991122 |
+//! +----------------------------------------------------------------------------+
+//! \------------------/\-------------------/\---------/\------------------------/
+//!         u32                  u32             u32               u32
 //! ```
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
-use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos, BufWriterWithPos};
-use crate::sstable::footer::write_footer;
-use crate::sstable::index_block::IndexBlock;
+use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom};
 
 pub(super) mod data_block;
 pub(crate) mod footer;
@@ -77,8 +75,8 @@ pub(crate) mod index_block;
 mod level0_compact;
 pub mod level0_table;
 mod level_compact;
-pub(crate) mod manager;
-pub(crate) mod table_handle;
+pub mod manager;
+pub mod table_handle;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
@@ -88,7 +86,7 @@ fn get_min_key(reader: &mut BufReaderWithPos<File>) -> String {
     let key_length = read_u32(reader);
     // value_length
     reader.seek(SeekFrom::Current(4)).unwrap();
-    read_string_exact(reader, key_length)
+    read_string_exact(reader, key_length).unwrap()
 }
 
 pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {

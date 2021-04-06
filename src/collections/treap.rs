@@ -2,14 +2,14 @@ use crate::collections::Entry;
 use std::cmp::Ordering;
 use std::mem;
 
-pub struct TreapNode<K: Ord, V> {
+pub struct TreapNode<K: Ord + Default, V: Default> {
     entry: Entry<K, V>,
     priority: u32,
     left_son: Option<Box<TreapNode<K, V>>>,
     right_son: Option<Box<TreapNode<K, V>>>,
 }
 
-impl<K: Ord, V> TreapNode<K, V> {
+impl<K: Ord + Default, V: Default> TreapNode<K, V> {
     fn new(key: K, value: V) -> TreapNode<K, V> {
         TreapNode {
             entry: Entry { key, value },
@@ -151,12 +151,12 @@ impl<K: Ord, V> TreapNode<K, V> {
     }
 }
 
-pub struct TreapMap<K: Ord, V> {
+pub struct TreapMap<K: Ord + Default, V: Default> {
     root: Option<Box<TreapNode<K, V>>>,
     len: usize,
 }
 
-impl<K: Ord, V> TreapMap<K, V> {
+impl<K: Ord + Default, V: Default> TreapMap<K, V> {
     pub fn new() -> TreapMap<K, V> {
         TreapMap { root: None, len: 0 }
     }
@@ -185,7 +185,7 @@ impl<K: Ord, V> TreapMap<K, V> {
     }
 }
 
-impl<K: Ord, V> Default for TreapMap<K, V> {
+impl<K: Ord + Default, V: Default> Default for TreapMap<K, V> {
     fn default() -> Self {
         Self::new()
     }

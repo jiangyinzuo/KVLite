@@ -1,7 +1,7 @@
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::KeyValue;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
-use crate::sstable::footer::write_footer;
+use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::{IndexBlock, SSTableIndex};
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
@@ -23,12 +23,12 @@ pub enum TableStatus {
 pub struct TableWriteHandle {
     file_path: String,
     level: usize,
-    table_id: u128,
+    table_id: u64,
     pub(crate) writer: TableWriter,
 }
 
 impl TableWriteHandle {
-    pub(super) fn new(db_path: &str, level: usize, table_id: u128) -> TableWriteHandle {
+    pub(super) fn new(db_path: &str, level: usize, table_id: u64) -> TableWriteHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
         let writer = {
             let mut file = OpenOptions::new()
@@ -62,7 +62,10 @@ impl TableWriteHandle {
         Ok(())
     }
 
-    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(&String, &String)>) -> crate::Result<()> {
+    pub fn write_sstable_from_vec_ref(
+        &mut self,
+        kvs: Vec<(&String, &String)>,
+    ) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in kvs.iter().enumerate() {
             self.writer.write_key_value(k, v);
@@ -74,12 +77,27 @@ impl TableWriteHandle {
         Ok(())
     }
 
+    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(String, String)>) -> crate::Result<()> {
+        // write Data Blocks
+        let mut i = 0;
+        let length = kvs.len();
+        for (k, v) in kvs {
+            self.writer.write_key_value(&k, &v);
+            if self.writer.count == MAX_BLOCK_KV_PAIRS || i == length - 1 {
+                self.writer.add_index(k);
+            }
+            i += 1;
+        }
+        self.writer.write_index_and_footer();
+        Ok(())
+    }
+
     pub fn write_sstable_from_iter(
         &mut self,
         kv_iter: crate::collections::skip_list::skipmap::Iter<String, String>,
     ) -> crate::Result<()> {
         // write Data Blocks
-        for (i, node) in kv_iter.enumerate() {
+        for node in kv_iter {
             let k = unsafe { &(*node).entry.key };
             let v = unsafe { &(*node).entry.value };
             self.writer.write_key_value(k, v);
@@ -102,9 +120,20 @@ impl TableWriteHandle {
     pub fn level(&self) -> usize {
         self.level
     }
+
+    #[inline]
+    pub fn table_id(&self) -> u64 {
+        self.table_id
+    }
+
+    #[inline]
+    pub fn max_key(&self) -> &String {
+        self.writer.max_key()
+    }
 }
 
 pub(crate) struct TableWriter {
+    pub(crate) kv_total: u32,
     pub(crate) count: u64,
     pub(crate) last_pos: u64,
     pub(crate) index_block: IndexBlock,
@@ -114,6 +143,7 @@ pub(crate) struct TableWriter {
 impl TableWriter {
     fn new(writer: BufWriterWithPos<File>) -> TableWriter {
         TableWriter {
+            kv_total: 0,
             count: 0,
             last_pos: 0,
             index_block: IndexBlock::default(),
@@ -122,6 +152,8 @@ impl TableWriter {
     }
 
     pub(crate) fn write_key_value(&mut self, k: &String, v: &String) {
+        debug_assert!(!k.is_empty(), "attempt to write empty key");
+
         let (k, v) = (k.as_bytes(), v.as_bytes());
         let (k_len, v_len) = (k.len() as u32, v.len() as u32);
 
@@ -131,6 +163,7 @@ impl TableWriter {
         self.writer.write_all(k).unwrap();
         self.writer.write_all(v).unwrap();
         self.count += 1;
+        self.kv_total += 1;
     }
 
     pub(crate) fn add_index(&mut self, max_key: String) {
@@ -153,18 +186,24 @@ impl TableWriter {
     pub(crate) fn write_index_and_footer(&mut self) {
         let index_block_offset = self.last_pos as u32;
         self.index_block.write_to_file(&mut self.writer).unwrap();
-        write_footer(index_block_offset, &mut self.writer);
+        write_footer(index_block_offset, &mut self.writer, self.kv_total);
         self.writer.flush().unwrap();
+    }
+
+    #[inline]
+    pub(crate) fn max_key(&self) -> &String {
+        self.index_block.max_key()
     }
 }
 
 pub struct TableReadHandle {
     file_path: String,
     level: usize,
-    table_id: u128,
+    table_id: u64,
     status: RwLock<TableStatus>,
     min_key: String,
     max_key: String,
+    kv_total: u32,
     file_size: u64,
 }
 
@@ -173,14 +212,15 @@ unsafe impl Sync for TableReadHandle {}
 
 impl TableReadHandle {
     /// Create a table handle for existing sstable.
-    pub fn open_table(db_path: &str, level: usize, table_id: u128) -> TableReadHandle {
+    pub fn open_table(db_path: &str, level: usize, table_id: u64) -> TableReadHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
 
         let file = File::open(&file_path).unwrap();
         let file_size = file.metadata().unwrap().len();
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
 
-        let sstable_index = SSTableIndex::load_index(&mut buf_reader);
+        let footer = Footer::load_footer(&mut buf_reader).unwrap();
+        let sstable_index = SSTableIndex::load_index(&mut buf_reader, &footer);
 
         let min_key = get_min_key(&mut buf_reader);
         let max_key = sstable_index.max_key().to_string();
@@ -192,6 +232,7 @@ impl TableReadHandle {
             status: RwLock::new(TableStatus::Store),
             min_key,
             max_key,
+            kv_total: footer.kv_total,
             file_size,
         }
     }
@@ -199,13 +240,14 @@ impl TableReadHandle {
     /// # Notice
     ///
     /// position of `table_write_handle` should be at the end.
-    pub fn from_table_write_handle(
-        table_write_handle: TableWriteHandle,
-        min_key: String,
-        max_key: String,
-    ) -> Self {
+    pub fn from_table_write_handle(table_write_handle: TableWriteHandle) -> Self {
         let file_size = table_write_handle.writer.writer.pos;
         debug_assert!(file_size > 0);
+
+        let file = File::open(&table_write_handle.file_path).unwrap();
+        let mut buf_reader = BufReaderWithPos::new(file).unwrap();
+        let min_key = get_min_key(&mut buf_reader);
+        let max_key = table_write_handle.max_key().to_string();
 
         TableReadHandle {
             file_path: table_write_handle.file_path,
@@ -214,6 +256,7 @@ impl TableReadHandle {
             status: RwLock::new(TableStatus::Store),
             min_key,
             max_key,
+            kv_total: table_write_handle.writer.kv_total,
             file_size,
         }
     }
@@ -227,7 +270,7 @@ impl TableReadHandle {
     }
 
     #[inline]
-    pub fn table_id(&self) -> u128 {
+    pub fn table_id(&self) -> u64 {
         self.table_id
     }
 
@@ -241,6 +284,11 @@ impl TableReadHandle {
         self.file_size
     }
 
+    #[inline]
+    pub fn kv_total(&self) -> u32 {
+        self.kv_total
+    }
+
     pub fn status(&self) -> TableStatus {
         let guard = self.status.read().unwrap();
         *guard.deref()
@@ -249,7 +297,8 @@ impl TableReadHandle {
     /// Query value by `key`
     pub fn query_sstable(&self, key: &String) -> Option<String> {
         let mut buf_reader = self.create_buf_reader_with_pos();
-        let sstable_index = SSTableIndex::load_index(&mut buf_reader);
+        let footer = Footer::load_footer(&mut buf_reader).unwrap();
+        let sstable_index = SSTableIndex::load_index(&mut buf_reader, &footer);
         if let Some((offset, length)) = sstable_index.may_contain_key(key) {
             let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
             return option;
@@ -280,13 +329,24 @@ impl TableReadHandle {
         (&self.min_key, &self.max_key)
     }
 
+    #[inline]
+    pub fn min_key(&self) -> &String {
+        &self.min_key
+    }
+
+    #[inline]
     pub fn max_key(&self) -> &String {
         &self.max_key
     }
 
+    ///```text
+    /// ----         ------      -----    ----
+    ///   |---|       |--|     |---|    |------|
+    ///```
     pub fn is_overlapping(&self, min_key: &String, max_key: &String) -> bool {
         self.min_key.le(min_key) && min_key.le(&self.max_key)
             || self.min_key.le(max_key) && max_key.le(&self.max_key)
+            || min_key.le(&self.min_key) && self.max_key.le(max_key)
     }
 
     pub fn iter(&self) -> Iter {

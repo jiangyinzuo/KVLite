@@ -1,7 +1,6 @@
 use crate::collections::treap::TreapMap;
 use crate::db::MAX_LEVEL;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
-use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::Result;
 use rand::Rng;
 use std::collections::{BTreeMap, VecDeque};
@@ -11,8 +10,9 @@ use std::sync::Arc;
 /// Struct for adding and removing sstable files.
 pub struct TableManager {
     db_path: String,
-    level_tables: [std::sync::RwLock<BTreeMap<u128, Arc<TableReadHandle>>>; MAX_LEVEL + 1],
-    level_sizes: [AtomicU64; MAX_LEVEL + 1],
+    level_tables: [std::sync::RwLock<BTreeMap<(String, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
+    level_sizes: [AtomicU64; MAX_LEVEL],
+    next_table_id: [AtomicU64; MAX_LEVEL],
 }
 
 unsafe impl Sync for TableManager {}
@@ -21,14 +21,13 @@ unsafe impl Send for TableManager {}
 impl TableManager {
     /// Open all the sstables at `db_path` when initializing DB.
     pub fn open_tables(db_path: String) -> TableManager {
-        for i in 0..=MAX_LEVEL {
+        for i in 1..=MAX_LEVEL {
             std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
         }
 
         let mut manager = TableManager {
             db_path,
             level_tables: [
-                std::sync::RwLock::default(),
                 std::sync::RwLock::default(),
                 std::sync::RwLock::default(),
                 std::sync::RwLock::default(),
@@ -45,36 +44,59 @@ impl TableManager {
                 AtomicU64::default(),
                 AtomicU64::default(),
                 AtomicU64::default(),
+            ],
+            next_table_id: [
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
+                AtomicU64::default(),
                 AtomicU64::default(),
             ],
         };
 
-        for i in 0..=MAX_LEVEL {
+        for i in 1..=MAX_LEVEL {
             let dir = std::fs::read_dir(format!("{}/{}", &manager.db_path, i)).unwrap();
             let mut file_size = 0;
+            let mut next_table_id = 0;
             for d in dir {
                 let d = d.unwrap();
                 let path = d.path();
                 // The file whose file_name is a number is considered as sstable.
-                if let Ok(table_id) = path.file_name().unwrap().to_str().unwrap().parse::<u128>() {
+                if let Ok(table_id) = path.file_name().unwrap().to_str().unwrap().parse::<u64>() {
+                    next_table_id = next_table_id.max(table_id);
                     let handle = TableReadHandle::open_table(&manager.db_path, i as _, table_id);
 
-                    // Safety: i is in range [0, MAX_LEVEL]
+                    // Safety: i is in range [1, MAX_LEVEL]
                     unsafe {
-                        let mut guard = manager.level_tables.get_unchecked_mut(i).write().unwrap();
-                        guard.insert(table_id, Arc::new(handle));
+                        let mut guard = manager
+                            .level_tables
+                            .get_unchecked_mut(i - 1)
+                            .write()
+                            .unwrap();
+                        guard.insert(
+                            (handle.max_key().to_string(), handle.table_id()),
+                            Arc::new(handle),
+                        );
                     }
+
                     file_size += d.metadata().unwrap().len();
                 } else {
                     // remove temporary file.
                     std::fs::remove_file(path).unwrap();
                 }
             }
+            // Safety: i is in range [1, MAX_LEVEL]
             unsafe {
                 manager
                     .level_sizes
-                    .get_unchecked(i)
+                    .get_unchecked(i - 1)
                     .store(file_size, Ordering::Release);
+                manager
+                    .next_table_id
+                    .get_unchecked(i - 1)
+                    .store(next_table_id as u64 + 1, Ordering::Release);
             }
         }
         manager
@@ -83,37 +105,19 @@ impl TableManager {
     pub fn get_level_tables_lock(
         &self,
         level: usize,
-    ) -> &std::sync::RwLock<BTreeMap<u128, Arc<TableReadHandle>>> {
-        let lock = self.level_tables.get(level).unwrap();
+    ) -> &std::sync::RwLock<BTreeMap<(String, u64), Arc<TableReadHandle>>> {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
+        let lock = self.level_tables.get(level - 1).unwrap();
         lock
     }
 
-    fn query_level0_tables(&self, key: &String) -> Result<Option<String>> {
-        let tables_lock = self.get_level_tables_lock(0);
-        let tables_guard = tables_lock.read().unwrap();
-
-        // query the latest table first
-        for table in tables_guard.values().rev() {
-            let option = table.query_sstable(key);
-            if option.is_some() {
-                return Ok(option);
-            }
-        }
-        Ok(None)
-    }
-
     pub fn query_tables(&self, key: &String) -> Result<Option<String>> {
-        let option = self.query_level0_tables(key)?;
-        if option.is_some() {
-            return Ok(option);
-        }
-
         for level in 1..=MAX_LEVEL {
             let tables_lock = self.get_level_tables_lock(level);
             let tables_guard = tables_lock.read().unwrap();
 
-            // query the latest table first
-            for table in tables_guard.values().rev() {
+            // TODO: change this to binary search
+            for table in tables_guard.values() {
                 let option = table.query_sstable(key);
                 if option.is_some() {
                     return Ok(option);
@@ -123,71 +127,64 @@ impl TableManager {
         Ok(None)
     }
 
-    fn get_next_table_id(&self, level: usize) -> u128 {
-        let table_guard = self.get_level_tables_lock(level).read().unwrap();
-        match table_guard.last_key_value() {
-            Some((k, _v)) => k + 1,
-            None => 1,
+    fn get_next_table_id(&self, level: usize) -> u64 {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
+        unsafe {
+            self.next_table_id
+                .get_unchecked(level - 1)
+                .fetch_add(1, Ordering::Release)
         }
     }
 
-    pub fn insert_table_handle(&self, handle: TableWriteHandle, min_key: String, max_key: String) {
+    pub fn upsert_table_handle(&self, handle: TableWriteHandle) {
         let file_size = handle.writer.writer.pos;
         debug_assert!(file_size > 0);
 
         let level = handle.level();
         let mut table_guard = self.get_level_tables_lock(level).write().unwrap();
         handle.rename();
-        let handle = TableReadHandle::from_table_write_handle(handle, min_key, max_key);
-        table_guard.insert(handle.table_id(), Arc::new(handle));
+        let handle = TableReadHandle::from_table_write_handle(handle);
+        table_guard.insert(
+            (handle.max_key().clone(), handle.table_id()),
+            Arc::new(handle),
+        );
+
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         unsafe {
             self.level_sizes
-                .get_unchecked(level)
+                .get_unchecked(level - 1)
                 .fetch_add(file_size, Ordering::Release);
         }
     }
 
+    pub fn ready_to_delete(&self, table_handle: Arc<TableReadHandle>) {
+        let level = table_handle.level();
+        unsafe {
+            self.level_sizes
+                .get_unchecked(level - 1)
+                .fetch_sub(table_handle.file_size(), Ordering::Release);
+        }
+        let mut guard = self.get_level_tables_lock(level).write().unwrap();
+        guard
+            .remove(&(table_handle.max_key().into(), table_handle.table_id()))
+            .unwrap();
+
+        table_handle.ready_to_delete();
+    }
+
     /// Create a new sstable without `min_key` or `max_key`
     pub fn create_table_write_handle(&self, level: usize) -> TableWriteHandle {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         let next_table_id = self.get_next_table_id(level);
         TableWriteHandle::new(&self.db_path, level, next_table_id)
     }
 
     /// Get sstable file count of `level`, used for judging whether need compacting.
     pub fn file_count(&self, level: usize) -> usize {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         let tables = self.level_tables.get(level).unwrap();
         let guard = tables.read().unwrap();
         guard.len()
-    }
-
-    /// Return level0 tables to compact
-    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableReadHandle>>, String, String) {
-        let tables = unsafe { self.level_tables.get_unchecked(0) };
-        let guard = tables.read().unwrap();
-
-        let mut tables = Vec::new();
-        tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
-
-        let mut count = 0;
-        let mut min_key = "";
-        let mut max_key = "";
-        for (_id, table) in guard.iter() {
-            if table.test_and_set_compacting() {
-                tables.push(table.clone());
-                count += 1;
-                let keys = table.min_max_key();
-                min_key = min_key.min(keys.0);
-                max_key = if max_key.is_empty() {
-                    keys.1
-                } else {
-                    max_key.max(keys.1)
-                };
-                if count >= NUM_LEVEL0_TABLE_TO_COMPACT {
-                    break;
-                }
-            }
-        }
-        (tables, min_key.to_string(), max_key.to_string())
     }
 
     /// Get tables in `level` that intersect with [`min_key`, `max_key`].
@@ -197,13 +194,14 @@ impl TableManager {
         min_key: &String,
         max_key: &String,
     ) -> VecDeque<Arc<TableReadHandle>> {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         let tables_lock = self.get_level_tables_lock(level);
         let tables_guard = tables_lock.read().unwrap();
 
         let mut tables = VecDeque::new();
 
         // TODO: change this to O(logn)
-        for (_table_id, handle) in tables_guard.iter() {
+        for (_key, handle) in tables_guard.iter() {
             if handle.is_overlapping(min_key, max_key) && handle.test_and_set_compacting() {
                 let handle = handle.clone();
                 tables.push_back(handle);
@@ -212,42 +210,25 @@ impl TableManager {
         tables
     }
 
-    pub fn ready_to_delete(&self, level: usize, table_id: u128) {
-        let lock = self.get_level_tables_lock(level);
-        let mut guard = lock.write().unwrap();
-        let table_handle = guard.remove(&table_id).unwrap();
-
-        unsafe {
-            self.level_sizes
-                .get_unchecked(level)
-                .fetch_sub(table_handle.file_size(), Ordering::Release);
-        }
-
-        table_handle.ready_to_delete();
-        debug!(
-            "count of TableHandle `level {}, table_id {}` : {}",
-            level,
-            table_id,
-            Arc::strong_count(&table_handle)
-        );
-    }
-
     /// Get total size of sstables in `level`
     pub(crate) fn level_size(&self, level: usize) -> u64 {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         unsafe {
             self.level_sizes
-                .get_unchecked(level)
+                .get_unchecked(level - 1)
                 .load(Ordering::Acquire)
         }
     }
 
     /// If total size of `level` is larger than 10^i MB, it should be compacted.
     pub fn size_over(&self, level: usize) -> bool {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         let size = self.level_size(level);
         size > 10u64.pow(level as u32) * 1024 * 1024
     }
 
     pub fn random_handle(&self, level: usize) -> Arc<TableReadHandle> {
+        debug_assert!((1..=MAX_LEVEL).contains(&level));
         let lock = self.get_level_tables_lock(level);
         let guard = lock.read().unwrap();
         let mut rng = rand::thread_rng();

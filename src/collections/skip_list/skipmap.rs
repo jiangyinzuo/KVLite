@@ -1,5 +1,6 @@
 use crate::collections::skip_list::{rand_level, MAX_LEVEL};
 use crate::collections::Entry;
+use crate::memory::SkipMapMemTable;
 use std::alloc::Layout;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
@@ -304,7 +305,7 @@ pub struct Iter<K: Ord + Default, V: Default> {
 }
 
 impl<K: Ord + Default, V: Default> Iter<K, V> {
-    pub fn next_no_consume(&self) -> *const Node<K, V> {
+    pub fn current_no_consume(&self) -> *const Node<K, V> {
         self.node
     }
 
@@ -332,6 +333,56 @@ impl<K: Ord + Default, V: Default> Iterator for Iter<K, V> {
                 self.node = (*self.node).get_next(0);
             }
             Some(n)
+        }
+    }
+}
+
+pub struct IntoIter<K: Ord + Default, V: Default> {
+    inner: SkipMap<K, V>,
+    node: *mut Node<K, V>,
+}
+
+impl<K: Ord + Default, V: Default> IntoIter<K, V> {
+    pub fn current_mut_no_consume(&self) -> *mut Node<K, V> {
+        self.node as *mut _
+    }
+
+    /// # Notice
+    ///
+    /// Make sure `self.node` is not null.
+    pub fn next_node(&mut self) -> *mut Node<K, V> {
+        debug_assert!(!self.node.is_null());
+        unsafe {
+            self.node = (*self.node).get_next(0);
+        }
+        self.node
+    }
+}
+
+impl<K: Ord + Default, V: Default> Iterator for IntoIter<K, V> {
+    type Item = *mut Node<K, V>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.node.is_null() {
+            None
+        } else {
+            let n = self.node;
+            unsafe {
+                self.node = (*self.node).get_next(0);
+            }
+            Some(n)
+        }
+    }
+}
+
+impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
+    type Item = *mut Node<K, V>;
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        unsafe {
+            let node = (*self.head).get_next(0);
+            IntoIter { inner: self, node }
         }
     }
 }

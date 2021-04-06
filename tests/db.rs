@@ -2,6 +2,7 @@ use kvlite::db::KVLite;
 use kvlite::db::ACTIVE_SIZE_THRESHOLD;
 use kvlite::error::KVLiteError;
 use kvlite::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
+use kvlite::sstable::manager::TableManager;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
@@ -40,6 +41,7 @@ fn _test_command<M: 'static + MemTable>(path: &Path) {
     }
 
     db.get(&"key3".to_string()).unwrap().unwrap();
+
     for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
         let v = db.get(&format!("key{}", i));
         let value = v.unwrap();
@@ -49,6 +51,24 @@ fn _test_command<M: 'static + MemTable>(path: &Path) {
             "kv {}",
             i
         );
+    }
+
+    let table_manager = TableManager::open_tables(db.db_path().clone());
+    let lock = table_manager.get_level_tables_lock(1);
+    let read_guard = lock.read().unwrap();
+    let mut last_min_key = "";
+    let mut last_max_key = "";
+    for (_, table) in read_guard.iter() {
+        let (min_key, max_key) = table.min_max_key();
+        assert!(
+            last_max_key.to_string().lt(min_key),
+            "last_max_key: {}, min_key: {}",
+            last_max_key,
+            min_key
+        );
+        assert!(min_key <= max_key);
+        last_min_key = min_key;
+        last_max_key = max_key;
     }
 }
 

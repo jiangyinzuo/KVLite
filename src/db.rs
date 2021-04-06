@@ -114,9 +114,18 @@ impl<T: 'static + MemTable> KVLite<T> {
             return Ok(option);
         }
 
+        let option = self.level0_manager.query_level0_tables(key).unwrap();
+        if option.is_some() {
+            return Ok(option);
+        } 
+        
         // query sstable
         let option = self.table_manager.query_tables(key).unwrap();
         Ok(option)
+    }
+    
+    pub fn db_path(&self) -> &String {
+        &self.db_path
     }
 }
 

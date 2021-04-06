@@ -25,6 +25,10 @@ impl IndexBlock {
         }
         Ok(())
     }
+
+    pub(crate) fn max_key(&self) -> &String {
+        &self.indexes.last().unwrap().3
+    }
 }
 
 #[derive(Default)]
@@ -34,8 +38,7 @@ pub(crate) struct SSTableIndex {
 }
 
 impl SSTableIndex {
-    pub(crate) fn load_index(reader: &mut BufReaderWithPos<File>) -> SSTableIndex {
-        let footer = Footer::load_footer(reader).unwrap();
+    pub(crate) fn load_index(reader: &mut BufReaderWithPos<File>, footer: &Footer) -> SSTableIndex {
         reader
             .seek(SeekFrom::Start(footer.index_block_offset as u64))
             .unwrap();
@@ -49,7 +52,7 @@ impl SSTableIndex {
             let block_length = read_u32(reader);
             let max_key_length = read_u32(reader);
 
-            let max_key = read_string_exact(reader, max_key_length);
+            let max_key = read_string_exact(reader, max_key_length).unwrap();
             sstable_index
                 .indexes
                 .push((block_offset, block_length, max_key_length, max_key));
