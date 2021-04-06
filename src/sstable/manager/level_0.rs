@@ -1,6 +1,6 @@
+use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::memory::MemTable;
-use crate::sstable::level0_compact::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
-use crate::sstable::manager::TableManager;
+use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::WriteAheadLog;
@@ -8,6 +8,7 @@ use crate::Result;
 use crossbeam_channel::Receiver;
 use rand::Rng;
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -22,7 +23,7 @@ pub struct Level0Manager {
     level0_tables: std::sync::RwLock<BTreeMap<u64, Arc<TableReadHandle>>>,
     file_size: AtomicU64,
 
-    table_manager: std::sync::Arc<TableManager>,
+    table_manager: std::sync::Arc<LevelNManager>,
     sender: crossbeam_channel::Sender<()>,
     rt: Arc<Runtime>,
 
@@ -33,7 +34,7 @@ pub struct Level0Manager {
 impl Level0Manager {
     fn open_tables(
         db_path: String,
-        table_manager: Arc<TableManager>,
+        table_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
         rt: Arc<tokio::runtime::Runtime>,
     ) -> Result<Arc<Level0Manager>> {
@@ -80,13 +81,13 @@ impl Level0Manager {
     /// Start a thread for writing immutable memory table to level0 sstable
     pub(crate) fn start_task_write_level0(
         db_path: String,
-        table_manager: Arc<TableManager>,
+        leveln_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
         imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
         recv: Receiver<()>,
         rt: Arc<tokio::runtime::Runtime>,
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
-        let manager = Self::open_tables(db_path, table_manager, wal, rt).unwrap();
+        let manager = Self::open_tables(db_path, leveln_manager, wal, rt).unwrap();
         let manager2 = manager.clone();
 
         let handle = thread::Builder::new()
@@ -146,7 +147,11 @@ impl Level0Manager {
                 if table_count > LEVEL0_FILES_THRESHOLD {
                     let (level0_tables, min_key, max_key) =
                         level0_manager.assign_level0_tables_to_compact();
-                    let level1_tables = table_manager.get_overlap_tables(1, &min_key, &max_key);
+                    let level1_tables = table_manager.get_overlap_tables(
+                        unsafe { NonZeroUsize::new_unchecked(1) },
+                        &min_key,
+                        &max_key,
+                    );
                     compact_and_insert(
                         &level0_manager,
                         &table_manager,
@@ -277,8 +282,8 @@ impl Level0Manager {
 mod tests {
     use crate::db::{DBCommandMut, ACTIVE_SIZE_THRESHOLD};
     use crate::memory::{KeyValue, SkipMapMemTable};
-    use crate::sstable::level0_table::Level0Manager;
-    use crate::sstable::manager::TableManager;
+    use crate::sstable::manager::level_0::Level0Manager;
+    use crate::sstable::manager::level_n::LevelNManager;
     use crate::wal::WriteAheadLog;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
@@ -298,7 +303,9 @@ mod tests {
     }
 
     fn test_query(path: String, insert_value: bool) {
-        let table_manager = Arc::new(TableManager::open_tables(path.clone()));
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+
+        let leveln_manager = LevelNManager::open_tables(path.clone(), rt.clone());
 
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
@@ -310,10 +317,10 @@ mod tests {
         assert!(mut_mem.is_empty());
 
         let imm_mem = Arc::new(RwLock::new(imm_mem));
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,
-            table_manager.clone(),
+            leveln_manager.clone(),
             Arc::new(Mutex::new(wal)),
             imm_mem.clone(),
             receiver,
@@ -341,7 +348,7 @@ mod tests {
             let v = manager
                 .query_level0_tables(&key)
                 .unwrap()
-                .unwrap_or_else(|| table_manager.query_tables(&key).unwrap().unwrap());
+                .unwrap_or_else(|| leveln_manager.query_tables(&key).unwrap().unwrap());
             assert_eq!(format!("value{}", i), v);
         }
 

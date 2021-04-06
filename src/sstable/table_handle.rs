@@ -79,14 +79,12 @@ impl TableWriteHandle {
 
     pub fn write_sstable_from_vec(&mut self, kvs: Vec<(String, String)>) -> crate::Result<()> {
         // write Data Blocks
-        let mut i = 0;
         let length = kvs.len();
-        for (k, v) in kvs {
+        for (i, (k, v)) in kvs.into_iter().enumerate() {
             self.writer.write_key_value(&k, &v);
             if self.writer.count == MAX_BLOCK_KV_PAIRS || i == length - 1 {
                 self.writer.add_index(k);
             }
-            i += 1;
         }
         self.writer.write_index_and_footer();
         Ok(())

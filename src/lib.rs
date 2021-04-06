@@ -8,6 +8,7 @@ pub use db::KVLite;
 
 pub mod collections;
 pub mod command;
+mod compact;
 pub mod db;
 pub mod error;
 mod ioutils;

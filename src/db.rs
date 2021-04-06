@@ -1,7 +1,7 @@
 use crate::command::WriteCommand;
 use crate::memory::MemTable;
-use crate::sstable::level0_table::Level0Manager;
-use crate::sstable::manager::TableManager;
+use crate::sstable::manager::level_0::Level0Manager;
+use crate::sstable::manager::level_n::LevelNManager;
 use crate::wal::WriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Sender;
@@ -25,9 +25,9 @@ pub struct KVLite<T: MemTable> {
     mut_mem_table: RwLock<T>,
     imm_mem_table: Arc<RwLock<T>>,
 
-    table_manager: Arc<TableManager>,
-
     level0_manager: Arc<Level0Manager>,
+    leveln_manager: Arc<LevelNManager>,
+
     level0_writer_handle: Option<JoinHandle<()>>,
     write_level0_channel: Option<Sender<()>>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -36,8 +36,9 @@ pub struct KVLite<T: MemTable> {
 impl<T: 'static + MemTable> KVLite<T> {
     pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
-        let table_manager = TableManager::open_tables(db_path.clone());
-        let table_manager = Arc::new(table_manager);
+        let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().build().unwrap());
+
+        let leveln_manager = LevelNManager::open_tables(db_path.clone(), runtime.clone());
 
         let mut mut_mem_table = T::default();
         let mut imm_mem_table = T::default();
@@ -49,11 +50,10 @@ impl<T: 'static + MemTable> KVLite<T> {
 
         let imm_mem_table = Arc::new(RwLock::new(imm_mem_table));
         let channel = crossbeam_channel::unbounded();
-        let runtime = Arc::new(tokio::runtime::Builder::new_multi_thread().build().unwrap());
 
         let (level0_manager, level0_writer_handle) = Level0Manager::start_task_write_level0(
             db_path.clone(),
-            table_manager.clone(),
+            leveln_manager.clone(),
             wal.clone(),
             imm_mem_table.clone(),
             channel.1,
@@ -65,7 +65,7 @@ impl<T: 'static + MemTable> KVLite<T> {
             wal,
             mut_mem_table: RwLock::new(mut_mem_table),
             imm_mem_table,
-            table_manager,
+            leveln_manager,
             level0_manager,
             level0_writer_handle: Some(level0_writer_handle),
             write_level0_channel: Some(channel.0),
@@ -117,13 +117,13 @@ impl<T: 'static + MemTable> KVLite<T> {
         let option = self.level0_manager.query_level0_tables(key).unwrap();
         if option.is_some() {
             return Ok(option);
-        } 
-        
+        }
+
         // query sstable
-        let option = self.table_manager.query_tables(key).unwrap();
+        let option = self.leveln_manager.query_tables(key).unwrap();
         Ok(option)
     }
-    
+
     pub fn db_path(&self) -> &String {
         &self.db_path
     }

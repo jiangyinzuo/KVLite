@@ -2,7 +2,8 @@ use kvlite::db::KVLite;
 use kvlite::db::ACTIVE_SIZE_THRESHOLD;
 use kvlite::error::KVLiteError;
 use kvlite::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
-use kvlite::sstable::manager::TableManager;
+use kvlite::sstable::manager::level_n::LevelNManager;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
@@ -53,8 +54,9 @@ fn _test_command<M: 'static + MemTable>(path: &Path) {
         );
     }
 
-    let table_manager = TableManager::open_tables(db.db_path().clone());
-    let lock = table_manager.get_level_tables_lock(1);
+    let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+    let leveln_manager = LevelNManager::open_tables(db.db_path().clone(), rt);
+    let lock = leveln_manager.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(1) });
     let read_guard = lock.read().unwrap();
     let mut last_min_key = "";
     let mut last_max_key = "";

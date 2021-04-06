@@ -1,3 +1,5 @@
+//! [https://en.wikipedia.org/wiki/Treap]
+
 use crate::collections::Entry;
 use std::cmp::Ordering;
 use std::mem;

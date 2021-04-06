@@ -65,16 +65,14 @@
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
-use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
+
+use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 
 pub(super) mod data_block;
 pub(crate) mod footer;
 pub(crate) mod index_block;
-mod level0_compact;
-pub mod level0_table;
-mod level_compact;
 pub mod manager;
 pub mod table_handle;
 
