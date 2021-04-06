@@ -8,6 +8,8 @@ use std::path::Path;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
+const TEST_CMD_TIMES: usize = 20;
+
 #[test]
 fn test_command() {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -30,7 +32,7 @@ fn _test_command<M: 'static + MemTable>(path: &Path) {
     let v = db.get(&"hello".to_owned()).unwrap();
     assert!(v.is_none(), "{:?}", v);
 
-    for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
+    for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
         db.set(
             format!("key{}", if i < ACTIVE_SIZE_THRESHOLD { 0 } else { i }),
             format!("value{}", i),
@@ -43,7 +45,7 @@ fn _test_command<M: 'static + MemTable>(path: &Path) {
 
     db.get(&"key3".to_string()).unwrap().unwrap();
 
-    for i in 0..ACTIVE_SIZE_THRESHOLD * 10 {
+    for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
         let v = db.get(&format!("key{}", i));
         let value = v.unwrap();
         assert_eq!(

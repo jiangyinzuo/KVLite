@@ -69,9 +69,6 @@ pub(crate) fn compact_and_insert(
 
         for level1_table_handle in level1_table_handles.iter() {
             for (level1_key, level1_value) in level1_table_handle.iter() {
-                if level1_key == "key300" && level1_table_handle.table_id() == 6 {
-                    println!("old level1: {} key300", level1_table_handle.table_id());
-                }
                 if kv.is_null() {
                     // write all the remain key-values in level1 tables.
                     add_kv!(level1_key, level1_value);
@@ -131,20 +128,13 @@ pub(crate) fn compact_and_insert(
     for table in level1_table_handles {
         leveln_manager.ready_to_delete(table);
     }
+    leveln_manager.may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
 }
 
 fn add_table_handle_from_vec(temp_kvs: Vec<(String, String)>, table_manager: &Arc<LevelNManager>) {
     if !temp_kvs.is_empty() {
         let mut new_table =
             table_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
-
-        for (k, v) in temp_kvs.iter() {
-            if k == "key300" {
-                println!("{} {} {}", k, v, new_table.table_id());
-                break;
-            }
-        }
-
         new_table.write_sstable_from_vec(temp_kvs).unwrap();
         table_manager.upsert_table_handle(new_table);
     }

@@ -1,3 +1,4 @@
+use crate::compact::level_n::start_compact;
 use crate::db::MAX_LEVEL;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
@@ -60,10 +61,10 @@ impl LevelNManager {
                 AtomicU64::default(),
             ],
             rt,
-            senders: Vec::with_capacity(MAX_LEVEL),
+            senders: Vec::with_capacity(MAX_LEVEL - 1),
         };
 
-        let mut receivers = VecDeque::with_capacity(MAX_LEVEL);
+        let mut receivers = VecDeque::with_capacity(MAX_LEVEL - 1);
 
         for i in 1..=MAX_LEVEL {
             let dir = std::fs::read_dir(format!("{}/{}", &manager.db_path, i)).unwrap();
@@ -108,13 +109,15 @@ impl LevelNManager {
                     .store(next_table_id as u64 + 1, Ordering::Release);
             }
 
-            let (sender, receiver) = crossbeam_channel::unbounded();
-            manager.senders.push(sender);
-            receivers.push_back(receiver);
+            if i < MAX_LEVEL {
+                let (sender, receiver) = crossbeam_channel::unbounded();
+                manager.senders.push(sender);
+                receivers.push_back(receiver);
+            }
         }
 
         let manager = Arc::new(manager);
-        for i in 1..=MAX_LEVEL {
+        for i in 1..=MAX_LEVEL - 1 {
             Self::start_compacting_task(
                 manager.clone(),
                 unsafe { NonZeroUsize::new_unchecked(i) },
@@ -134,7 +137,9 @@ impl LevelNManager {
             info!("start compacting task for level {}.", compact_level);
             while let Ok(()) = receiver.recv() {
                 if leveln_manager.size_over(compact_level) {
-                    let handle = leveln_manager.random_handle(compact_level);
+                    debug!("compact level: {}", compact_level);
+                    let handle_to_compact = leveln_manager.random_handle(compact_level);
+                    start_compact(compact_level, handle_to_compact);
                 }
             }
         });
@@ -154,9 +159,9 @@ impl LevelNManager {
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
             let tables_guard = tables_lock.read().unwrap();
 
-            // TODO: change this to binary search
-            for table in tables_guard.values() {
-                let option = table.query_sstable(key);
+            if let Some((_k, table_read_handle)) = tables_guard.range((key.to_string(), 0)..).next()
+            {
+                let option = table_read_handle.query_sstable(key);
                 if option.is_some() {
                     return Ok(option);
                 }
@@ -238,11 +243,17 @@ impl LevelNManager {
 
         let mut tables = VecDeque::new();
 
-        // TODO: change this to O(logn)
-        for (_key, handle) in tables_guard.iter() {
-            if handle.is_overlapping(min_key, max_key) && handle.test_and_set_compacting() {
-                let handle = handle.clone();
-                tables.push_back(handle);
+        // min_key:       "3"
+        //                 |-------------->
+        // max_key:  "1", "3", "5", "7" ...
+        for (_key, handle) in tables_guard.range((min_key.to_string(), 0)..) {
+            if handle.is_overlapping(min_key, max_key) {
+                if handle.test_and_set_compacting() {
+                    let handle = handle.clone();
+                    tables.push_back(handle);
+                }
+            } else {
+                break;
             }
         }
         tables
@@ -261,7 +272,14 @@ impl LevelNManager {
     /// If total size of `level` is larger than 10^i MB, it should be compacted.
     pub fn size_over(&self, level: NonZeroUsize) -> bool {
         let size = self.level_size(level.get());
-        size > 10u64.pow(level.get() as u32) * 1024 * 1024
+        #[cfg(debug_assertions)]
+        {
+            size > 10u64.pow(level.get() as u32) * 1024
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            size > 10u64.pow(level.get() as u32) * 1024 * 1024
+        }
     }
 
     pub fn random_handle(&self, level: NonZeroUsize) -> Arc<TableReadHandle> {
@@ -274,6 +292,8 @@ impl LevelNManager {
     }
 
     pub fn may_compact(&self, level: NonZeroUsize) {
-        if self.size_over(level) {}
+        if self.size_over(level) {
+            self.senders.get(level.get() - 1).unwrap().send(()).unwrap();
+        }
     }
 }
