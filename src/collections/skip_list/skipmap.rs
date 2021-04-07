@@ -397,7 +397,9 @@ mod tests {
         skip_map.insert(1, 1);
         skip_map.insert(1, 2);
         assert_eq!(skip_map.len(), 1);
-        skip_map.remove(1);
+
+        assert!(skip_map.remove(1));
+        assert!(!skip_map.remove(1));
         assert!(skip_map.is_empty());
     }
 

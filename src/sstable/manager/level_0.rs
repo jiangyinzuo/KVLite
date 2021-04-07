@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
-use tokio::runtime::Runtime;
+
+pub struct Levl;
 
 /// Struct for read and write level0 sstable.
 pub struct Level0Manager {
@@ -25,7 +26,6 @@ pub struct Level0Manager {
 
     table_manager: std::sync::Arc<LevelNManager>,
     sender: crossbeam_channel::Sender<()>,
-    rt: Arc<Runtime>,
 
     /// Table ID is increasing order.
     wal: Arc<Mutex<WriteAheadLog>>,
@@ -36,7 +36,6 @@ impl Level0Manager {
         db_path: String,
         table_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
-        rt: Arc<tokio::runtime::Runtime>,
     ) -> Result<Arc<Level0Manager>> {
         std::fs::create_dir_all(format!("{}/0", db_path)).unwrap();
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
@@ -70,10 +69,9 @@ impl Level0Manager {
             file_size: AtomicU64::new(file_size),
             table_manager,
             sender,
-            rt,
             wal,
         });
-        Self::start_compacting_task(level0_manager.clone(), receiver);
+        let handle = Self::start_compacting_task(level0_manager.clone(), receiver);
 
         Ok(level0_manager)
     }
@@ -85,9 +83,8 @@ impl Level0Manager {
         wal: Arc<Mutex<WriteAheadLog>>,
         imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
         recv: Receiver<()>,
-        rt: Arc<tokio::runtime::Runtime>,
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
-        let manager = Self::open_tables(db_path, leveln_manager, wal, rt).unwrap();
+        let manager = Self::open_tables(db_path, leveln_manager, wal).unwrap();
         let manager2 = manager.clone();
 
         let handle = thread::Builder::new()
@@ -136,10 +133,12 @@ impl Level0Manager {
         }
     }
 
-    fn start_compacting_task(level0_manager: Arc<Level0Manager>, receiver: Receiver<()>) {
+    fn start_compacting_task(
+        level0_manager: Arc<Level0Manager>,
+        receiver: Receiver<()>,
+    ) -> JoinHandle<()> {
         let table_manager = level0_manager.table_manager.clone();
-        let level0_manager2 = level0_manager.clone();
-        level0_manager2.rt.spawn(async move {
+        std::thread::spawn(move || {
             let table_manager = table_manager;
             let level0_manager = level0_manager;
             while let Ok(()) = receiver.recv() {
@@ -160,7 +159,7 @@ impl Level0Manager {
                     );
                 }
             }
-        });
+        })
     }
 
     #[inline]
@@ -303,9 +302,7 @@ mod tests {
     }
 
     fn test_query(path: String, insert_value: bool) {
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-
-        let leveln_manager = LevelNManager::open_tables(path.clone(), rt.clone());
+        let leveln_manager = LevelNManager::open_tables(path.clone());
 
         let mut mut_mem = SkipMapMemTable::default();
         let mut imm_mem = SkipMapMemTable::default();
@@ -324,7 +321,6 @@ mod tests {
             Arc::new(Mutex::new(wal)),
             imm_mem.clone(),
             receiver,
-            rt,
         );
 
         if insert_value {

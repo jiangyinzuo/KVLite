@@ -72,35 +72,36 @@ pub(crate) fn compact_and_insert(
                 if kv.is_null() {
                     // write all the remain key-values in level1 tables.
                     add_kv!(level1_key, level1_value);
-                } else {
-                    loop {
-                        let level0_key = unsafe { &(*kv).entry.key };
-                        debug_assert!(!level0_key.is_empty());
-                        match level0_key.cmp(&level1_key) {
-                            // set to level0_value
-                            // drop level1_value
-                            Ordering::Equal => {
-                                let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
-                                let (level0_key, level0_value) = level0_entry.key_value();
-                                add_kv!(level0_key, level0_value);
-                                kv = level0_iter.next_node();
-                                break;
-                            }
-                            // insert level1_value
-                            Ordering::Greater => {
+                    continue;
+                }
+
+                loop {
+                    let level0_key = unsafe { &(*kv).entry.key };
+                    debug_assert!(!level0_key.is_empty());
+                    match level0_key.cmp(&level1_key) {
+                        // set to level0_value
+                        // drop level1_value
+                        Ordering::Equal => {
+                            let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
+                            let (level0_key, level0_value) = level0_entry.key_value();
+                            add_kv!(level0_key, level0_value);
+                            kv = level0_iter.next_node();
+                            break;
+                        }
+                        // insert level1_value
+                        Ordering::Greater => {
+                            add_kv!(level1_key, level1_value);
+                            break;
+                        }
+                        // insert level0_value
+                        Ordering::Less => {
+                            let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
+                            let (level0_key, level0_value) = level0_entry.key_value();
+                            add_kv!(level0_key, level0_value);
+                            kv = level0_iter.next_node();
+                            if kv.is_null() {
                                 add_kv!(level1_key, level1_value);
                                 break;
-                            }
-                            // insert level0_value
-                            Ordering::Less => {
-                                let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
-                                let (level0_key, level0_value) = level0_entry.key_value();
-                                add_kv!(level0_key, level0_value);
-                                kv = level0_iter.next_node();
-                                if kv.is_null() {
-                                    add_kv!(level1_key, level1_value);
-                                    break;
-                                }
                             }
                         }
                     }
@@ -131,24 +132,24 @@ pub(crate) fn compact_and_insert(
     leveln_manager.may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
 }
 
-fn add_table_handle_from_vec(temp_kvs: Vec<(String, String)>, table_manager: &Arc<LevelNManager>) {
+fn add_table_handle_from_vec(temp_kvs: Vec<(String, String)>, leveln_manager: &Arc<LevelNManager>) {
     if !temp_kvs.is_empty() {
         let mut new_table =
-            table_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
+            leveln_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
         new_table.write_sstable_from_vec(temp_kvs).unwrap();
-        table_manager.upsert_table_handle(new_table);
+        leveln_manager.upsert_table_handle(new_table);
     }
 }
 
 fn add_table_handle_from_vec_ref(
     temp_kvs: Vec<(&String, &String)>,
-    table_manager: &Arc<LevelNManager>,
+    leveln_manager: &Arc<LevelNManager>,
 ) {
     if !temp_kvs.is_empty() {
         let mut new_table =
-            table_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
+            leveln_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
         new_table.write_sstable_from_vec_ref(temp_kvs).unwrap();
-        table_manager.upsert_table_handle(new_table);
+        leveln_manager.upsert_table_handle(new_table);
     }
 }
 

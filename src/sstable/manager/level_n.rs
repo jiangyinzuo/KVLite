@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::runtime::Runtime;
+use std::thread::JoinHandle;
 
 /// Struct for adding and removing sstable files.
 pub struct LevelNManager {
@@ -17,7 +17,6 @@ pub struct LevelNManager {
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
-    rt: Arc<Runtime>,
     senders: Vec<Sender<()>>,
 }
 
@@ -26,7 +25,7 @@ unsafe impl Send for LevelNManager {}
 
 impl LevelNManager {
     /// Open all the sstables at `db_path` when initializing DB.
-    pub fn open_tables(db_path: String, rt: Arc<Runtime>) -> Arc<LevelNManager> {
+    pub fn open_tables(db_path: String) -> Arc<LevelNManager> {
         for i in 1..=MAX_LEVEL {
             std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
         }
@@ -60,7 +59,6 @@ impl LevelNManager {
                 AtomicU64::default(),
                 AtomicU64::default(),
             ],
-            rt,
             senders: Vec::with_capacity(MAX_LEVEL - 1),
         };
 
@@ -131,18 +129,19 @@ impl LevelNManager {
         leveln_manager: Arc<LevelNManager>,
         compact_level: NonZeroUsize,
         receiver: Receiver<()>,
-    ) {
-        let leveln_manager2 = leveln_manager.clone();
-        leveln_manager2.rt.spawn(async move {
+    ) -> JoinHandle<()> {
+        std::thread::spawn(move || {
             info!("start compacting task for level {}.", compact_level);
             while let Ok(()) = receiver.recv() {
                 if leveln_manager.size_over(compact_level) {
-                    debug!("compact level: {}", compact_level);
-                    let handle_to_compact = leveln_manager.random_handle(compact_level);
-                    start_compact(compact_level, handle_to_compact);
+                    if let Some(handle_to_compact) = leveln_manager.random_handle(compact_level) {
+                        debug!("compact level: {}", compact_level);
+                        start_compact(compact_level, handle_to_compact, leveln_manager.clone());
+                    }
                 }
             }
-        });
+            info!("compacting task for level {} exit.", compact_level);
+        })
     }
 
     pub fn get_level_tables_lock(
@@ -282,18 +281,57 @@ impl LevelNManager {
         }
     }
 
-    pub fn random_handle(&self, level: NonZeroUsize) -> Arc<TableReadHandle> {
+    pub(crate) fn random_handle(&self, level: NonZeroUsize) -> Option<Arc<TableReadHandle>> {
         let lock = self.get_level_tables_lock(level);
         let guard = lock.read().unwrap();
         let mut rng = rand::thread_rng();
-        let id = rng.gen_range(0..guard.len());
-        let v = guard.values().nth(id).unwrap();
-        v.clone()
+
+        // find a handle to compact
+        for _ in 0..10 {
+            let id = rng.gen_range(0..guard.len());
+            let v = guard.values().nth(id).unwrap();
+            if v.test_and_set_compacting() {
+                return Some(v.clone());
+            }
+        }
+        None
     }
 
+    /// May compact `level`th sstables.
     pub fn may_compact(&self, level: NonZeroUsize) {
         if self.size_over(level) {
             self.senders.get(level.get() - 1).unwrap().send(()).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use crate::db::MAX_LEVEL;
+    use crate::sstable::manager::level_n::LevelNManager;
+    use crate::sstable::table_handle::tests::create_read_handle;
+    use std::sync::Arc;
+
+    pub(crate) fn create_manager(db_path: &str) -> Arc<LevelNManager> {
+        LevelNManager::open_tables(db_path.to_string())
+    }
+
+    #[test]
+    fn test_manager() {
+        let path = tempfile::TempDir::new().unwrap();
+        for i in 0..=MAX_LEVEL {
+            std::fs::create_dir_all(path.path().join(i.to_string())).unwrap();
+        }
+
+        let db_path = path.path().to_str().unwrap();
+        let read_handle = create_read_handle(db_path, 1, 1, 0..100);
+
+        assert_eq!(read_handle.kv_total(), 100);
+        let manager = create_manager(db_path);
+        debug_assert!(
+            manager.level_size(1) > 2000,
+            "actual: {}",
+            manager.level_size(1)
+        );
     }
 }

@@ -28,7 +28,7 @@ pub struct TableWriteHandle {
 }
 
 impl TableWriteHandle {
-    pub(super) fn new(db_path: &str, level: usize, table_id: u64) -> TableWriteHandle {
+    pub(crate) fn new(db_path: &str, level: usize, table_id: u64) -> TableWriteHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
         let writer = {
             let mut file = OpenOptions::new()
@@ -379,6 +379,11 @@ impl<'table> Iter<'table> {
             end: false,
         }
     }
+
+    #[inline]
+    pub fn end(&self) -> bool {
+        self.end
+    }
 }
 
 impl<'table> Iterator for Iter<'table> {
@@ -394,6 +399,54 @@ impl<'table> Iterator for Iter<'table> {
                 self.end = true;
             }
             Some((k, v))
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+
+    use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
+    use std::ops::Range;
+
+    pub(crate) fn create_write_handle(
+        db_path: &str,
+        level: usize,
+        table_id: u64,
+        range: Range<i32>,
+    ) -> TableWriteHandle {
+        let mut write_handle = TableWriteHandle::new(db_path, level, table_id);
+
+        let mut kvs = vec![];
+        for i in range {
+            kvs.push((format!("key{}", i), format!("value{}_{}", i, level)));
+        }
+        write_handle.write_sstable_from_vec(kvs).unwrap();
+        write_handle
+    }
+
+    pub(crate) fn create_read_handle(
+        db_path: &str,
+        level: usize,
+        table_id: u64,
+        range: Range<i32>,
+    ) -> TableReadHandle {
+        let write_handle = create_write_handle(db_path, level, table_id, range);
+        write_handle.rename();
+        TableReadHandle::open_table(db_path, level, table_id)
+    }
+
+    #[test]
+    fn test_handle() {
+        let path = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(path.path().join("1")).unwrap();
+        let path = path.path().to_str().unwrap().to_string();
+
+        let read_handle = create_read_handle(&path, 1, 1, 0..100);
+        assert_eq!(read_handle.min_key(), "key0");
+        assert_eq!(read_handle.max_key(), "key99");
+        for (i, kv) in read_handle.iter().enumerate() {
+            assert_eq!(kv, (format!("key{}", i), format!("value{}_1", i)));
         }
     }
 }

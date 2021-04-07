@@ -20,7 +20,7 @@ impl DBCommandMut for SkipMapMemTable {
         } else {
             let node = unsafe { node.as_mut().unwrap() };
             let k = &node.entry.key;
-            if k.eq(key) {
+            if k.eq(key) && !node.entry.value.is_empty() {
                 Ok(Some(node.entry.value.clone()))
             } else {
                 Ok(None)
@@ -67,3 +67,21 @@ impl KeyValue for SkipMapMemTable {
 }
 
 impl MemTable for SkipMapMemTable {}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::DBCommandMut;
+    use crate::memory::SkipMapMemTable;
+
+    #[test]
+    fn test_insert() {
+        let mut table = SkipMapMemTable::default();
+        for i in 0..10 {
+            table.set("1".into(), i.to_string()).unwrap();
+        }
+
+        assert_eq!("9", table.get("1").unwrap().unwrap());
+        table.remove("1".to_string()).unwrap();
+        assert!(table.get("1").unwrap().is_none());
+    }
+}
