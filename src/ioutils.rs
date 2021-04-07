@@ -86,7 +86,6 @@ impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
     }
 }
 
-#[inline]
 pub fn read_u32(reader: &mut BufReaderWithPos<File>) -> u32 {
     let mut nums = [0u8; 4];
     debug_assert!(

@@ -11,6 +11,7 @@ pub mod command;
 mod compact;
 pub mod db;
 pub mod error;
+mod hash;
 mod ioutils;
 pub mod memory;
 pub mod sstable;

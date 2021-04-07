@@ -8,4 +8,6 @@ fn main() {
     db.set("hello".to_string(), "value1".to_string()).unwrap();
 
     println!("{:?}", db.get(&"hello".into()).unwrap()); // Some("value1")
+    db.remove("hello".to_string()).unwrap();
+    assert!(db.get(&"hello".to_string()).unwrap().is_none());
 }

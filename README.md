@@ -6,6 +6,7 @@ A toy key-value storage for DB study
 
 ## Examples
 
+`get`, `set` and `remove` command
 ```rust
 use kvlite::memory::SkipMapMemTable;
 use kvlite::KVLite;
@@ -17,6 +18,8 @@ fn main() {
     db.set("hello".to_string(), "value1".to_string()).unwrap();
 
     println!("{:?}", db.get(&"hello".into()).unwrap()); // Some("value1")
+    db.remove("hello".to_string()).unwrap();
+    assert!(db.get(&"hello".to_string()).unwrap().is_none());
 }
 ```
 

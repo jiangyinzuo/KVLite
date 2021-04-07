@@ -55,7 +55,7 @@ impl TableWriteHandle {
         for (i, (k, v)) in table.kv_iter().enumerate() {
             self.writer.write_key_value(k, v);
             if self.writer.count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
-                self.writer.add_index(k.clone());
+                self.writer.add_index(k.to_string());
             }
         }
         self.writer.write_index_and_footer();
