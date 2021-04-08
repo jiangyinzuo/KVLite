@@ -190,7 +190,7 @@ mod tests {
     use crate::sstable::manager::level_n::LevelNManager;
     use log::info;
     use std::num::NonZeroUsize;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
 

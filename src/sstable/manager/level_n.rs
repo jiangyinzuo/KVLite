@@ -303,7 +303,7 @@ impl LevelNManager {
 
     /// May compact `level`th sstables.
     pub fn may_compact(&self, level: NonZeroUsize) {
-        if self.size_over(level) {
+        if level.get() < MAX_LEVEL && self.size_over(level) {
             self.senders.get(level.get() - 1).unwrap().send(()).unwrap();
         }
     }

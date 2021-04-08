@@ -145,17 +145,11 @@ impl Compactor {
             }
 
             // write all the remain key-values in compact level table
-            while let CurLevelState::HasValue(kv) = cur_level_state {
+            if let CurLevelState::HasValue(kv) = cur_level_state {
                 add_kv!(kv.0, kv.1);
-                match table_to_compact_iter.next() {
-                    Some(kv) => cur_level_state = CurLevelState::HasValue(kv),
-                    None => cur_level_state = CurLevelState::End,
-                }
             }
-            if !table_to_compact_iter.end() {
-                for kv in table_to_compact_iter {
-                    add_kv!(kv.0, kv.1);
-                }
+            for kv in table_to_compact_iter {
+                add_kv!(kv.0, kv.1);
             }
         }
 
@@ -173,14 +167,13 @@ impl Compactor {
     }
 
     fn add_table_handle(&self, temp_kvs: Vec<(String, String)>) {
-        if !temp_kvs.is_empty() {
-            let mut new_table = self.leveln_manager.create_table_write_handle(
-                unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) },
-                temp_kvs.len() as u32,
-            );
-            new_table.write_sstable_from_vec(temp_kvs).unwrap();
-            self.leveln_manager.upsert_table_handle(new_table);
-        }
+        debug_assert!(!temp_kvs.is_empty());
+        let mut new_table = self.leveln_manager.create_table_write_handle(
+            unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) },
+            temp_kvs.len() as u32,
+        );
+        new_table.write_sstable_from_vec(temp_kvs).unwrap();
+        self.leveln_manager.upsert_table_handle(new_table);
     }
 }
 
