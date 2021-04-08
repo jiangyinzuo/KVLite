@@ -173,7 +173,7 @@ impl LevelNManager {
         unsafe {
             self.next_table_id
                 .get_unchecked(level.get() - 1)
-                .fetch_add(1, Ordering::Release)
+                .fetch_add(1, Ordering::SeqCst)
         }
     }
 
