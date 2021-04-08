@@ -111,7 +111,7 @@ impl Level0Manager {
 
     /// Persistently write the `table` to disk.
     fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
-        let mut handle = self.create_table_write_handle();
+        let mut handle = self.create_table_write_handle(table.len() as u32);
         handle.write_sstable(table)?;
         self.insert_table_handle(handle);
         self.delete_imm_table_log()?;
@@ -203,9 +203,9 @@ impl Level0Manager {
     }
 
     /// Create a new sstable without `min_key` or `max_key`
-    pub fn create_table_write_handle(&self) -> TableWriteHandle {
+    pub fn create_table_write_handle(&self, kv_total: u32) -> TableWriteHandle {
         let next_table_id = self.get_next_table_id();
-        TableWriteHandle::new(&self.db_path, 0, next_table_id)
+        TableWriteHandle::new(&self.db_path, 0, next_table_id, kv_total)
     }
 
     /// Get sstable file count of level 0, used for judging whether need compacting.

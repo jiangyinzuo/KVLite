@@ -174,9 +174,10 @@ impl Compactor {
 
     fn add_table_handle(&self, temp_kvs: Vec<(String, String)>) {
         if !temp_kvs.is_empty() {
-            let mut new_table = self.leveln_manager.create_table_write_handle(unsafe {
-                NonZeroUsize::new_unchecked(self.compact_level.get() + 1)
-            });
+            let mut new_table = self.leveln_manager.create_table_write_handle(
+                unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) },
+                temp_kvs.len() as u32,
+            );
             new_table.write_sstable_from_vec(temp_kvs).unwrap();
             self.leveln_manager.upsert_table_handle(new_table);
         }

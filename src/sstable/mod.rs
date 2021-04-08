@@ -66,11 +66,11 @@
 //! Length of Footer is fixed (64bit).
 //!
 //! ```text
-//! +----------------------------------------------------------------------------+
-//! | IndexBlock offset | IndexBlock length | kv_total | Magic Number 0xdb991122 |
-//! +----------------------------------------------------------------------------+
-//! \------------------/\-------------------/\---------/\------------------------/
-//!         u32                  u32             u32               u32
+//! +--------------------------------------------------------------------------------------------+
+//! | IndexBlock offset | IndexBlock length | filter length | kv_total | Magic Number 0xdb991122 |
+//! +--------------------------------------------------------------------------------------------+
+//! \------------------/\-------------------/\-------------/\----------/\------------------------/
+//!         u32                  u32             u32            u32               u32
 //! ```
 //!
 //! NOTE: All fixed-length integer are little-endian.
@@ -81,6 +81,7 @@ use std::io::{Seek, SeekFrom};
 use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 
 pub(super) mod data_block;
+pub(super) mod filter_block;
 pub(crate) mod footer;
 pub(crate) mod index_block;
 pub mod manager;

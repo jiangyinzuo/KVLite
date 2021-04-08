@@ -23,8 +23,10 @@ pub(crate) fn compact_and_insert(
         let level1_table_size = level0_skip_map.len() / LEVEL0_FILES_THRESHOLD;
         if level1_table_size == 0 {
             // create only one level1 table
-            let mut new_table =
-                leveln_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
+            let mut new_table = leveln_manager.create_table_write_handle(
+                unsafe { NonZeroUsize::new_unchecked(1) },
+                level0_skip_map.len() as u32,
+            );
             new_table.write_sstable(&level0_skip_map).unwrap();
             leveln_manager.upsert_table_handle(new_table);
         } else {
@@ -134,8 +136,10 @@ pub(crate) fn compact_and_insert(
 
 fn add_table_handle_from_vec(temp_kvs: Vec<(String, String)>, leveln_manager: &Arc<LevelNManager>) {
     if !temp_kvs.is_empty() {
-        let mut new_table =
-            leveln_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
+        let mut new_table = leveln_manager.create_table_write_handle(
+            unsafe { NonZeroUsize::new_unchecked(1) },
+            temp_kvs.len() as u32,
+        );
         new_table.write_sstable_from_vec(temp_kvs).unwrap();
         leveln_manager.upsert_table_handle(new_table);
     }
@@ -146,8 +150,10 @@ fn add_table_handle_from_vec_ref(
     leveln_manager: &Arc<LevelNManager>,
 ) {
     if !temp_kvs.is_empty() {
-        let mut new_table =
-            leveln_manager.create_table_write_handle(unsafe { NonZeroUsize::new_unchecked(1) });
+        let mut new_table = leveln_manager.create_table_write_handle(
+            unsafe { NonZeroUsize::new_unchecked(1) },
+            temp_kvs.len() as u32,
+        );
         new_table.write_sstable_from_vec_ref(temp_kvs).unwrap();
         leveln_manager.upsert_table_handle(new_table);
     }

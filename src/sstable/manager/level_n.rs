@@ -217,9 +217,13 @@ impl LevelNManager {
     }
 
     /// Create a new sstable without `min_key` or `max_key`
-    pub fn create_table_write_handle(&self, level: NonZeroUsize) -> TableWriteHandle {
+    pub fn create_table_write_handle(
+        &self,
+        level: NonZeroUsize,
+        kv_total: u32,
+    ) -> TableWriteHandle {
         let next_table_id = self.get_next_table_id(level);
-        TableWriteHandle::new(&self.db_path, level.get(), next_table_id)
+        TableWriteHandle::new(&self.db_path, level.get(), next_table_id, kv_total)
     }
 
     /// Get sstable file count of `level`, used for judging whether need compacting.

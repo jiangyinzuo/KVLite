@@ -1,6 +1,8 @@
+use crate::bloom::BloomFilter;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::KeyValue;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
+use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::{IndexBlock, SSTableIndex};
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
@@ -28,7 +30,12 @@ pub struct TableWriteHandle {
 }
 
 impl TableWriteHandle {
-    pub(crate) fn new(db_path: &str, level: usize, table_id: u64) -> TableWriteHandle {
+    pub(crate) fn new(
+        db_path: &str,
+        level: usize,
+        table_id: u64,
+        kv_total: u32,
+    ) -> TableWriteHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
         let writer = {
             let mut file = OpenOptions::new()
@@ -39,7 +46,7 @@ impl TableWriteHandle {
                 .unwrap();
             file.seek(SeekFrom::Start(0)).unwrap();
             let buf_writer = BufWriterWithPos::new(file).unwrap();
-            TableWriter::new(buf_writer)
+            TableWriter::new(buf_writer, kv_total)
         };
 
         TableWriteHandle {
@@ -58,7 +65,7 @@ impl TableWriteHandle {
                 self.writer.add_index(k.to_string());
             }
         }
-        self.writer.write_index_and_footer();
+        self.writer.write_index_filter_footer();
         Ok(())
     }
 
@@ -73,7 +80,7 @@ impl TableWriteHandle {
                 self.writer.add_index(k.to_string());
             }
         }
-        self.writer.write_index_and_footer();
+        self.writer.write_index_filter_footer();
         Ok(())
     }
 
@@ -86,7 +93,7 @@ impl TableWriteHandle {
                 self.writer.add_index(k);
             }
         }
-        self.writer.write_index_and_footer();
+        self.writer.write_index_filter_footer();
         Ok(())
     }
 
@@ -113,20 +120,27 @@ impl TableWriteHandle {
 
 pub(crate) struct TableWriter {
     pub(crate) kv_total: u32,
+    #[cfg(debug_assertions)]
+    kv_count: u32,
+
     pub(crate) count: u64,
     pub(crate) last_pos: u64,
     pub(crate) index_block: IndexBlock,
     pub(crate) writer: BufWriterWithPos<File>,
+    filter: BloomFilter,
 }
 
 impl TableWriter {
-    fn new(writer: BufWriterWithPos<File>) -> TableWriter {
+    fn new(writer: BufWriterWithPos<File>, kv_total: u32) -> TableWriter {
         TableWriter {
-            kv_total: 0,
+            kv_total,
+            #[cfg(debug_assertions)]
+            kv_count: 0,
             count: 0,
             last_pos: 0,
             index_block: IndexBlock::default(),
             writer,
+            filter: BloomFilter::create_filter(kv_total as usize),
         }
     }
 
@@ -141,8 +155,16 @@ impl TableWriter {
         self.writer.write_all(&v_len.to_le_bytes()).unwrap();
         self.writer.write_all(k).unwrap();
         self.writer.write_all(v).unwrap();
+
         self.count += 1;
-        self.kv_total += 1;
+
+        #[cfg(debug_assertions)]
+        {
+            self.kv_count += 1;
+        }
+
+        self.filter.add(k);
+        debug_assert!(self.filter.may_contain(k));
     }
 
     pub(crate) fn add_index(&mut self, max_key: String) {
@@ -155,17 +177,20 @@ impl TableWriter {
         self.count = 0;
     }
 
-    pub(crate) fn write_key_value_and_try_add_index(&mut self, k: &String, v: &String) {
-        self.write_key_value(k, v);
-        if self.count == MAX_BLOCK_KV_PAIRS {
-            self.add_index(k.clone());
-        }
-    }
-
-    pub(crate) fn write_index_and_footer(&mut self) {
+    pub(crate) fn write_index_filter_footer(&mut self) {
         let index_block_offset = self.last_pos as u32;
         self.index_block.write_to_file(&mut self.writer).unwrap();
-        write_footer(index_block_offset, &mut self.writer, self.kv_total);
+        let index_block_length = self.writer.pos as u32 - index_block_offset;
+        write_filter_block(&mut self.filter, &mut self.writer);
+        write_footer(
+            index_block_offset,
+            index_block_length,
+            &mut self.writer,
+            self.filter.len(),
+            self.kv_total,
+        );
+        debug_assert_eq!(self.kv_count, self.kv_total);
+
         self.writer.flush().unwrap();
     }
 
@@ -277,10 +302,18 @@ impl TableReadHandle {
     pub fn query_sstable(&self, key: &String) -> Option<String> {
         let mut buf_reader = self.create_buf_reader_with_pos();
         let footer = Footer::load_footer(&mut buf_reader).unwrap();
-        let sstable_index = SSTableIndex::load_index(&mut buf_reader, &footer);
-        if let Some((offset, length)) = sstable_index.may_contain_key(key) {
-            let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
-            return option;
+        let bloom_filter = load_filter_block(
+            footer.index_block_offset as u64 + footer.index_block_length as u64,
+            footer.filter_length as usize,
+            &mut buf_reader,
+        );
+
+        if bloom_filter.may_contain(key.as_bytes()) {
+            let sstable_index = SSTableIndex::load_index(&mut buf_reader, &footer);
+            if let Some((offset, length)) = sstable_index.may_contain_key(key) {
+                let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
+                return option;
+            }
         }
         None
     }
@@ -396,7 +429,8 @@ pub(crate) mod tests {
         table_id: u64,
         range: Range<i32>,
     ) -> TableWriteHandle {
-        let mut write_handle = TableWriteHandle::new(db_path, level, table_id);
+        let kv_total: u32 = (range.end - range.start) as u32;
+        let mut write_handle = TableWriteHandle::new(db_path, level, table_id, kv_total);
 
         let mut kvs = vec![];
         for i in range {

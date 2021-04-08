@@ -57,6 +57,8 @@ mod tests {
     fn test_hash() {
         let h1 = murmur_hash("hello".as_bytes(), 0xbc9f1d34);
         let h2 = murmur_hash("hellp".as_bytes(), 0xbc9f1d34);
+        let h3 = murmur_hash(String::from("hello").as_bytes(), 0xbc9f1d34);
+        assert_eq!(h1, h3);
         assert!(hamming_distance(h1, h2) >= 16);
 
         let key = [0x23, 0xc9, 0x00, 0x00];
