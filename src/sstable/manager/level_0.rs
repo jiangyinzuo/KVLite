@@ -23,10 +23,12 @@ pub struct Level0Manager {
     file_size: AtomicU64,
 
     table_manager: std::sync::Arc<LevelNManager>,
-    sender: crossbeam_channel::Sender<()>,
+    sender: crossbeam_channel::Sender<bool>,
 
     /// Table ID is increasing order.
     wal: Arc<Mutex<WriteAheadLog>>,
+
+    handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Level0Manager {
@@ -68,8 +70,13 @@ impl Level0Manager {
             table_manager,
             sender,
             wal,
+            handle: Arc::new(Mutex::new(None)),
         });
         let handle = Self::start_compacting_task(level0_manager.clone(), receiver);
+        {
+            let mut guard = level0_manager.handle.lock().unwrap();
+            *guard = Some(handle);
+        }
 
         Ok(level0_manager)
     }
@@ -127,19 +134,22 @@ impl Level0Manager {
     pub fn may_compact(&self) {
         let table_count = self.file_count();
         if table_count > LEVEL0_FILES_THRESHOLD || self.size_over() {
-            self.sender.send(()).unwrap();
+            if let Err(e) = self.sender.send(true) {
+                warn!("{:#?}", e);
+            }
         }
     }
 
     fn start_compacting_task(
         level0_manager: Arc<Level0Manager>,
-        receiver: Receiver<()>,
+        receiver: Receiver<bool>,
     ) -> JoinHandle<()> {
         let table_manager = level0_manager.table_manager.clone();
         std::thread::spawn(move || {
             let table_manager = table_manager;
             let level0_manager = level0_manager;
-            while let Ok(()) = receiver.recv() {
+            info!("compact 0 task start");
+            while let Ok(true) = receiver.recv() {
                 let table_count = level0_manager.file_count();
                 if table_count > LEVEL0_FILES_THRESHOLD {
                     let (level0_tables, min_key, max_key) =
@@ -157,6 +167,7 @@ impl Level0Manager {
                     );
                 }
             }
+            info!("compact 0 task exit!");
         })
     }
 
@@ -273,6 +284,13 @@ impl Level0Manager {
         };
         (tables, min_key, max_key.to_string())
     }
+
+    pub(crate) fn close(&self) {
+        self.sender.send(false).unwrap();
+        let mut guard = self.handle.lock().unwrap();
+        let handle = guard.take().unwrap();
+        handle.join().unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -282,7 +300,6 @@ mod tests {
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::wal::WriteAheadLog;
-    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
     use tempfile::TempDir;

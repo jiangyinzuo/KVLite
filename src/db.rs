@@ -86,7 +86,9 @@ impl<T: 'static + MemTable> KVLite<T> {
 
             *lock = imm_table;
             if let Some(chan) = &self.write_level0_channel {
-                chan.send(()).unwrap();
+                if let Err(e) = chan.send(()) {
+                    warn!("{}", e);
+                }
             }
         }
     }
@@ -178,6 +180,8 @@ impl<M: MemTable> Drop for KVLite<M> {
         if let Some(handle) = self.level0_writer_handle.take() {
             handle.join().unwrap();
         }
+        self.level0_manager.close();
+        self.leveln_manager.close();
     }
 }
 
@@ -190,7 +194,7 @@ mod tests {
     use crate::sstable::manager::level_n::LevelNManager;
     use log::info;
     use rand::Rng;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
@@ -305,6 +309,7 @@ mod tests {
                 last_max_key = max_key;
             }
         }
+        leveln_manager.close();
     }
 
     #[test]

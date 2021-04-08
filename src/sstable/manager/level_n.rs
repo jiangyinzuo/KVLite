@@ -7,7 +7,7 @@ use rand::Rng;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 
 /// Struct for adding and removing sstable files.
@@ -17,7 +17,8 @@ pub struct LevelNManager {
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
-    senders: Vec<Sender<()>>,
+    senders: Vec<Sender<bool>>,
+    handles: RwLock<Vec<JoinHandle<()>>>,
 }
 
 unsafe impl Sync for LevelNManager {}
@@ -60,6 +61,7 @@ impl LevelNManager {
                 AtomicU64::default(),
             ],
             senders: Vec::with_capacity(MAX_LEVEL - 1),
+            handles: RwLock::new(Vec::with_capacity(MAX_LEVEL - 1)),
         };
 
         let mut receivers = VecDeque::with_capacity(MAX_LEVEL - 1);
@@ -116,11 +118,12 @@ impl LevelNManager {
 
         let manager = Arc::new(manager);
         for i in 1..=MAX_LEVEL - 1 {
-            Self::start_compacting_task(
+            let mut guard = manager.handles.write().unwrap();
+            guard.push(Self::start_compacting_task(
                 manager.clone(),
                 unsafe { NonZeroUsize::new_unchecked(i) },
                 receivers.pop_front().unwrap(),
-            );
+            ));
         }
         manager
     }
@@ -128,11 +131,11 @@ impl LevelNManager {
     fn start_compacting_task(
         leveln_manager: Arc<LevelNManager>,
         compact_level: NonZeroUsize,
-        receiver: Receiver<()>,
+        receiver: Receiver<bool>,
     ) -> JoinHandle<()> {
         std::thread::spawn(move || {
             info!("start compacting task for level {}.", compact_level);
-            while let Ok(()) = receiver.recv() {
+            while let Ok(true) = receiver.recv() {
                 if leveln_manager.size_over(compact_level) {
                     if let Some(handle_to_compact) = leveln_manager.random_handle(compact_level) {
                         debug!("compact level: {}", compact_level);
@@ -304,7 +307,20 @@ impl LevelNManager {
     /// May compact `level`th sstables.
     pub fn may_compact(&self, level: NonZeroUsize) {
         if level.get() < MAX_LEVEL && self.size_over(level) {
-            self.senders.get(level.get() - 1).unwrap().send(()).unwrap();
+            if let Err(e) = self.senders.get(level.get() - 1).unwrap().send(true) {
+                warn!("{:#?}", e);
+            }
+        }
+    }
+
+    pub(crate) fn close(&self) {
+        for sender in self.senders.iter() {
+            sender.send(false).unwrap();
+        }
+        let mut guard = self.handles.write().unwrap();
+        while !guard.is_empty() {
+            let handle = guard.pop().unwrap();
+            handle.join().unwrap();
         }
     }
 }
@@ -317,12 +333,16 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    pub(crate) fn create_manager(db_path: &str) -> Arc<LevelNManager> {
+    pub(crate) fn create_manager(
+        db_path: &str,
+        shutting_down: Arc<AtomicBool>,
+    ) -> Arc<LevelNManager> {
         LevelNManager::open_tables(db_path.to_string())
     }
 
     #[test]
     fn test_manager() {
+        let _ = env_logger::try_init();
         let path = tempfile::TempDir::new().unwrap();
         for i in 0..=MAX_LEVEL {
             std::fs::create_dir_all(path.path().join(i.to_string())).unwrap();
@@ -332,11 +352,12 @@ pub(crate) mod tests {
         let read_handle = create_read_handle(db_path, 1, 1, 0..100);
 
         assert_eq!(read_handle.kv_total(), 100);
-        let manager = create_manager(db_path);
+        let manager = create_manager(db_path, Arc::new(AtomicBool::default()));
         debug_assert!(
             manager.level_size(1) > 2000,
             "actual: {}",
             manager.level_size(1)
         );
+        manager.close();
     }
 }

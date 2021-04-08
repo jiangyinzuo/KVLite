@@ -183,12 +183,14 @@ mod tests {
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::sstable::table_handle::tests::create_write_handle;
     use std::num::NonZeroUsize;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
 
     #[test]
     fn test_compact() {
         let path = tempfile::TempDir::new().unwrap();
         let db_path = path.path().to_str().unwrap();
-        let manager = create_manager(db_path);
+        let manager = create_manager(db_path, Arc::new(AtomicBool::default()));
 
         let handle_args = vec![(1, 1, 100..120), (2, 1, 100..110), (2, 2, 112..130)];
         for (level, table_id, range) in handle_args {
