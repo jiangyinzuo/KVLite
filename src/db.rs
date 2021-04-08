@@ -257,12 +257,26 @@ mod tests {
                 not_found_key.push(i);
             }
         }
+
         if !not_found_key.is_empty() {
+            let mut count = 0;
             let length = not_found_key.len();
+            warn!("{} keys not found", length);
             for key in not_found_key {
                 println!("{}", key);
+                let v = db.get(&format!("key{}", key));
+                let value = v.unwrap();
+                if let Some(value) = value {
+                    assert_eq!(format!("value{}_{}", key, value_prefix), value);
+                } else {
+                    count += 1;
+                }
             }
-            panic!("{} keys not found", length);
+            if count > 0 {
+                panic!("{} keys still not found", count);
+            } else {
+                info!("{} keys now found", length);
+            }
         }
         info!("db done");
     }
