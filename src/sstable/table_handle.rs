@@ -375,7 +375,7 @@ impl Drop for TableReadHandle {
 }
 
 fn temp_file_name(file_name: &str) -> String {
-    format!("{}_temp", file_name)
+    format!("{}_write", file_name)
 }
 
 pub struct Iter<'table> {

@@ -91,7 +91,7 @@ impl LevelNManager {
 
                     file_size += d.metadata().unwrap().len();
                 } else {
-                    // remove temporary file.
+                    info!("clear temporary file {:?}", path);
                     std::fs::remove_file(path).unwrap();
                 }
             }
@@ -314,6 +314,7 @@ pub(crate) mod tests {
     use crate::db::MAX_LEVEL;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::sstable::table_handle::tests::create_read_handle;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     pub(crate) fn create_manager(db_path: &str) -> Arc<LevelNManager> {

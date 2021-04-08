@@ -15,8 +15,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
 
-pub struct Levl;
-
 /// Struct for read and write level0 sstable.
 pub struct Level0Manager {
     db_path: String,
@@ -284,6 +282,7 @@ mod tests {
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::wal::WriteAheadLog;
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
     use tempfile::TempDir;

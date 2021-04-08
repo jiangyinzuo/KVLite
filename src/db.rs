@@ -203,6 +203,7 @@ mod tests {
         for _ in 0..2 {
             let temp_dir = TempDir::new().expect("unable to create temporary working directory");
             let path = temp_dir.path();
+            info!("{:?}", path);
             for i in 0..2 {
                 _test_command::<BTreeMemTable>(path, i);
                 check(path);
