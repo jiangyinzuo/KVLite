@@ -189,6 +189,8 @@ mod tests {
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::LevelNManager;
     use log::info;
+    use rand::Rng;
+    use std::collections::{HashMap, HashSet};
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
@@ -368,6 +370,35 @@ mod tests {
                     Some(format!("value{}", i)),
                     db.get(&format!("{}", i)).expect("error in read thread1")
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_random() {
+        let _ = env_logger::try_init();
+        let temp_dir = tempfile::Builder::new()
+            .prefix("random_test")
+            .tempdir()
+            .unwrap();
+        let path = temp_dir.path();
+
+        let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
+        let rng = rand::thread_rng();
+        let distribution = rand::distributions::uniform::Uniform::new(0, i32::MAX);
+        let mut map = HashMap::new();
+        for (cnt, i) in rng.sample_iter(distribution).enumerate() {
+            db.set(i.to_string(), cnt.to_string()).unwrap();
+            map.insert(i, cnt);
+            if cnt > 20000 {
+                break;
+            }
+        }
+        info!("start query");
+        for (i, (k, v)) in map.iter().enumerate() {
+            assert_eq!(db.get(&k.to_string()).unwrap().unwrap(), v.to_string());
+            if i % 10000 == 0 {
+                info!("{}", i);
             }
         }
     }
