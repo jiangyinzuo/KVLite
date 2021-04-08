@@ -258,7 +258,9 @@ mod tests {
             let v = db.get(&format!("key{}", i));
             let value = v.unwrap();
             if let Some(value) = value {
-                assert_eq!(format!("value{}_{}", i, value_prefix), value);
+                if format!("value{}_{}", i, value_prefix) != value {
+                    not_found_key.push(i);
+                }
             } else {
                 not_found_key.push(i);
             }
