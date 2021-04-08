@@ -90,25 +90,6 @@ impl TableWriteHandle {
         Ok(())
     }
 
-    pub fn write_sstable_from_iter(
-        &mut self,
-        kv_iter: crate::collections::skip_list::skipmap::Iter<String, String>,
-    ) -> crate::Result<()> {
-        // write Data Blocks
-        for node in kv_iter {
-            let k = unsafe { &(*node).entry.key };
-            let v = unsafe { &(*node).entry.value };
-            self.writer.write_key_value(k, v);
-            unsafe {
-                if self.writer.count == MAX_BLOCK_KV_PAIRS || (*node).get_next(0).is_null() {
-                    self.writer.add_index(k.to_string());
-                }
-            }
-        }
-        self.writer.write_index_and_footer();
-        Ok(())
-    }
-
     pub(crate) fn rename(&self) {
         std::fs::rename(temp_file_name(&self.file_path), &self.file_path)
             .unwrap_or_else(|e| panic!("{:#?}, file_path: {}", e, &self.file_path));

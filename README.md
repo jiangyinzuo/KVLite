@@ -29,5 +29,7 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
 ```
 
 ## References
+
+- [LevelDB](https://github.com/google/leveldb)
 - [kvs in PingCAP talent plan](https://github.com/pingcap/talent-plan)
 - [wickdb](https://github.com/Fullstop000/wickdb)

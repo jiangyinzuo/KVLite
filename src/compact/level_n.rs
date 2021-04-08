@@ -39,7 +39,7 @@ impl Compactor {
         for handle in next_level_table_handles.iter() {
             total += handle.kv_total() as usize;
         }
-        total / (1 + next_level_table_handles.len().max(1)) + 1
+        total / next_level_table_handles.len().max(2) + 1
     }
 
     fn run(&self) {
