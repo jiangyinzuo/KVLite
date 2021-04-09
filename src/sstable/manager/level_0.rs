@@ -1,7 +1,7 @@
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_n::LevelNManager;
-use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
+use crate::sstable::table_handle::{temp_file_name, TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::WriteAheadLog;
 use crate::Result;
@@ -205,7 +205,6 @@ impl Level0Manager {
         debug_assert_eq!(handle.level(), 0);
 
         let mut table_guard = self.level0_tables.write().unwrap();
-        handle.rename();
         let handle = TableReadHandle::from_table_write_handle(handle);
         table_guard.insert(handle.table_id(), Arc::new(handle));
         self.file_size.fetch_add(file_size, Ordering::Release);
@@ -242,7 +241,7 @@ impl Level0Manager {
     /// If total size of level 0 is larger than 1 MB, it should be compacted.
     fn size_over(&self) -> bool {
         let size = self.level_size();
-        size > 1024 * 1024
+        size > 1024 * 5
     }
 
     pub fn random_handle(&self) -> Arc<TableReadHandle> {
@@ -321,15 +320,13 @@ mod tests {
         let leveln_manager = LevelNManager::open_tables(path.clone());
 
         let mut mut_mem = SkipMapMemTable::default();
-        let mut imm_mem = SkipMapMemTable::default();
 
         let (sender, receiver) = crossbeam_channel::unbounded();
-        let wal = WriteAheadLog::open_and_load_logs(&path, &mut mut_mem, &mut imm_mem).unwrap();
+        let wal = WriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();
 
-        assert!(imm_mem.is_empty());
         assert!(mut_mem.is_empty());
 
-        let imm_mem = Arc::new(RwLock::new(imm_mem));
+        let imm_mem = Arc::new(RwLock::new(SkipMapMemTable::default()));
 
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,

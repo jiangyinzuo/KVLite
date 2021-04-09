@@ -38,14 +38,12 @@ impl<T: 'static + MemTable> KVLite<T> {
         let leveln_manager = LevelNManager::open_tables(db_path.clone());
 
         let mut mut_mem_table = T::default();
-        let mut imm_mem_table = T::default();
 
         let wal = Arc::new(Mutex::new(
-            WriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table, &mut imm_mem_table)
-                .unwrap(),
+            WriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
         ));
 
-        let imm_mem_table = Arc::new(RwLock::new(imm_mem_table));
+        let imm_mem_table = Arc::new(RwLock::new(T::default()));
         let channel = crossbeam_channel::unbounded();
 
         let (level0_manager, level0_writer_handle) = Level0Manager::start_task_write_level0(
@@ -191,7 +189,7 @@ pub(crate) mod tests {
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
-    use tempfile::TempDir;
+    use std::time::Duration;
 
     const TEST_CMD_TIMES: usize = 40;
 
@@ -199,9 +197,14 @@ pub(crate) mod tests {
     fn test_command() {
         let _ = env_logger::try_init();
 
-        for _ in 0..2 {
-            let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        for j in 0..2 {
+            let temp_dir = tempfile::Builder::new()
+                .prefix("test_command")
+                .tempdir()
+                .unwrap();
             let path = temp_dir.path();
+            // let path_buf = PathBuf::from(format!("test_command_{}", j));
+            // let path = path_buf.as_path();
             info!("{:?}", path);
             for i in 0..2 {
                 _test_command::<BTreeMemTable>(path, i);
@@ -247,6 +250,7 @@ pub(crate) mod tests {
         );
 
         let mut not_found_key = vec![];
+        info!("start query");
         for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
             let v = db.get(&format!("key{}", i));
             let value = v.unwrap();
@@ -263,6 +267,7 @@ pub(crate) mod tests {
             let mut count = 0;
             let length = not_found_key.len();
             warn!("{} keys not found", length);
+            std::thread::sleep(Duration::from_secs(5));
             for key in not_found_key {
                 println!("{}", key);
                 let v = db.get(&format!("key{}", key));
@@ -403,15 +408,26 @@ pub(crate) mod tests {
             db.set(k.to_string(), v.to_string()).unwrap();
         }
         info!("start query");
+        let mut not_found_map = HashMap::new();
         for (i, (k, v)) in map.iter().enumerate() {
-            assert_eq!(
-                db.get(&k.to_string())
-                    .unwrap()
-                    .unwrap_or_else(|| panic!("{} {}", *k, *v)),
-                v.to_string()
-            );
+            if let Some(s) = db.get(&k.to_string()).unwrap() {
+                assert_eq!(s, v.to_string());
+            } else {
+                not_found_map.insert(*k, *v);
+            }
             if i % 10000 == 0 {
                 info!("{}", i);
+            }
+        }
+        if !not_found_map.is_empty() {
+            warn!("{} keys not found", not_found_map.len());
+            std::thread::sleep(Duration::from_secs(5));
+            for (k, v) in not_found_map {
+                if let Some(s) = db.get(&k.to_string()).unwrap() {
+                    assert_eq!(s, v.to_string());
+                } else {
+                    panic!("{} {}", k, v);
+                }
             }
         }
     }

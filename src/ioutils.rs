@@ -1,5 +1,4 @@
 use crate::Result;
-use std::fs::File;
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 

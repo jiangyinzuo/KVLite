@@ -161,8 +161,9 @@ impl LevelNManager {
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
             let tables_guard = tables_lock.read().unwrap();
 
-            if let Some((_k, table_read_handle)) = tables_guard.range((key.to_string(), 0)..).next()
+            if let Some((k, table_read_handle)) = tables_guard.range((key.to_string(), 0)..).next()
             {
+                debug_assert!(key.le(&k.0));
                 let option = table_read_handle.query_sstable(key);
                 if option.is_some() {
                     return Ok(option);
@@ -185,13 +186,17 @@ impl LevelNManager {
         debug_assert!(file_size > 0);
 
         let level = NonZeroUsize::new(handle.level()).unwrap();
-        let mut table_guard = self.get_level_tables_lock(level).write().unwrap();
-        handle.rename();
+
+        let lock = self.get_level_tables_lock(level);
+        let mut table_guard = lock.write().unwrap();
+
         let handle = TableReadHandle::from_table_write_handle(handle);
-        table_guard.insert(
+        let option = table_guard.insert(
             (handle.max_key().clone(), handle.table_id()),
             Arc::new(handle),
         );
+
+        debug_assert!(option.is_none());
 
         unsafe {
             self.level_sizes
@@ -208,6 +213,7 @@ impl LevelNManager {
                 .get_unchecked(level - 1)
                 .fetch_sub(table_handle.file_size(), Ordering::Release);
         }
+
         let mut guard = self
             .get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) })
             .write()
@@ -330,13 +336,9 @@ pub(crate) mod tests {
     use crate::db::MAX_LEVEL;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::sstable::table_handle::tests::create_read_handle;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    pub(crate) fn create_manager(
-        db_path: &str,
-        shutting_down: Arc<AtomicBool>,
-    ) -> Arc<LevelNManager> {
+    pub(crate) fn create_manager(db_path: &str) -> Arc<LevelNManager> {
         LevelNManager::open_tables(db_path.to_string())
     }
 
@@ -352,7 +354,7 @@ pub(crate) mod tests {
         let read_handle = create_read_handle(db_path, 1, 1, 0..100);
 
         assert_eq!(read_handle.kv_total(), 100);
-        let manager = create_manager(db_path, Arc::new(AtomicBool::default()));
+        let manager = create_manager(db_path);
         debug_assert!(
             manager.level_size(1) > 2000,
             "actual: {}",

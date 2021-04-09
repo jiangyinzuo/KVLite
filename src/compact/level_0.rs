@@ -21,7 +21,7 @@ pub(crate) fn compact_and_insert(
 
     if level1_table_handles.is_empty() {
         let level1_table_size = level0_skip_map.len() / LEVEL0_FILES_THRESHOLD;
-        if level1_table_size == 0 {
+        if level1_table_size <= 64 {
             // create only one level1 table
             let mut new_table = leveln_manager.create_table_write_handle(
                 unsafe { NonZeroUsize::new_unchecked(1) },

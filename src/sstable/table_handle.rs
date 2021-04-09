@@ -23,7 +23,7 @@ pub enum TableStatus {
 
 /// Handle of new sstable for single-thread writing.
 pub struct TableWriteHandle {
-    file_path: String,
+    pub(crate) file_path: String,
     level: usize,
     table_id: u64,
     pub(crate) writer: TableWriter,
@@ -40,10 +40,11 @@ impl TableWriteHandle {
         let writer = {
             let mut file = OpenOptions::new()
                 .write(true)
-                .create(true)
+                .create_new(true)
                 .append(true)
                 .open(temp_file_name(&file_path))
                 .unwrap();
+            debug_assert!(std::path::Path::new(&temp_file_name(&file_path)).exists());
             file.seek(SeekFrom::Start(0)).unwrap();
             let buf_writer = BufWriterWithPos::new(file).unwrap();
             TableWriter::new(buf_writer, kv_total)
@@ -98,6 +99,16 @@ impl TableWriteHandle {
     }
 
     pub(crate) fn rename(&self) {
+        debug_assert!(
+            !std::path::Path::new(&self.file_path).exists(),
+            "{}",
+            self.file_path
+        );
+        debug_assert!(
+            std::path::Path::new(&temp_file_name(&self.file_path)).exists(),
+            "{}",
+            temp_file_name(&self.file_path)
+        );
         std::fs::rename(temp_file_name(&self.file_path), &self.file_path)
             .unwrap_or_else(|e| panic!("{:#?}, file_path: {}", e, &self.file_path));
     }
@@ -247,7 +258,7 @@ impl TableReadHandle {
     pub fn from_table_write_handle(table_write_handle: TableWriteHandle) -> Self {
         let file_size = table_write_handle.writer.writer.pos;
         debug_assert!(file_size > 0);
-
+        table_write_handle.rename();
         let file = File::open(&table_write_handle.file_path).unwrap();
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
         let min_key = get_min_key(&mut buf_reader);
@@ -374,7 +385,7 @@ impl Drop for TableReadHandle {
     }
 }
 
-fn temp_file_name(file_name: &str) -> String {
+pub(crate) fn temp_file_name(file_name: &str) -> String {
     format!("{}_write", file_name)
 }
 
