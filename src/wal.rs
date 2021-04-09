@@ -1,8 +1,6 @@
-use crate::command::WriteCommand;
-use crate::ioutils::BufReaderWithPos;
+use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
 use crate::Result;
-use serde_json::Deserializer;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -54,8 +52,21 @@ impl WriteAheadLog {
     }
 
     /// Append a [WriteCommand] to `mut_log`
-    pub fn append(&mut self, cmd: &WriteCommand) -> Result<()> {
-        serde_json::to_writer(&mut self.mut_log, cmd)?;
+    pub fn append(&mut self, key: &String, value: Option<&String>) -> Result<()> {
+        let key_length = (key.len() as u32).to_le_bytes();
+        self.mut_log.write_all(&key_length)?;
+        match value {
+            Some(v) => {
+                let value_length = (v.len() as u32).to_le_bytes();
+                self.mut_log.write_all(&value_length)?;
+                self.mut_log.write_all(key.as_bytes())?;
+                self.mut_log.write_all(v.as_bytes())?;
+            }
+            None => {
+                self.mut_log.write_all(&[0u8, 0u8, 0u8, 0u8])?;
+                self.mut_log.write_all(key.as_bytes())?;
+            }
+        }
         self.mut_log.flush()?;
         Ok(())
     }
@@ -88,26 +99,23 @@ fn mut_log_file(dir: &Path) -> PathBuf {
 fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
     let mut reader = BufReaderWithPos::new(file)?;
     reader.seek(SeekFrom::Start(0))?;
-    let stream = Deserializer::from_reader(reader).into_iter::<WriteCommand>();
-    for cmd in stream {
-        match cmd? {
-            WriteCommand::Set { key, value } => {
-                mem_table.set(key.to_string(), value.to_string())?;
-            }
-            WriteCommand::Remove { key } => {
-                mem_table
-                    .remove(key.to_string())
-                    .unwrap_or_else(|_| panic!("not found key is: {}", &key));
-            }
+    while let Ok(key_length) = read_u32(&mut reader) {
+        let value_length = read_u32(&mut reader)?;
+        let key = read_string_exact(&mut reader, key_length)?;
+        if value_length > 0 {
+            let value = read_string_exact(&mut reader, value_length)?;
+            mem_table.set(key, value)?;
+        } else {
+            mem_table.remove(key)?;
         }
     }
+    reader.seek(SeekFrom::End(0))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::command::WriteCommand;
-    use crate::memory::{KeyValue, MemTable, SkipMapMemTable};
+    use crate::memory::{KeyValue, SkipMapMemTable};
     use crate::wal::WriteAheadLog;
     use tempfile::TempDir;
 
@@ -123,11 +131,11 @@ mod tests {
         for i in 1..4 {
             mut_mem = SkipMapMemTable::default();
             for j in 0..100 {
-                wal.append(&WriteCommand::set(
-                    format!("{}key{}", i, j),
-                    format!("{}value{}", i, j),
-                ))
-                .unwrap();
+                wal.append(&format!("{}key{}", i, j), Some(&format!("{}value{}", i, j)))
+                    .unwrap();
+                if (j & 1) == 1 {
+                    wal.append(&format!("{}key{}", i, j), None).unwrap();
+                }
             }
             wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem, &mut imm_mem).unwrap();
             assert_eq!(100 * i, mut_mem.len());

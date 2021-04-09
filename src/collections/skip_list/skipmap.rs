@@ -1,6 +1,5 @@
 use crate::collections::skip_list::{rand_level, MAX_LEVEL};
 use crate::collections::Entry;
-use crate::memory::SkipMapMemTable;
 use std::alloc::Layout;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
@@ -390,6 +389,7 @@ impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::skip_list::skipmap::SkipMap;
+    use crate::db::tests::create_random_map;
 
     #[test]
     fn test_key() {
@@ -426,6 +426,19 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, skip_map.len());
+
+        let map = create_random_map(20000);
+        for (k, v) in &map {
+            skip_map.insert(*k, v.to_string());
+        }
+        for (k, v) in map {
+            unsafe {
+                assert_eq!(
+                    (*skip_map.find_first_ge(&k, None)).entry.value,
+                    v.to_string()
+                );
+            }
+        }
     }
 
     #[test]

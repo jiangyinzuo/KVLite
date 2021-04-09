@@ -12,8 +12,8 @@ pub(super) fn get_value_from_data_block(
     reader.seek(SeekFrom::Start(start as u64)).unwrap();
     let mut offset = 0u32;
     while offset < length {
-        let key_length = read_u32(reader);
-        let value_length = read_u32(reader);
+        let key_length = read_u32(reader).unwrap();
+        let value_length = read_u32(reader).unwrap();
         let key_read = read_string_exact(reader, key_length).unwrap();
         match key.cmp(&key_read) {
             Ordering::Less => return None,
@@ -28,8 +28,8 @@ pub(super) fn get_value_from_data_block(
 }
 
 pub(super) fn get_next_key_value(reader: &mut BufReaderWithPos<File>) -> (String, String) {
-    let key_length = read_u32(reader);
-    let value_length = read_u32(reader);
+    let key_length = read_u32(reader).unwrap();
+    let value_length = read_u32(reader).unwrap();
     let key_read = read_string_exact(reader, key_length).unwrap();
     let value_read = read_string_exact(reader, value_length).unwrap_or_else(|e| {
         panic!(

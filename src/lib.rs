@@ -8,7 +8,6 @@ pub use db::KVLite;
 
 mod bloom;
 pub mod collections;
-pub mod command;
 mod compact;
 pub mod db;
 pub mod error;

@@ -196,7 +196,7 @@ impl LevelNManager {
         unsafe {
             self.level_sizes
                 .get_unchecked(level.get() - 1)
-                .fetch_add(file_size, Ordering::Release);
+                .fetch_add(file_size, Ordering::SeqCst);
         }
     }
 

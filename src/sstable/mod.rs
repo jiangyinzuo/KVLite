@@ -92,7 +92,7 @@ pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
 
 fn get_min_key(reader: &mut BufReaderWithPos<File>) -> String {
     reader.seek(SeekFrom::Start(0)).unwrap();
-    let key_length = read_u32(reader);
+    let key_length = read_u32(reader).unwrap();
     // value_length
     reader.seek(SeekFrom::Current(4)).unwrap();
     read_string_exact(reader, key_length).unwrap()

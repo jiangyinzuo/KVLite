@@ -48,9 +48,9 @@ impl SSTableIndex {
 
         debug_assert!(index_offset < footer.index_block_length);
         while index_offset < footer.index_block_length {
-            let block_offset = read_u32(reader);
-            let block_length = read_u32(reader);
-            let max_key_length = read_u32(reader);
+            let block_offset = read_u32(reader).unwrap();
+            let block_length = read_u32(reader).unwrap();
+            let max_key_length = read_u32(reader).unwrap();
 
             let max_key = read_string_exact(reader, max_key_length).unwrap();
             sstable_index

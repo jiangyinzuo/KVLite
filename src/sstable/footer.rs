@@ -39,12 +39,12 @@ impl Footer {
     }
 
     pub(crate) fn load_footer(reader: &mut BufReaderWithPos<File>) -> Result<Footer> {
-        reader.seek(SeekFrom::End(-FOOTER_BYTE_SIZE)).unwrap();
+        reader.seek(SeekFrom::End(-FOOTER_BYTE_SIZE))?;
 
-        let index_block_offset = read_u32(reader);
-        let index_block_length = read_u32(reader);
-        let filter_length = read_u32(reader);
-        let kv_total = read_u32(reader);
+        let index_block_offset = read_u32(reader)?;
+        let index_block_length = read_u32(reader)?;
+        let filter_length = read_u32(reader)?;
+        let kv_total = read_u32(reader)?;
 
         let footer = Footer {
             index_block_offset,
@@ -54,7 +54,7 @@ impl Footer {
         };
 
         // validate magic number
-        let magic_number = read_u32(reader);
+        let magic_number = read_u32(reader)?;
         if magic_number != FOOTER_MAGIC_NUMBER {
             return Err(KVLiteError::Custom("invalid footer magic number".into()));
         }

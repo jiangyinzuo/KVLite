@@ -84,18 +84,10 @@ impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
     }
 }
 
-pub fn read_u32(reader: &mut BufReaderWithPos<File>) -> u32 {
+pub fn read_u32<R: Read + Seek>(reader: &mut BufReaderWithPos<R>) -> Result<u32> {
     let mut nums = [0u8; 4];
-    debug_assert!(
-        reader.pos + 4 <= reader.end,
-        "pos: {}, end: {}",
-        reader.pos,
-        reader.end
-    );
-    reader
-        .read_exact(&mut nums)
-        .unwrap_or_else(|e| panic!("{:#?}\n pos: {}, end: {}", e, reader.pos, reader.end));
-    u32::from_le_bytes(nums)
+    reader.read_exact(&mut nums)?;
+    Ok(u32::from_le_bytes(nums))
 }
 
 pub fn read_string_exact(reader: &mut (impl Read + Seek), length: u32) -> Result<String> {

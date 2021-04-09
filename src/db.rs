@@ -1,4 +1,3 @@
-use crate::command::WriteCommand;
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
@@ -143,17 +142,14 @@ impl<T: 'static + MemTable> KVLite<T> {
     }
 
     pub fn set(&self, key: String, value: String) -> Result<()> {
-        let cmd = WriteCommand::set(key, value);
-
         {
             let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.append(&cmd)?;
+            wal_guard.append(&key, Some(&value))?;
         }
 
         let mut mem_table_guard = self.mut_mem_table.write().unwrap();
-        if let WriteCommand::Set { key, value } = cmd {
-            mem_table_guard.set(key, value)?;
-        }
+
+        mem_table_guard.set(key, value)?;
 
         self.may_freeze(mem_table_guard);
 
@@ -161,15 +157,12 @@ impl<T: 'static + MemTable> KVLite<T> {
     }
 
     pub fn remove(&self, key: String) -> Result<()> {
-        let cmd = WriteCommand::remove(key);
         let mut wal_writer_lock = self.wal.lock().unwrap();
-        wal_writer_lock.append(&cmd)?;
+        wal_writer_lock.append(&key, None)?;
 
         let mut mem_table_guard = self.mut_mem_table.write().unwrap();
-        if let WriteCommand::Remove { key } = cmd {
-            mem_table_guard.remove(key)?;
-            self.may_freeze(mem_table_guard);
-        }
+        mem_table_guard.remove(key)?;
+        self.may_freeze(mem_table_guard);
         Ok(())
     }
 }
@@ -186,7 +179,7 @@ impl<M: MemTable> Drop for KVLite<M> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::db::ACTIVE_SIZE_THRESHOLD;
     use crate::db::{KVLite, MAX_LEVEL};
     use crate::error::KVLiteError;
@@ -381,6 +374,19 @@ mod tests {
         }
     }
 
+    pub(crate) fn create_random_map(size: usize) -> HashMap<i32, usize> {
+        let mut map = HashMap::new();
+        let rng = rand::thread_rng();
+        let distribution = rand::distributions::uniform::Uniform::new(0, i32::MAX);
+        for (cnt, i) in rng.sample_iter(distribution).enumerate() {
+            map.insert(i, cnt);
+            if cnt >= size {
+                break;
+            }
+        }
+        map
+    }
+
     #[test]
     fn test_random() {
         let _ = env_logger::try_init();
@@ -391,19 +397,19 @@ mod tests {
         let path = temp_dir.path();
 
         let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
-        let rng = rand::thread_rng();
-        let distribution = rand::distributions::uniform::Uniform::new(0, i32::MAX);
-        let mut map = HashMap::new();
-        for (cnt, i) in rng.sample_iter(distribution).enumerate() {
-            db.set(i.to_string(), cnt.to_string()).unwrap();
-            map.insert(i, cnt);
-            if cnt > 20000 {
-                break;
-            }
+
+        let map = create_random_map(20000);
+        for (k, v) in map.iter() {
+            db.set(k.to_string(), v.to_string()).unwrap();
         }
         info!("start query");
         for (i, (k, v)) in map.iter().enumerate() {
-            assert_eq!(db.get(&k.to_string()).unwrap().unwrap(), v.to_string());
+            assert_eq!(
+                db.get(&k.to_string())
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{} {}", *k, *v)),
+                v.to_string()
+            );
             if i % 10000 == 0 {
                 info!("{}", i);
             }
