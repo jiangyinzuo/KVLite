@@ -164,6 +164,7 @@ impl LevelNManager {
             if let Some((k, table_read_handle)) = tables_guard.range((key.to_string(), 0)..).next()
             {
                 debug_assert!(key.le(&k.0));
+                debug_assert!(table_read_handle.readable());
                 let option = table_read_handle.query_sstable(key);
                 if option.is_some() {
                     return Ok(option);
@@ -218,11 +219,11 @@ impl LevelNManager {
             .get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) })
             .write()
             .unwrap();
-        guard
+        let t = guard
             .remove(&(table_handle.max_key().into(), table_handle.table_id()))
             .unwrap();
 
-        table_handle.ready_to_delete();
+        t.ready_to_delete();
     }
 
     /// Create a new sstable without `min_key` or `max_key`

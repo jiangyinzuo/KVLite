@@ -347,6 +347,11 @@ impl TableReadHandle {
         *guard = TableStatus::ToDelete;
     }
 
+    pub(crate) fn readable(&self) -> bool {
+        let guard = self.status.read().unwrap();
+        *guard != TableStatus::ToDelete
+    }
+
     #[inline]
     pub fn min_max_key(&self) -> (&String, &String) {
         (&self.min_key, &self.max_key)
