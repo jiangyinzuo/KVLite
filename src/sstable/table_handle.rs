@@ -76,7 +76,7 @@ impl TableWriteHandle {
     ) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in kvs.iter().enumerate() {
-            self.writer.write_key_value(k, v);
+            self.writer.write_key_value(*k, *v);
             if self.writer.count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
                 self.writer.add_index(k.to_string());
             }

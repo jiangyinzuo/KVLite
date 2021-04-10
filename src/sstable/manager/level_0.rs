@@ -1,7 +1,7 @@
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_n::LevelNManager;
-use crate::sstable::table_handle::{temp_file_name, TableReadHandle, TableWriteHandle};
+use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::WriteAheadLog;
 use crate::Result;
@@ -199,18 +199,18 @@ impl Level0Manager {
         }
     }
 
-    pub fn insert_table_handle(&self, handle: TableWriteHandle) {
+    fn insert_table_handle(&self, handle: TableWriteHandle) {
         let file_size = handle.writer.writer.pos;
         debug_assert!(file_size > 0);
         debug_assert_eq!(handle.level(), 0);
 
+        let handle = Arc::new(TableReadHandle::from_table_write_handle(handle));
         let mut table_guard = self.level0_tables.write().unwrap();
-        let handle = TableReadHandle::from_table_write_handle(handle);
-        table_guard.insert(handle.table_id(), Arc::new(handle));
+
+        table_guard.insert(handle.table_id(), handle);
         self.file_size.fetch_add(file_size, Ordering::Release);
     }
 
-    /// Create a new sstable without `min_key` or `max_key`
     pub fn create_table_write_handle(&self, kv_total: u32) -> TableWriteHandle {
         let next_table_id = self.get_next_table_id();
         TableWriteHandle::new(&self.db_path, 0, next_table_id, kv_total)

@@ -3,10 +3,9 @@ use crate::db::MAX_LEVEL;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
 use crossbeam_channel::{Receiver, Sender};
-use rand::Rng;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 
@@ -19,6 +18,7 @@ pub struct LevelNManager {
 
     senders: Vec<Sender<bool>>,
     handles: RwLock<Vec<JoinHandle<()>>>,
+    next_to_compact: AtomicUsize,
 }
 
 unsafe impl Sync for LevelNManager {}
@@ -62,6 +62,7 @@ impl LevelNManager {
             ],
             senders: Vec::with_capacity(MAX_LEVEL - 1),
             handles: RwLock::new(Vec::with_capacity(MAX_LEVEL - 1)),
+            next_to_compact: AtomicUsize::default(),
         };
 
         let mut receivers = VecDeque::with_capacity(MAX_LEVEL - 1);
@@ -137,7 +138,9 @@ impl LevelNManager {
             info!("start compacting task for level {}.", compact_level);
             while let Ok(true) = receiver.recv() {
                 if leveln_manager.size_over(compact_level) {
-                    if let Some(handle_to_compact) = leveln_manager.random_handle(compact_level) {
+                    if let Some(handle_to_compact) =
+                        leveln_manager.get_handle_to_compact(compact_level)
+                    {
                         debug!("compact level: {}", compact_level);
                         start_compact(compact_level, handle_to_compact, leveln_manager.clone());
                     }
@@ -188,10 +191,11 @@ impl LevelNManager {
 
         let level = NonZeroUsize::new(handle.level()).unwrap();
 
+        let handle = TableReadHandle::from_table_write_handle(handle);
+
         let lock = self.get_level_tables_lock(level);
         let mut table_guard = lock.write().unwrap();
 
-        let handle = TableReadHandle::from_table_write_handle(handle);
         let option = table_guard.insert(
             (handle.max_key().clone(), handle.table_id()),
             Arc::new(handle),
@@ -295,15 +299,19 @@ impl LevelNManager {
         }
     }
 
-    pub(crate) fn random_handle(&self, level: NonZeroUsize) -> Option<Arc<TableReadHandle>> {
+    pub(crate) fn get_handle_to_compact(
+        &self,
+        level: NonZeroUsize,
+    ) -> Option<Arc<TableReadHandle>> {
         let lock = self.get_level_tables_lock(level);
         let guard = lock.read().unwrap();
-        let mut rng = rand::thread_rng();
 
         // find a handle to compact
         for _ in 0..10 {
-            let id = rng.gen_range(0..guard.len());
+            let id = self.next_to_compact.load(Ordering::Acquire) % guard.len();
             let v = guard.values().nth(id).unwrap();
+            self.next_to_compact
+                .store((id + 1) % guard.len(), Ordering::SeqCst);
             if v.test_and_set_compacting() {
                 return Some(v.clone());
             }

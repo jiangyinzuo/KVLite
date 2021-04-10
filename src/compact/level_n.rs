@@ -163,6 +163,13 @@ impl Compactor {
             }
         }
 
+        #[cfg(debug_assertions)]
+        {
+            if self.kv_count != total {
+                error!("self.kv_count: {}, total: {}", self.kv_count, total);
+            }
+        }
+
         if !temp_kvs.is_empty() {
             self.add_table_handle(temp_kvs);
         }
@@ -174,8 +181,6 @@ impl Compactor {
         }
         self.leveln_manager
             .may_compact(unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) });
-
-        debug_assert_eq!(self.kv_count, total);
     }
 
     fn add_table_handle(&self, temp_kvs: Vec<(String, String)>) {
@@ -223,7 +228,7 @@ mod tests {
         assert!(manager.level_size(2) > 200);
 
         let one = NonZeroUsize::new(1).unwrap();
-        let handle_to_compact = manager.random_handle(one).unwrap();
+        let handle_to_compact = manager.get_handle_to_compact(one).unwrap();
         assert_eq!(handle_to_compact.table_id(), 1);
         assert_eq!(handle_to_compact.max_key(), "key119");
         start_compact(one, handle_to_compact, manager.clone());

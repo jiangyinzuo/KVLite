@@ -17,154 +17,203 @@ pub(crate) fn compact_and_insert(
     level0_table_handles: Vec<Arc<TableReadHandle>>,
     level1_table_handles: VecDeque<Arc<TableReadHandle>>,
 ) {
-    let level0_skip_map = merge_level0_tables(&level0_table_handles);
+    let mut compactor = Compactor::new(
+        level0_manager.clone(),
+        leveln_manager.clone(),
+        level0_table_handles,
+        level1_table_handles,
+    );
+    compactor.run();
+}
 
-    if level1_table_handles.is_empty() {
-        let level1_table_size = level0_skip_map.len() / LEVEL0_FILES_THRESHOLD;
-        if level1_table_size <= 64 {
-            // create only one level1 table
-            let mut new_table = leveln_manager.create_table_write_handle(
-                unsafe { NonZeroUsize::new_unchecked(1) },
-                level0_skip_map.len() as u32,
-            );
-            new_table.write_sstable(&level0_skip_map).unwrap();
-            leveln_manager.upsert_table_handle(new_table);
-        } else {
-            let level0_kvs = level0_skip_map.iter();
+struct Compactor {
+    level0_manager: Arc<Level0Manager>,
+    leveln_manager: Arc<LevelNManager>,
+    level0_table_handles: Vec<Arc<TableReadHandle>>,
+    level1_table_handles: VecDeque<Arc<TableReadHandle>>,
+    #[cfg(debug_assertions)]
+    kv_count: usize,
+}
+
+impl Compactor {
+    fn new(
+        level0_manager: Arc<Level0Manager>,
+        leveln_manager: Arc<LevelNManager>,
+        level0_table_handles: Vec<Arc<TableReadHandle>>,
+        level1_table_handles: VecDeque<Arc<TableReadHandle>>,
+    ) -> Compactor {
+        Compactor {
+            level0_manager,
+            leveln_manager,
+            level0_table_handles,
+            level1_table_handles,
+            #[cfg(debug_assertions)]
+            kv_count: 0,
+        }
+    }
+
+    fn run(&mut self) {
+        debug_assert!(!self.level0_table_handles.is_empty());
+
+        let level0_skip_map = self.merge_level0_tables();
+        let mut kv_total = level0_skip_map.len();
+
+        if self.level1_table_handles.is_empty() {
+            let level1_table_size = (kv_total + 1) / self.level0_table_handles.len();
+            debug_assert!(level1_table_size >= LEVEL0_FILES_THRESHOLD);
+
             let mut temp_kvs = vec![];
-            for kv in level0_kvs {
+            for kv in level0_skip_map.iter() {
                 unsafe {
                     temp_kvs.push((&(*kv).entry.key, &(*kv).entry.value));
                 }
-                if temp_kvs.len() % level1_table_size == 0 {
-                    add_table_handle_from_vec_ref(temp_kvs, leveln_manager);
+                #[cfg(debug_assertions)]
+                {
+                    self.kv_count += 1;
+                }
+
+                if temp_kvs.len() >= level1_table_size {
+                    self.add_table_handle_from_vec_ref(temp_kvs);
                     temp_kvs = vec![];
                 }
             }
             if !temp_kvs.is_empty() {
-                add_table_handle_from_vec_ref(temp_kvs, leveln_manager);
+                self.add_table_handle_from_vec_ref(temp_kvs);
             }
-        }
-    } else {
-        let mut kv_total = level0_skip_map.len() as u64;
-        for table in &level1_table_handles {
-            kv_total += table.kv_total() as u64;
-        }
+        } else {
+            for table in &self.level1_table_handles {
+                kv_total += table.kv_total() as usize;
+            }
 
-        let level1_table_size = kv_total / LEVEL0_FILES_THRESHOLD as u64;
-        debug_assert!(level1_table_size > 0);
+            let level1_table_size = kv_total / self.level1_table_handles.len();
+            debug_assert!(level1_table_size > 0);
 
-        let mut level0_iter: IntoIter<String, String> = level0_skip_map.into_iter();
-        let mut temp_kvs = vec![];
+            let mut temp_kvs = vec![];
 
-        let mut kv = level0_iter.current_mut_no_consume();
+            macro_rules! add_kv {
+                ($key:expr, $value:expr) => {
+                    temp_kvs.push(($key, $value));
 
-        macro_rules! add_kv {
-            ($key:expr, $value:expr) => {
-                temp_kvs.push(($key, $value));
-                if temp_kvs.len() as u64 % level1_table_size == 0 {
-                    add_table_handle_from_vec(temp_kvs, leveln_manager);
-                    temp_kvs = vec![];
-                }
-            };
-        }
+                    #[cfg(debug_assertions)]
+                    {
+                        self.kv_count += 1;
+                    }
 
-        for level1_table_handle in level1_table_handles.iter() {
-            for (level1_key, level1_value) in level1_table_handle.iter() {
-                if kv.is_null() {
-                    // write all the remain key-values in level1 tables.
-                    add_kv!(level1_key, level1_value);
-                    continue;
-                }
+                    if temp_kvs.len() >= level1_table_size {
+                        self.add_table_handle_from_vec(temp_kvs);
+                        temp_kvs = vec![];
+                    }
+                };
+            }
 
-                loop {
-                    let level0_key = unsafe { &(*kv).entry.key };
-                    debug_assert!(!level0_key.is_empty());
-                    match level0_key.cmp(&level1_key) {
-                        // set to level0_value
-                        // drop level1_value
-                        Ordering::Equal => {
-                            let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
-                            let (level0_key, level0_value) = level0_entry.key_value();
-                            add_kv!(level0_key, level0_value);
-                            kv = level0_iter.next_node();
-                            break;
-                        }
-                        // insert level1_value
-                        Ordering::Greater => {
-                            add_kv!(level1_key, level1_value);
-                            break;
-                        }
-                        // insert level0_value
-                        Ordering::Less => {
-                            let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
-                            let (level0_key, level0_value) = level0_entry.key_value();
-                            add_kv!(level0_key, level0_value);
-                            kv = level0_iter.next_node();
-                            if kv.is_null() {
+            let mut level0_iter: IntoIter<String, String> = level0_skip_map.into_iter();
+            let mut kv = level0_iter.current_mut_no_consume();
+
+            for level1_table_handle in self.level1_table_handles.iter() {
+                for (level1_key, level1_value) in level1_table_handle.iter() {
+                    if kv.is_null() {
+                        // write all the remain key-values in level1 tables.
+                        add_kv!(level1_key, level1_value);
+                        continue;
+                    }
+
+                    loop {
+                        let level0_key = unsafe { &(*kv).entry.key };
+                        debug_assert!(!level0_key.is_empty());
+                        match level0_key.cmp(&level1_key) {
+                            // set to level0_value
+                            // drop level1_value
+                            Ordering::Equal => {
+                                let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
+                                let (level0_key, level0_value) = level0_entry.key_value();
+                                add_kv!(level0_key, level0_value);
+                                #[cfg(debug_assertions)]
+                                {
+                                    self.kv_count += 1;
+                                }
+                                kv = level0_iter.next_node();
+                                break;
+                            }
+                            // insert level1_value
+                            Ordering::Greater => {
                                 add_kv!(level1_key, level1_value);
                                 break;
+                            }
+                            // insert level0_value
+                            Ordering::Less => {
+                                let level0_entry = unsafe { std::mem::take(&mut (*kv).entry) };
+                                let (level0_key, level0_value) = level0_entry.key_value();
+                                add_kv!(level0_key, level0_value);
+                                kv = level0_iter.next_node();
+                                if kv.is_null() {
+                                    add_kv!(level1_key, level1_value);
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // write all the remain kv in level0 tables.
-        while !kv.is_null() {
-            unsafe {
-                let entry = std::mem::take(&mut (*kv).entry);
-                add_kv!(entry.key, entry.value);
+            // write all the remain kv in level0 tables.
+            while !kv.is_null() {
+                unsafe {
+                    let entry = std::mem::take(&mut (*kv).entry);
+                    add_kv!(entry.key, entry.value);
+                }
+                kv = level0_iter.next_node();
             }
-            kv = level0_iter.next_node();
+
+            if !temp_kvs.is_empty() {
+                self.add_table_handle_from_vec(temp_kvs);
+            }
         }
 
+        #[cfg(debug_assertions)]
+        {
+            if self.kv_count != kv_total {
+                error!("self.kv_count: {}, kv_total: {}", self.kv_count, kv_total);
+            }
+        }
+
+        for table in &self.level1_table_handles {
+            self.leveln_manager.ready_to_delete(table.clone());
+        }
+        for table in &self.level0_table_handles {
+            self.level0_manager.ready_to_delete(table.table_id());
+        }
+        self.leveln_manager
+            .may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
+    }
+
+    fn merge_level0_tables(&self) -> SkipMap<String, String> {
+        let mut skip_map = SkipMap::new();
+        for table in &self.level0_table_handles {
+            for (key, value) in table.iter() {
+                skip_map.insert(key, value);
+            }
+        }
+        skip_map
+    }
+
+    fn add_table_handle_from_vec(&self, temp_kvs: Vec<(String, String)>) {
         if !temp_kvs.is_empty() {
-            add_table_handle_from_vec(temp_kvs, leveln_manager);
+            let mut new_table = self.leveln_manager.create_table_write_handle(
+                unsafe { NonZeroUsize::new_unchecked(1) },
+                temp_kvs.len() as u32,
+            );
+            new_table.write_sstable_from_vec(temp_kvs).unwrap();
+            self.leveln_manager.upsert_table_handle(new_table);
         }
     }
 
-    for table in level0_table_handles {
-        level0_manager.ready_to_delete(table.table_id());
-    }
-    for table in level1_table_handles {
-        leveln_manager.ready_to_delete(table);
-    }
-    leveln_manager.may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
-}
-
-fn add_table_handle_from_vec(temp_kvs: Vec<(String, String)>, leveln_manager: &Arc<LevelNManager>) {
-    if !temp_kvs.is_empty() {
-        let mut new_table = leveln_manager.create_table_write_handle(
-            unsafe { NonZeroUsize::new_unchecked(1) },
-            temp_kvs.len() as u32,
-        );
-        new_table.write_sstable_from_vec(temp_kvs).unwrap();
-        leveln_manager.upsert_table_handle(new_table);
-    }
-}
-
-fn add_table_handle_from_vec_ref(
-    temp_kvs: Vec<(&String, &String)>,
-    leveln_manager: &Arc<LevelNManager>,
-) {
-    if !temp_kvs.is_empty() {
-        let mut new_table = leveln_manager.create_table_write_handle(
+    fn add_table_handle_from_vec_ref(&self, temp_kvs: Vec<(&String, &String)>) {
+        debug_assert!(!temp_kvs.is_empty());
+        let mut new_table = self.leveln_manager.create_table_write_handle(
             unsafe { NonZeroUsize::new_unchecked(1) },
             temp_kvs.len() as u32,
         );
         new_table.write_sstable_from_vec_ref(temp_kvs).unwrap();
-        leveln_manager.upsert_table_handle(new_table);
+        self.leveln_manager.upsert_table_handle(new_table);
     }
-}
-
-fn merge_level0_tables(level0_tables: &[Arc<TableReadHandle>]) -> SkipMap<String, String> {
-    let mut skip_map = SkipMap::new();
-    for table in level0_tables {
-        for (key, value) in table.iter() {
-            skip_map.insert(key, value);
-        }
-    }
-    skip_map
 }

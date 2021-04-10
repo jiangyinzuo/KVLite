@@ -66,22 +66,22 @@ impl<T: 'static + MemTable> KVLite<T> {
         })
     }
 
-    fn may_freeze(&self, mut mem_table_guard: RwLockWriteGuard<T>) {
-        if mem_table_guard.len() >= ACTIVE_SIZE_THRESHOLD {
+    fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<T>) {
+        if mem_guard.len() >= ACTIVE_SIZE_THRESHOLD {
             {
                 // new log before writing to level0 sstable
                 let mut wal_guard = self.wal.lock().unwrap();
                 wal_guard.freeze_mut_log().unwrap();
             }
 
-            let imm_table = std::mem::take(mem_table_guard.deref_mut());
-            drop(mem_table_guard);
-            let mut lock = self
+            let mut imm_guard = self
                 .imm_mem_table
                 .write()
                 .expect("error in RwLock on imm_tables");
 
-            *lock = imm_table;
+            let imm_table = std::mem::take(mem_guard.deref_mut());
+            *imm_guard = imm_table;
+            drop(mem_guard);
             if let Some(chan) = &self.write_level0_channel {
                 if let Err(e) = chan.send(()) {
                     warn!("{}", e);
@@ -187,7 +187,7 @@ pub(crate) mod tests {
     use rand::Rng;
     use std::collections::HashMap;
     use std::num::NonZeroUsize;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
@@ -393,6 +393,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_random() {
         let _ = env_logger::try_init();
         let temp_dir = tempfile::Builder::new()
