@@ -10,7 +10,7 @@ use rand::Rng;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
@@ -29,6 +29,8 @@ pub struct Level0Manager {
     wal: Arc<Mutex<WriteAheadLog>>,
 
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+
+    background_task_write_to_level0_is_running: Arc<AtomicBool>,
 }
 
 impl Level0Manager {
@@ -36,6 +38,7 @@ impl Level0Manager {
         db_path: String,
         table_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<WriteAheadLog>>,
+        background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> Result<Arc<Level0Manager>> {
         std::fs::create_dir_all(format!("{}/0", db_path)).unwrap();
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
@@ -71,6 +74,7 @@ impl Level0Manager {
             sender,
             wal,
             handle: Arc::new(Mutex::new(None)),
+            background_task_write_to_level0_is_running,
         });
         let handle = Self::start_compacting_task(level0_manager.clone(), receiver);
         {
@@ -88,8 +92,15 @@ impl Level0Manager {
         wal: Arc<Mutex<WriteAheadLog>>,
         imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
         recv: Receiver<()>,
+        background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> (Arc<Level0Manager>, JoinHandle<()>) {
-        let manager = Self::open_tables(db_path, leveln_manager, wal).unwrap();
+        let manager = Self::open_tables(
+            db_path,
+            leveln_manager,
+            wal,
+            background_task_write_to_level0_is_running,
+        )
+        .unwrap();
         let manager2 = manager.clone();
 
         let handle = thread::Builder::new()
@@ -97,6 +108,9 @@ impl Level0Manager {
             .spawn(move || {
                 info!("thread `{}` start!", thread::current().name().unwrap());
                 while let Ok(()) = recv.recv() {
+                    debug_assert!(manager2
+                        .background_task_write_to_level0_is_running
+                        .load(Ordering::Acquire));
                     let imm_guard = imm_mem_table.read().unwrap();
                     if let Err(e) = manager2.write_to_table(imm_guard.deref()) {
                         let bt = std::backtrace::Backtrace::capture();
@@ -107,6 +121,9 @@ impl Level0Manager {
                         );
                         println!("{:#?}", bt);
                     }
+                    manager2
+                        .background_task_write_to_level0_is_running
+                        .store(false, Ordering::Release);
                 }
                 info!("thread `{}` exit!", thread::current().name().unwrap());
             })
@@ -299,6 +316,8 @@ mod tests {
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::wal::WriteAheadLog;
+    use std::cmp::Ordering;
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
     use tempfile::TempDir;
@@ -328,12 +347,14 @@ mod tests {
 
         let imm_mem = Arc::new(RwLock::new(SkipMapMemTable::default()));
 
+        let background = Arc::new(AtomicBool::default());
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,
             leveln_manager.clone(),
             Arc::new(Mutex::new(wal)),
             imm_mem.clone(),
             receiver,
+            background,
         );
 
         if insert_value {
@@ -344,6 +365,9 @@ mod tests {
                     .set(format!("key{}", i), format!("value{}", i))
                     .unwrap();
             }
+            manager
+                .background_task_write_to_level0_is_running
+                .store(true, std::sync::atomic::Ordering::Release);
             sender.send(()).unwrap();
         }
 

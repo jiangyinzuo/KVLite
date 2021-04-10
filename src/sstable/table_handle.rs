@@ -258,8 +258,15 @@ impl TableReadHandle {
     pub fn from_table_write_handle(table_write_handle: TableWriteHandle) -> Self {
         let file_size = table_write_handle.writer.writer.pos;
         debug_assert!(file_size > 0);
+
+        #[cfg(debug_assertions)]
+        if std::path::Path::new(&table_write_handle.file_path).exists() {
+            error!("file `{}` already exists!!", table_write_handle.file_path);
+        }
+
         table_write_handle.rename();
         let file = File::open(&table_write_handle.file_path).unwrap();
+
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
         let min_key = get_min_key(&mut buf_reader);
         let max_key = table_write_handle.max_key().to_string();

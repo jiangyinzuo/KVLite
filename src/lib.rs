@@ -7,6 +7,7 @@ extern crate log;
 pub use db::KVLite;
 
 mod bloom;
+mod cache;
 pub mod collections;
 mod compact;
 pub mod db;

@@ -6,6 +6,7 @@ use crate::Result;
 use crossbeam_channel::Sender;
 use std::ops::DerefMut;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::thread::JoinHandle;
 
@@ -29,6 +30,7 @@ pub struct KVLite<T: MemTable> {
 
     level0_writer_handle: Option<JoinHandle<()>>,
     write_level0_channel: Option<Sender<()>>,
+    background_task_write_to_level0_is_running: Arc<AtomicBool>,
 }
 
 impl<T: 'static + MemTable> KVLite<T> {
@@ -46,12 +48,14 @@ impl<T: 'static + MemTable> KVLite<T> {
         let imm_mem_table = Arc::new(RwLock::new(T::default()));
         let channel = crossbeam_channel::unbounded();
 
+        let background_task_write_to_level0_is_running = Arc::new(AtomicBool::default());
         let (level0_manager, level0_writer_handle) = Level0Manager::start_task_write_level0(
             db_path.clone(),
             leveln_manager.clone(),
             wal.clone(),
             imm_mem_table.clone(),
             channel.1,
+            background_task_write_to_level0_is_running.clone(),
         );
 
         Ok(KVLite {
@@ -63,11 +67,18 @@ impl<T: 'static + MemTable> KVLite<T> {
             level0_manager,
             level0_writer_handle: Some(level0_writer_handle),
             write_level0_channel: Some(channel.0),
+            background_task_write_to_level0_is_running,
         })
     }
 
     fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<T>) {
-        if mem_guard.len() >= ACTIVE_SIZE_THRESHOLD {
+        if mem_guard.len() >= ACTIVE_SIZE_THRESHOLD
+            && !self
+                .background_task_write_to_level0_is_running
+                .load(Ordering::Acquire)
+        {
+            self.background_task_write_to_level0_is_running
+                .store(true, Ordering::Release);
             {
                 // new log before writing to level0 sstable
                 let mut wal_guard = self.wal.lock().unwrap();
@@ -92,21 +103,24 @@ impl<T: 'static + MemTable> KVLite<T> {
 
     fn query(&self, key: &String) -> Result<Option<String>> {
         // query mutable memory table
-        let mem_table_lock = self.mut_mem_table.read().unwrap();
-        let option = mem_table_lock.get(key)?;
-        if option.is_some() {
-            return Ok(option);
+        {
+            let mem_table_guard = self.mut_mem_table.read().unwrap();
+            let option = mem_table_guard.get(key)?;
+            if option.is_some() {
+                return Ok(option);
+            }
         }
 
         // query immutable memory table
-        let imm_lock_guard = self
-            .imm_mem_table
-            .read()
-            .expect("error in RwLock on imm_tables");
-
-        let option = imm_lock_guard.get(key)?;
-        if option.is_some() {
-            return Ok(option);
+        {
+            let imm_guard = self
+                .imm_mem_table
+                .read()
+                .expect("error in RwLock on imm_tables");
+            let option = imm_guard.get(key)?;
+            if option.is_some() {
+                return Ok(option);
+            }
         }
 
         // query level0 sstables
