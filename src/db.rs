@@ -393,7 +393,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_random() {
         let _ = env_logger::try_init();
         let temp_dir = tempfile::Builder::new()
