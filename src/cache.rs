@@ -163,12 +163,12 @@ impl<K: Eq, V> Drop for LRUCache<K, V> {
     }
 }
 
-pub struct EntryTracker<K: Eq, V>(pub *mut LRUEntry<K, V>);
+pub struct EntryTracker<K: Eq, V>(pub *const LRUEntry<K, V>);
 
 impl<K: Eq, V> Drop for EntryTracker<K, V> {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            release(self.0);
+            release(self.0 as *mut LRUEntry<K, V>);
         }
     }
 }
