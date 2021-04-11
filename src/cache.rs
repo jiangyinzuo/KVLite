@@ -14,8 +14,8 @@ pub struct ShardLRUCache<K: Eq, V> {
     caches: [Mutex<LRUCache<K, V>>; NUM_SHARD],
 }
 
-impl<K: Eq + Hash, V> ShardLRUCache<K, V> {
-    pub fn new() -> Self {
+impl<K: Eq, V> Default for ShardLRUCache<K, V> {
+    fn default() -> Self {
         ShardLRUCache {
             caches: [
                 Mutex::new(LRUCache::new()),
@@ -37,7 +37,9 @@ impl<K: Eq + Hash, V> ShardLRUCache<K, V> {
             ],
         }
     }
+}
 
+impl<K: Eq + Hash, V> ShardLRUCache<K, V> {
     pub fn insert(&self, key: K, value: V, hash: u32) {
         let mut guard: MutexGuard<LRUCache<K, V>> = self.caches[shard(hash)].lock().unwrap();
         guard.insert(key, value, hash);
@@ -46,6 +48,11 @@ impl<K: Eq + Hash, V> ShardLRUCache<K, V> {
     pub fn look_up(&self, key: &K, hash: u32) -> EntryTracker<K, V> {
         let mut guard: MutexGuard<LRUCache<K, V>> = self.caches[shard(hash)].lock().unwrap();
         guard.look_up(key, hash)
+    }
+
+    pub fn erase(&self, key: &K, hash: u32) {
+        let mut guard: MutexGuard<LRUCache<K, V>> = self.caches[shard(hash)].lock().unwrap();
+        guard.erase(key, hash);
     }
 }
 
@@ -120,7 +127,19 @@ impl<K: Eq, V> LRUCache<K, V> {
         self.table.insert(new_entry);
     }
 
+    fn erase(&mut self, key: &K, hash: u32) {
+        let n = self.table.look_up(key, hash);
+        if !n.is_null() {
+            // FIXME
+            // detach(n);
+            // unsafe {
+            //     self.table.remove(n);
+            // }
+        }
+    }
+
     fn attach_to_head(&mut self, n: *mut LRUEntry<K, V>) {
+        debug_assert_ne!(n, self.head);
         unsafe {
             (*n).next = self.head;
             (*self.head).prev = n;
@@ -206,6 +225,11 @@ impl<K: Eq, V> LRUEntry<K, V> {
             );
             node
         }
+    }
+
+    #[inline]
+    pub fn value(&self) -> &V {
+        unsafe { self.value.assume_init_ref() }
     }
 }
 
@@ -332,9 +356,7 @@ fn release<K: Eq, V>(n: *mut LRUEntry<K, V>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::cache::{
-        HashTable, LRUCache, LRUEntry, ShardLRUCache, CACHE_CAP, NUM_SHARD, TABLE_SIZE,
-    };
+    use crate::cache::{HashTable, LRUCache, LRUEntry, ShardLRUCache, CACHE_CAP, TABLE_SIZE};
     use crate::hash::murmur_hash;
     use std::sync::{Arc, Barrier};
 
@@ -385,6 +407,7 @@ mod tests {
     #[test]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
+        lru_cache.erase(&"h".to_string(), 123);
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();
@@ -421,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_shard_lru_cache() {
-        let lru_cache = Arc::new(ShardLRUCache::new());
+        let lru_cache = Arc::new(ShardLRUCache::default());
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();

@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 
 #[derive(Default)]
-pub(crate) struct IndexBlock {
+pub struct IndexBlock {
     /// offset, length, max key length, max key
     indexes: Vec<(u32, u32, u32, String)>,
 }
@@ -26,24 +26,12 @@ impl IndexBlock {
         Ok(())
     }
 
-    pub(crate) fn max_key(&self) -> &String {
-        &self.indexes.last().unwrap().3
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct SSTableIndex {
-    /// offset, length, max key length, max key
-    indexes: Vec<(u32, u32, u32, String)>,
-}
-
-impl SSTableIndex {
-    pub(crate) fn load_index(reader: &mut BufReaderWithPos<File>, footer: &Footer) -> SSTableIndex {
+    pub(crate) fn load_index(reader: &mut BufReaderWithPos<File>, footer: &Footer) -> IndexBlock {
         reader
             .seek(SeekFrom::Start(footer.index_block_offset as u64))
             .unwrap();
 
-        let mut sstable_index = SSTableIndex::default();
+        let mut index_block = IndexBlock::default();
         let mut index_offset = 0;
 
         debug_assert!(index_offset < footer.index_block_length);
@@ -53,13 +41,13 @@ impl SSTableIndex {
             let max_key_length = read_u32(reader).unwrap();
 
             let max_key = read_string_exact(reader, max_key_length).unwrap();
-            sstable_index
+            index_block
                 .indexes
                 .push((block_offset, block_length, max_key_length, max_key));
 
             index_offset += 12 + max_key_length;
         }
-        sstable_index
+        index_block
     }
 
     /// Returns (offset, length)
@@ -85,7 +73,7 @@ impl SSTableIndex {
 
 #[test]
 fn test_may_contain_key() {
-    let mut index = SSTableIndex::default();
+    let mut index = IndexBlock::default();
     index.indexes.push((1, 1, 1, "key298".into()));
     let option = index.may_contain_key(&"key299".to_string());
     assert!(option.is_none());

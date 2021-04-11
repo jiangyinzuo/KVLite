@@ -1,6 +1,7 @@
 #![feature(backtrace)]
 #![feature(map_first_last)]
 #![feature(maybe_uninit_ref)]
+#![feature(num_as_ne_bytes)]
 
 #[macro_use]
 extern crate log;
@@ -8,7 +9,7 @@ extern crate log;
 pub use db::KVLite;
 
 mod bloom;
-mod cache;
+pub mod cache;
 pub mod collections;
 mod compact;
 pub mod db;

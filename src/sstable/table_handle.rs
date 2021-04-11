@@ -1,15 +1,19 @@
 use crate::bloom::BloomFilter;
+use crate::cache::ShardLRUCache;
+use crate::db::max_level_shift;
+use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::KeyValue;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
 use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
-use crate::sstable::index_block::{IndexBlock, SSTableIndex};
+use crate::sstable::index_block::IndexBlock;
+use crate::sstable::table_cache::IndexCache;
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::Deref;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum TableStatus {
@@ -215,6 +219,8 @@ pub struct TableReadHandle {
     file_path: String,
     level: usize,
     table_id: u64,
+    table_key: u64,
+    hash: u32,
     status: RwLock<TableStatus>,
     min_key: String,
     max_key: String,
@@ -235,21 +241,34 @@ impl TableReadHandle {
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
 
         let footer = Footer::load_footer(&mut buf_reader).unwrap();
-        let sstable_index = SSTableIndex::load_index(&mut buf_reader, &footer);
+        let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
 
         let min_key = get_min_key(&mut buf_reader);
-        let max_key = sstable_index.max_key().to_string();
+        let max_key = index_block.max_key().to_string();
 
+        let table_key = Self::calc_table_key(table_id, level);
         TableReadHandle {
             file_path,
             level,
             table_id,
+            table_key,
+            hash: Self::calc_hash(table_key),
             status: RwLock::new(TableStatus::Store),
             min_key,
             max_key,
             kv_total: footer.kv_total,
             file_size,
         }
+    }
+
+    #[inline]
+    fn calc_table_key(table_id: u64, level: usize) -> u64 {
+        (table_id << max_level_shift()) + level as u64
+    }
+
+    fn calc_hash(key: u64) -> u32 {
+        const SEED: u32 = 0x71f2e1a3;
+        murmur_hash(key.as_ne_bytes(), SEED)
     }
 
     /// # Notice
@@ -271,10 +290,15 @@ impl TableReadHandle {
         let min_key = get_min_key(&mut buf_reader);
         let max_key = table_write_handle.max_key().to_string();
 
+        let table_id = table_write_handle.table_id;
+        let level = table_write_handle.level;
+        let table_key = Self::calc_table_key(table_id, level);
         TableReadHandle {
             file_path: table_write_handle.file_path,
-            level: table_write_handle.level,
-            table_id: table_write_handle.table_id,
+            level,
+            table_id,
+            table_key,
+            hash: Self::calc_hash(table_key),
             status: RwLock::new(TableStatus::Store),
             min_key,
             max_key,
@@ -311,13 +335,38 @@ impl TableReadHandle {
         self.kv_total
     }
 
+    #[inline]
+    pub fn table_key(&self) -> u64 {
+        self.table_key
+    }
+
+    #[inline]
+    pub fn hash(&self) -> u32 {
+        self.hash
+    }
     pub fn status(&self) -> TableStatus {
         let guard = self.status.read().unwrap();
         *guard.deref()
     }
 
-    /// Query value by `key`
-    pub fn query_sstable(&self, key: &String) -> Option<String> {
+    /// Query value by `key` with `cache`
+    pub fn query_sstable_with_cache(&self, key: &String, cache: &IndexCache) -> Option<String> {
+        if cache.filter.may_contain(key.as_bytes()) {
+            if let Some((offset, length)) = cache.index.may_contain_key(key) {
+                let mut buf_reader = self.create_buf_reader_with_pos();
+                let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
+                return option;
+            }
+        }
+        None
+    }
+
+    /// Query value by `key` and insert cache into `lru_cache`.
+    pub fn query_sstable(
+        &self,
+        key: &String,
+        lru_cache: &Arc<ShardLRUCache<u64, IndexCache>>,
+    ) -> Option<String> {
         let mut buf_reader = self.create_buf_reader_with_pos();
         let footer = Footer::load_footer(&mut buf_reader).unwrap();
         let bloom_filter = load_filter_block(
@@ -327,8 +376,14 @@ impl TableReadHandle {
         );
 
         if bloom_filter.may_contain(key.as_bytes()) {
-            let sstable_index = SSTableIndex::load_index(&mut buf_reader, &footer);
-            if let Some((offset, length)) = sstable_index.may_contain_key(key) {
+            let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
+            let may_contain_key = index_block.may_contain_key(key);
+            let cache = IndexCache {
+                filter: bloom_filter,
+                index: index_block,
+            };
+            lru_cache.insert(self.table_key, cache, self.hash);
+            if let Some((offset, length)) = may_contain_key {
                 let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
                 return option;
             }
@@ -481,6 +536,7 @@ pub(crate) mod tests {
         let path = path.path().to_str().unwrap().to_string();
 
         let read_handle = create_read_handle(&path, 1, 1, 0..100);
+        assert_eq!(read_handle.table_key(), 9);
         assert_eq!(read_handle.min_key(), "key0");
         assert_eq!(read_handle.max_key(), "key99");
         for (i, kv) in read_handle.iter().enumerate() {

@@ -1,5 +1,7 @@
+use crate::cache::ShardLRUCache;
 use crate::compact::level_n::start_compact;
 use crate::db::MAX_LEVEL;
+use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
 use crossbeam_channel::{Receiver, Sender};
@@ -16,6 +18,7 @@ pub struct LevelNManager {
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
+    pub(crate) index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
     senders: Vec<Sender<bool>>,
     handles: RwLock<Vec<JoinHandle<()>>>,
     next_to_compact: AtomicUsize,
@@ -26,7 +29,10 @@ unsafe impl Send for LevelNManager {}
 
 impl LevelNManager {
     /// Open all the sstables at `db_path` when initializing DB.
-    pub fn open_tables(db_path: String) -> Arc<LevelNManager> {
+    pub fn open_tables(
+        db_path: String,
+        index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
+    ) -> Arc<LevelNManager> {
         for i in 1..=MAX_LEVEL {
             std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
         }
@@ -63,6 +69,7 @@ impl LevelNManager {
             senders: Vec::with_capacity(MAX_LEVEL - 1),
             handles: RwLock::new(Vec::with_capacity(MAX_LEVEL - 1)),
             next_to_compact: AtomicUsize::default(),
+            index_cache,
         };
 
         let mut receivers = VecDeque::with_capacity(MAX_LEVEL - 1);
@@ -168,7 +175,16 @@ impl LevelNManager {
             {
                 debug_assert!(key.le(&k.0));
                 debug_assert!(table_read_handle.readable());
-                let option = table_read_handle.query_sstable(key);
+                let entry_tracker = self
+                    .index_cache
+                    .look_up(&table_read_handle.table_key(), table_read_handle.hash());
+
+                let option = if entry_tracker.0.is_null() {
+                    table_read_handle.query_sstable(key, &self.index_cache)
+                } else {
+                    let index_cache = unsafe { (*entry_tracker.0).value() };
+                    table_read_handle.query_sstable_with_cache(key, &index_cache)
+                };
                 if option.is_some() {
                     return Ok(option);
                 }
@@ -228,6 +244,8 @@ impl LevelNManager {
             .unwrap();
 
         t.ready_to_delete();
+        self.index_cache
+            .erase(&table_handle.table_key(), table_handle.hash());
     }
 
     /// Create a new sstable without `min_key` or `max_key`
@@ -342,13 +360,15 @@ impl LevelNManager {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::cache::ShardLRUCache;
     use crate::db::MAX_LEVEL;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::sstable::table_handle::tests::create_read_handle;
     use std::sync::Arc;
 
     pub(crate) fn create_manager(db_path: &str) -> Arc<LevelNManager> {
-        LevelNManager::open_tables(db_path.to_string())
+        let index_cache = Arc::new(ShardLRUCache::default());
+        LevelNManager::open_tables(db_path.to_string(), index_cache)
     }
 
     #[test]

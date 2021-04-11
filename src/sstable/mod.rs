@@ -85,6 +85,7 @@ pub(super) mod filter_block;
 pub(crate) mod footer;
 pub(crate) mod index_block;
 pub mod manager;
+mod table_cache;
 pub mod table_handle;
 
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;

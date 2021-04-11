@@ -11,6 +11,7 @@ pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 
 /// Merge all the `level0_table_handles` and `level1_tables` to `new_table`,
 /// then insert `new_table` to `TableManager`.
+/// In `level0_manager`, oldest table is at first
 pub(crate) fn compact_and_insert(
     level0_manager: &Arc<Level0Manager>,
     leveln_manager: &Arc<LevelNManager>,

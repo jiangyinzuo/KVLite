@@ -1,3 +1,4 @@
+use crate::cache::ShardLRUCache;
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
@@ -12,6 +13,16 @@ use std::thread::JoinHandle;
 
 pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
 pub const MAX_LEVEL: usize = 7;
+
+pub(crate) const fn max_level_shift() -> usize {
+    let mut idx = 1;
+    let mut value = 2;
+    while value <= MAX_LEVEL {
+        value *= 2;
+        idx += 1;
+    }
+    idx
+}
 
 pub trait DBCommandMut {
     fn get(&self, key: &str) -> Result<Option<String>>;
@@ -37,7 +48,8 @@ impl<T: 'static + MemTable> KVLite<T> {
     pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
 
-        let leveln_manager = LevelNManager::open_tables(db_path.clone());
+        let index_cache = Arc::new(ShardLRUCache::default());
+        let leveln_manager = LevelNManager::open_tables(db_path.clone(), index_cache.clone());
 
         let mut mut_mem_table = T::default();
 
@@ -54,6 +66,7 @@ impl<T: 'static + MemTable> KVLite<T> {
             leveln_manager.clone(),
             wal.clone(),
             imm_mem_table.clone(),
+            index_cache,
             channel.1,
             background_task_write_to_level0_is_running.clone(),
         );
@@ -196,7 +209,7 @@ pub(crate) mod tests {
     use crate::db::{KVLite, MAX_LEVEL};
     use crate::error::KVLiteError;
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
-    use crate::sstable::manager::level_n::LevelNManager;
+    use crate::sstable::manager::level_n::tests::create_manager;
     use log::info;
     use rand::Rng;
     use std::collections::HashMap;
@@ -320,7 +333,7 @@ pub(crate) mod tests {
 
     fn check(path: &Path) {
         let db_path = path.to_str().unwrap();
-        let leveln_manager = LevelNManager::open_tables(db_path.to_string());
+        let leveln_manager = create_manager(db_path);
         for i in 1..=MAX_LEVEL {
             let lock =
                 leveln_manager.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(i) });
