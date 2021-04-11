@@ -263,41 +263,58 @@ pub(crate) mod tests {
             format!("value3_{}", value_prefix)
         );
 
-        let mut not_found_key = vec![];
-        info!("start query");
-        for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
-            let v = db.get(&format!("key{}", i));
-            let value = v.unwrap();
-            if let Some(value) = value {
-                if format!("value{}_{}", i, value_prefix) != value {
+        fn query<M: MemTable + 'static>(db1: Arc<KVLite<M>>, value_prefix: u32) {
+            let mut not_found_key = vec![];
+            for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
+                let v = db1.get(&format!("key{}", i));
+                let value = v.unwrap();
+                if let Some(value) = value {
+                    if format!("value{}_{}", i, value_prefix) != value {
+                        not_found_key.push(i);
+                    }
+                } else {
                     not_found_key.push(i);
                 }
-            } else {
-                not_found_key.push(i);
+            }
+
+            if !not_found_key.is_empty() {
+                let mut count = 0;
+                let length = not_found_key.len();
+                warn!("{} keys not found", length);
+                std::thread::sleep(Duration::from_secs(5));
+                for key in not_found_key {
+                    println!("{}", key);
+                    let v = db1.get(&format!("key{}", key));
+                    let value = v.unwrap();
+                    if let Some(value) = value {
+                        assert_eq!(format!("value{}_{}", key, value_prefix), value);
+                    } else {
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    panic!("{} keys still not found", count);
+                } else {
+                    info!("{} keys now found", length);
+                }
             }
         }
 
-        if !not_found_key.is_empty() {
-            let mut count = 0;
-            let length = not_found_key.len();
-            warn!("{} keys not found", length);
-            std::thread::sleep(Duration::from_secs(5));
-            for key in not_found_key {
-                println!("{}", key);
-                let v = db.get(&format!("key{}", key));
-                let value = v.unwrap();
-                if let Some(value) = value {
-                    assert_eq!(format!("value{}_{}", key, value_prefix), value);
-                } else {
-                    count += 1;
-                }
-            }
-            if count > 0 {
-                panic!("{} keys still not found", count);
-            } else {
-                info!("{} keys now found", length);
-            }
-        }
+        info!("start query");
+
+        let db1 = Arc::new(db);
+        let db2 = db1.clone();
+        let handle1 = std::thread::spawn(move || {
+            query(db1, value_prefix);
+        });
+
+        let handle2 = std::thread::spawn(move || {
+            query(db2, value_prefix);
+        });
+
+        handle1.join().unwrap();
+        handle2.join().unwrap();
+
         info!("db done");
     }
 
