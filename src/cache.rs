@@ -3,6 +3,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -72,9 +73,9 @@ fn shard(hash: u32) -> usize {
 struct LRUCache<K: Eq, V> {
     table: HashTable<K, V>,
     // dummy head, tail.next is the oldest entry
-    head: *mut LRUEntry<K, V>,
+    head: NonNull<LRUEntry<K, V>>,
     // dummy tail, tail.prev is the oldest entry
-    tail: *mut LRUEntry<K, V>,
+    tail: NonNull<LRUEntry<K, V>>,
 }
 
 unsafe impl<K: Eq, V> Send for LRUCache<K, V> {}
@@ -87,20 +88,19 @@ impl<K: Eq, V> LRUCache<K, V> {
         unsafe {
             (*head).next = tail;
             (*tail).prev = head;
-        }
-
-        LRUCache {
-            table: HashTable::default(),
-            head,
-            tail,
+            LRUCache {
+                table: HashTable::default(),
+                head: NonNull::new_unchecked(head),
+                tail: NonNull::new_unchecked(tail),
+            }
         }
     }
 
     fn attach(&mut self, n: *mut LRUEntry<K, V>) {
         unsafe {
-            (*n).next = (*self.head).next;
-            (*n).prev = self.head;
-            (*self.head).next = n;
+            (*n).next = (self.head.as_ref()).next;
+            (*n).prev = self.head.as_ptr();
+            (self.head.as_mut()).next = n;
             (*(*n).next).prev = n;
         }
     }
@@ -131,8 +131,8 @@ impl<K: Eq, V> LRUCache<K, V> {
         if entry.is_null() {
             if self.table.len >= CACHE_CAP {
                 unsafe {
-                    let old = (*self.tail).prev;
-                    debug_assert_ne!(self.tail, old);
+                    let old = (self.tail.as_ref()).prev;
+                    debug_assert_ne!(self.tail.as_ptr(), old);
                     Self::detach(old);
                     self.table.remove(old);
                 }
@@ -156,14 +156,16 @@ impl<K: Eq, V> LRUCache<K, V> {
 
 impl<K: Eq, V> Drop for LRUCache<K, V> {
     fn drop(&mut self) {
-        let mut node = self.head;
-        for _ in 0..=self.table.len + 1 {
-            debug_assert!(!node.is_null());
-            let prev = node;
-            unsafe {
+        unsafe {
+            let mut node = (self.head.as_ref()).next;
+            for _ in 0..self.table.len {
+                debug_assert!(!node.is_null());
+                let prev = node;
                 node = (*node).next;
+                release(prev);
             }
-            release(prev);
+            let _head = *Box::from_raw(self.head.as_ptr());
+            let _tail = *Box::from_raw(self.tail.as_ptr());
         }
     }
 }
@@ -392,7 +394,7 @@ mod tests {
     #[ignore]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
-        lru_cache.erase(&"h".to_string(), 123);
+
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();
@@ -420,9 +422,10 @@ mod tests {
         }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
+        let hh = String::from("hh");
         for i in 0..500 {
             let h = murmur_hash(i.to_string().as_bytes(), 0x87654321);
-            let tracker = lru_cache.look_up(&"hello".to_string(), h);
+            let tracker = lru_cache.look_up(&hh, h);
             assert!(tracker.0.is_null());
         }
     }
