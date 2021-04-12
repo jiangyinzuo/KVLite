@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
-        lru_cache.erase(&"h".to_string(), 123);
+        // lru_cache.erase(&"h".to_string(), 123);
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();
