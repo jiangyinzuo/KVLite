@@ -3,6 +3,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -72,7 +73,7 @@ fn shard(hash: u32) -> usize {
 struct LRUCache<K: Eq, V> {
     table: HashTable<K, V>,
     // dummy head, tail.next is the oldest entry
-    head: *mut LRUEntry<K, V>,
+    head: NonNull<LRUEntry<K, V>>,
     // dummy tail, tail.prev is the oldest entry
     tail: *mut LRUEntry<K, V>,
 }
@@ -87,20 +88,19 @@ impl<K: Eq, V> LRUCache<K, V> {
         unsafe {
             (*head).next = tail;
             (*tail).prev = head;
-        }
-
-        LRUCache {
-            table: HashTable::default(),
-            head,
-            tail,
+            LRUCache {
+                table: HashTable::default(),
+                head: NonNull::new_unchecked(head),
+                tail,
+            }
         }
     }
 
     fn attach(&mut self, n: *mut LRUEntry<K, V>) {
         unsafe {
-            (*n).next = (*self.head).next;
-            (*n).prev = self.head;
-            (*self.head).next = n;
+            (*n).next = (self.head.as_mut()).next;
+            (*n).prev = self.head.as_ptr();
+            (self.head.as_mut()).next = n;
             (*(*n).next).prev = n;
         }
     }
@@ -156,14 +156,16 @@ impl<K: Eq, V> LRUCache<K, V> {
 
 impl<K: Eq, V> Drop for LRUCache<K, V> {
     fn drop(&mut self) {
-        let mut node = self.head;
-        for _ in 0..=self.table.len + 1 {
-            debug_assert!(!node.is_null());
-            let prev = node;
-            unsafe {
+        unsafe {
+            let mut node = (self.head.as_mut()).next;
+            for _ in 0..self.table.len {
+                debug_assert!(!node.is_null());
+                let prev = node;
                 node = (*node).next;
+                release(prev);
             }
-            release(prev);
+            let _head = *Box::from_raw(self.head.as_ptr());
+            let _tail = *Box::from_raw(self.tail);
         }
     }
 }
@@ -391,7 +393,7 @@ mod tests {
     #[test]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
-        let hh = String::from("hh");
+
         // lru_cache.erase(&h, 123);
         for i in 0..CACHE_CAP {
             let key = i.to_string();
@@ -420,6 +422,7 @@ mod tests {
         // }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
+        let hh = String::from("hh");
         for i in 0..500 {
             let h = murmur_hash(i.to_string().as_bytes(), 0x87654321);
             let tracker = lru_cache.look_up(&hh, h);
