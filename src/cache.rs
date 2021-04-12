@@ -314,7 +314,7 @@ impl<K: Eq, V> HashTable<K, V> {
     }
 
     fn find_ptr_by_ptr(
-        mut node: *mut *mut LRUEntry<K, V>,
+        mut node: &mut *mut LRUEntry<K, V>,
         entry: *mut LRUEntry<K, V>,
     ) -> *mut *mut LRUEntry<K, V> {
         unsafe {
@@ -428,7 +428,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_erase() {
         let mut lru_cache = LRUCache::new();
         for i in 0..CACHE_CAP * 2 {
