@@ -401,16 +401,16 @@ mod tests {
         }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
-        for i in 0..CACHE_CAP {
-            let key = i.to_string();
-            let h = murmur_hash(key.as_bytes(), 0x87654321);
-            let tracker = lru_cache.look_up(&key, h);
-            let tracker2 = lru_cache.look_up(&key, h);
-            unsafe {
-                // assert_eq!((*tracker.0).value.assume_init_ref(), &key);
-                // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
-            }
-        }
+        // for i in 0..CACHE_CAP {
+        //     let key = i.to_string();
+        //     let h = murmur_hash(key.as_bytes(), 0x87654321);
+        //     let tracker = lru_cache.look_up(&key, h);
+        //     let tracker2 = lru_cache.look_up(&key, h);
+        //     unsafe {
+        //         // assert_eq!((*tracker.0).value.assume_init_ref(), &key);
+        //         // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
+        //     }
+        // }
         //
         // for i in CACHE_CAP..CACHE_CAP + 20 {
         //     let key = i.to_string();
