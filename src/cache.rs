@@ -394,7 +394,6 @@ mod tests {
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
 
-        // lru_cache.erase(&h, 123);
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();
@@ -407,10 +406,10 @@ mod tests {
             let key = i.to_string();
             let h = murmur_hash(key.as_bytes(), 0x87654321);
             let tracker = lru_cache.look_up(&key, h);
-            // let tracker2 = lru_cache.look_up(&key, h);
+            let tracker2 = lru_cache.look_up(&key, h);
             unsafe {
                 assert_eq!((*tracker.0).value.assume_init_ref(), &key);
-                // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
+                assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
             }
         }
 
