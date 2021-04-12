@@ -389,6 +389,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
         lru_cache.erase(&"h".to_string(), 123);
@@ -427,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_erase() {
         let mut lru_cache = LRUCache::new();
         for i in 0..CACHE_CAP * 2 {
