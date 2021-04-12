@@ -391,7 +391,8 @@ mod tests {
     #[test]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
-        // lru_cache.erase(&"h".to_string(), 123);
+        // let h = String::from("hh");
+        // lru_cache.erase(&h, 123);
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();
@@ -400,30 +401,30 @@ mod tests {
         }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
-        // for i in 0..CACHE_CAP {
-        //     let key = i.to_string();
-        //     let h = murmur_hash(key.as_bytes(), 0x87654321);
-        //     let tracker = lru_cache.look_up(&key, h);
-        //     let tracker2 = lru_cache.look_up(&key, h);
-        //     unsafe {
-        //         // assert_eq!((*tracker.0).value.assume_init_ref(), &key);
-        //         // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
-        //     }
-        // }
-        //
-        // for i in CACHE_CAP..CACHE_CAP + 20 {
-        //     let key = i.to_string();
-        //     let value = i.to_string();
-        //     let h = murmur_hash(key.as_bytes(), 0x87654321);
-        //     lru_cache.insert_no_exists(key, value, h);
-        // }
-        // assert_eq!(lru_cache.table.len, CACHE_CAP);
-        //
-        // for i in 0..500 {
-        //     let h = murmur_hash(i.to_string().as_bytes(), 0x87654321);
-        //     let tracker = lru_cache.look_up(&"hello".to_string(), h);
-        //     assert!(tracker.0.is_null());
-        // }
+        for i in 0..CACHE_CAP {
+            let key = i.to_string();
+            let h = murmur_hash(key.as_bytes(), 0x87654321);
+            let tracker = lru_cache.look_up(&key, h);
+            let tracker2 = lru_cache.look_up(&key, h);
+            unsafe {
+                // assert_eq!((*tracker.0).value.assume_init_ref(), &key);
+                // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
+            }
+        }
+
+        for i in CACHE_CAP..CACHE_CAP + 20 {
+            let key = i.to_string();
+            let value = i.to_string();
+            let h = murmur_hash(key.as_bytes(), 0x87654321);
+            lru_cache.insert_no_exists(key, value, h);
+        }
+        assert_eq!(lru_cache.table.len, CACHE_CAP);
+
+        for i in 0..500 {
+            let h = murmur_hash(i.to_string().as_bytes(), 0x87654321);
+            let tracker = lru_cache.look_up(&"hello".to_string(), h);
+            assert!(tracker.0.is_null());
+        }
     }
 
     #[test]
