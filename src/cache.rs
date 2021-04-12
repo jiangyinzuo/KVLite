@@ -75,7 +75,7 @@ struct LRUCache<K: Eq, V> {
     // dummy head, tail.next is the oldest entry
     head: NonNull<LRUEntry<K, V>>,
     // dummy tail, tail.prev is the oldest entry
-    tail: *mut LRUEntry<K, V>,
+    tail: NonNull<LRUEntry<K, V>>,
 }
 
 unsafe impl<K: Eq, V> Send for LRUCache<K, V> {}
@@ -91,14 +91,14 @@ impl<K: Eq, V> LRUCache<K, V> {
             LRUCache {
                 table: HashTable::default(),
                 head: NonNull::new_unchecked(head),
-                tail,
+                tail: NonNull::new_unchecked(tail),
             }
         }
     }
 
     fn attach(&mut self, n: *mut LRUEntry<K, V>) {
         unsafe {
-            (*n).next = (self.head.as_mut()).next;
+            (*n).next = (self.head.as_ref()).next;
             (*n).prev = self.head.as_ptr();
             (self.head.as_mut()).next = n;
             (*(*n).next).prev = n;
@@ -131,8 +131,8 @@ impl<K: Eq, V> LRUCache<K, V> {
         if entry.is_null() {
             if self.table.len >= CACHE_CAP {
                 unsafe {
-                    let old = (*self.tail).prev;
-                    debug_assert_ne!(self.tail, old);
+                    let old = (self.tail.as_ref()).prev;
+                    debug_assert_ne!(self.tail.as_ptr(), old);
                     Self::detach(old);
                     self.table.remove(old);
                 }
@@ -157,7 +157,7 @@ impl<K: Eq, V> LRUCache<K, V> {
 impl<K: Eq, V> Drop for LRUCache<K, V> {
     fn drop(&mut self) {
         unsafe {
-            let mut node = (self.head.as_mut()).next;
+            let mut node = (self.head.as_ref()).next;
             for _ in 0..self.table.len {
                 debug_assert!(!node.is_null());
                 let prev = node;
@@ -165,7 +165,7 @@ impl<K: Eq, V> Drop for LRUCache<K, V> {
                 release(prev);
             }
             let _head = *Box::from_raw(self.head.as_ptr());
-            let _tail = *Box::from_raw(self.tail);
+            let _tail = *Box::from_raw(self.tail.as_ptr());
         }
     }
 }
@@ -403,16 +403,16 @@ mod tests {
         }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
-        // for i in 0..CACHE_CAP {
-        //     let key = i.to_string();
-        //     let h = murmur_hash(key.as_bytes(), 0x87654321);
-        //     let tracker = lru_cache.look_up(&key, h);
-        //     let tracker2 = lru_cache.look_up(&key, h);
-        //     unsafe {
-        //         // assert_eq!((*tracker.0).value.assume_init_ref(), &key);
-        //         // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
-        //     }
-        // }
+        for i in 0..CACHE_CAP {
+            let key = i.to_string();
+            let h = murmur_hash(key.as_bytes(), 0x87654321);
+            let tracker = lru_cache.look_up(&key, h);
+            // let tracker2 = lru_cache.look_up(&key, h);
+            unsafe {
+                // assert_eq!((*tracker.0).value.assume_init_ref(), &key);
+                // assert_eq!((*tracker2.0).value.assume_init_ref(), &key);
+            }
+        }
         //
         // for i in CACHE_CAP..CACHE_CAP + 20 {
         //     let key = i.to_string();
