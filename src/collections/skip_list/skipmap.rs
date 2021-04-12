@@ -1,6 +1,7 @@
 use crate::collections::skip_list::{rand_level, MAX_LEVEL};
 use crate::collections::Entry;
 use std::alloc::Layout;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -223,10 +224,11 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
-    pub fn iter(&self) -> Iter<K, V> {
+    pub fn iter<'a>(&self) -> Iter<'a, K, V> {
         unsafe {
             Iter {
                 node: (*self.head).get_next(0),
+                _marker: PhantomData,
             }
         }
     }
@@ -299,11 +301,12 @@ impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
 }
 
 /// Iteration over the contents of a SkipMap
-pub struct Iter<K: Ord + Default, V: Default> {
+pub struct Iter<'a, K: Ord + Default, V: Default> {
     node: *const Node<K, V>,
+    _marker: PhantomData<&'a Node<K, V>>,
 }
 
-impl<K: Ord + Default, V: Default> Iter<K, V> {
+impl<'a, K: Ord + Default, V: Default> Iter<'a, K, V> {
     pub fn current_no_consume(&self) -> *const Node<K, V> {
         self.node
     }
@@ -320,7 +323,7 @@ impl<K: Ord + Default, V: Default> Iter<K, V> {
     }
 }
 
-impl<K: Ord + Default, V: Default> Iterator for Iter<K, V> {
+impl<'a, K: Ord + Default, V: Default> Iterator for Iter<'a, K, V> {
     type Item = *const Node<K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -1,5 +1,6 @@
 use std::alloc::Layout;
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,11 +11,13 @@ const CACHE_CAP: usize = 256;
 const NUM_SHARD_BITS: usize = 4;
 const NUM_SHARD: usize = 1 << NUM_SHARD_BITS;
 
-pub struct ShardLRUCache<K: Eq, V> {
+pub struct ShardLRUCache<K: Eq + Hash + Send + Sync, V: Send + Sync> {
     caches: [Mutex<LRUCache<K, V>>; NUM_SHARD],
+    _k: PhantomData<K>,
+    _v: PhantomData<V>,
 }
 
-impl<K: Eq, V> Default for ShardLRUCache<K, V> {
+impl<K: Eq + Hash + Send + Sync, V: Send + Sync> Default for ShardLRUCache<K, V> {
     fn default() -> Self {
         ShardLRUCache {
             caches: [
@@ -35,14 +38,16 @@ impl<K: Eq, V> Default for ShardLRUCache<K, V> {
                 Mutex::new(LRUCache::new()),
                 Mutex::new(LRUCache::new()),
             ],
+            _k: PhantomData,
+            _v: PhantomData,
         }
     }
 }
 
-impl<K: Eq + Hash, V> ShardLRUCache<K, V> {
-    pub fn insert(&self, key: K, value: V, hash: u32) {
+impl<K: Eq + Hash + Send + Sync, V: Send + Sync> ShardLRUCache<K, V> {
+    pub fn insert_no_exists(&self, key: K, value: V, hash: u32) {
         let mut guard: MutexGuard<LRUCache<K, V>> = self.caches[shard(hash)].lock().unwrap();
-        guard.insert(key, value, hash);
+        guard.insert_no_exists(key, value, hash);
     }
 
     pub fn look_up(&self, key: &K, hash: u32) -> EntryTracker<K, V> {
@@ -56,8 +61,8 @@ impl<K: Eq + Hash, V> ShardLRUCache<K, V> {
     }
 }
 
-unsafe impl<K: Eq, V> Send for ShardLRUCache<K, V> {}
-unsafe impl<K: Eq, V> Sync for ShardLRUCache<K, V> {}
+unsafe impl<K: Eq + Hash + Send + Sync, V: Send + Sync> Send for ShardLRUCache<K, V> {}
+unsafe impl<K: Eq + Hash + Send + Sync, V: Send + Sync> Sync for ShardLRUCache<K, V> {}
 
 #[inline]
 fn shard(hash: u32) -> usize {
@@ -66,6 +71,7 @@ fn shard(hash: u32) -> usize {
 
 struct LRUCache<K: Eq, V> {
     table: HashTable<K, V>,
+    // dummy head, tail.next is the oldest entry
     head: *mut LRUEntry<K, V>,
     // dummy tail, tail.prev is the oldest entry
     tail: *mut LRUEntry<K, V>,
@@ -77,15 +83,16 @@ unsafe impl<K: Eq, V> Sync for LRUCache<K, V> {}
 impl<K: Eq, V> LRUCache<K, V> {
     fn new() -> LRUCache<K, V> {
         let head = LRUEntry::new_empty();
+        let tail = LRUEntry::new_empty();
         unsafe {
-            (*head).next = head;
-            (*head).prev = head;
+            (*head).next = tail;
+            (*tail).prev = head;
         }
 
         LRUCache {
             table: HashTable::default(),
             head,
-            tail: head,
+            tail,
         }
     }
 
@@ -98,14 +105,19 @@ impl<K: Eq, V> LRUCache<K, V> {
         }
     }
 
+    fn detach(n: *mut LRUEntry<K, V>) {
+        debug_assert!(!n.is_null());
+        unsafe {
+            (*(*n).next).prev = (*n).prev;
+            (*(*n).prev).next = (*n).next;
+        }
+    }
+
     fn look_up(&mut self, key: &K, hash: u32) -> EntryTracker<K, V> {
         let n = self.table.look_up(key, hash);
         if !n.is_null() {
-            if self.head != n {
-                detach(n);
-                self.attach_to_head(n);
-            }
-
+            Self::detach(n);
+            self.attach(n);
             unsafe {
                 (*n).ref_count.fetch_add(1, Ordering::Release);
             }
@@ -113,39 +125,31 @@ impl<K: Eq, V> LRUCache<K, V> {
         EntryTracker(n)
     }
 
-    fn insert(&mut self, key: K, value: V, hash: u32) {
-        if self.table.len >= CACHE_CAP {
-            unsafe {
-                let old = (*self.tail).prev;
-                debug_assert_ne!(self.tail, old);
-                detach(old);
-                self.table.remove(old);
+    /// Insert key-value when key is not found.
+    fn insert_no_exists(&mut self, key: K, value: V, hash: u32) {
+        let entry = self.table.look_up(&key, hash);
+        if entry.is_null() {
+            if self.table.len >= CACHE_CAP {
+                unsafe {
+                    let old = (*self.tail).prev;
+                    debug_assert_ne!(self.tail, old);
+                    Self::detach(old);
+                    self.table.remove(old);
+                }
             }
+            let new_entry = LRUEntry::new(key, value, hash);
+            self.attach(new_entry);
+            self.table.insert(new_entry);
         }
-        let new_entry = LRUEntry::new(key, value, hash);
-        self.attach_to_head(new_entry);
-        self.table.insert(new_entry);
     }
 
     fn erase(&mut self, key: &K, hash: u32) {
         let n = self.table.look_up(key, hash);
         if !n.is_null() {
-            // FIXME
-            // detach(n);
-            // unsafe {
-            //     self.table.remove(n);
-            // }
-        }
-    }
-
-    fn attach_to_head(&mut self, n: *mut LRUEntry<K, V>) {
-        debug_assert_ne!(n, self.head);
-        unsafe {
-            (*n).next = self.head;
-            (*self.head).prev = n;
-            (*n).prev = self.tail;
-            (*self.tail).next = n;
-            self.head = n;
+            Self::detach(n);
+            unsafe {
+                self.table.remove(n);
+            }
         }
     }
 }
@@ -153,12 +157,13 @@ impl<K: Eq, V> LRUCache<K, V> {
 impl<K: Eq, V> Drop for LRUCache<K, V> {
     fn drop(&mut self) {
         let mut node = self.head;
-        for _ in 0..=self.table.len {
+        for _ in 0..=self.table.len + 1 {
             debug_assert!(!node.is_null());
+            let prev = node;
             unsafe {
-                release((*node).prev);
                 node = (*node).next;
             }
+            release(prev);
         }
     }
 }
@@ -240,6 +245,8 @@ const TABLE_SIZE: usize = 256;
 struct HashTable<K: Eq, V> {
     table: [*mut LRUEntry<K, V>; TABLE_SIZE],
     len: usize,
+    _k: PhantomData<K>,
+    _v: PhantomData<V>,
 }
 
 impl<K: Eq, V> Default for HashTable<K, V> {
@@ -248,23 +255,21 @@ impl<K: Eq, V> Default for HashTable<K, V> {
             HashTable {
                 table: std::mem::zeroed(),
                 len: 0,
+                _k: PhantomData,
+                _v: PhantomData,
             }
         }
     }
 }
 
 impl<K: Eq, V> HashTable<K, V> {
-    fn look_up(&self, key: &K, hash: u32) -> *mut LRUEntry<K, V> {
+    fn look_up(&mut self, key: &K, hash: u32) -> *mut LRUEntry<K, V> {
         let idx = hash as usize & (TABLE_SIZE - 1);
         unsafe {
-            let p = self.table.get_unchecked(idx);
+            let p = self.table.get_unchecked_mut(idx);
             let mut node = *p;
-            let result = Self::find_ptr(&mut node, hash, key);
-            if !(*result).is_null() {
-                *result
-            } else {
-                std::ptr::null_mut()
-            }
+            Self::find_ptr(&mut node, hash, key);
+            node
         }
     }
 
@@ -272,12 +277,8 @@ impl<K: Eq, V> HashTable<K, V> {
         unsafe {
             let idx = (*entry).hash as usize & (TABLE_SIZE - 1);
             let p = self.table.get_unchecked_mut(idx);
-            if (*p).is_null() {
-                *p = entry;
-            } else {
-                (*entry).next_hash = *p;
-                *p = entry;
-            }
+            (*entry).next_hash = *p;
+            *p = entry;
         }
         self.len += 1;
     }
@@ -288,33 +289,28 @@ impl<K: Eq, V> HashTable<K, V> {
     /// `entry` should not be null
     unsafe fn remove(&mut self, entry: *mut LRUEntry<K, V>) {
         debug_assert!(!entry.is_null());
+
         let hash = (*entry).hash;
         let idx = hash as usize & (TABLE_SIZE - 1);
-        let p = self.table.get_unchecked(idx);
+        let p = self.table.get_unchecked_mut(idx);
         debug_assert!(!(*p).is_null());
-        let mut node = *p;
-        let result = Self::find_ptr_by_ptr(&mut node, entry);
+        let result = Self::find_ptr_by_ptr(p, entry);
         let old = *result;
 
-        debug_assert!(!old.is_null());
+        debug_assert_eq!(old, entry);
         self.len -= 1;
         (*result) = (*old).next_hash;
         release(entry);
     }
 
-    fn find_ptr(
-        mut node: *mut *mut LRUEntry<K, V>,
-        hash: u32,
-        key: &K,
-    ) -> *mut *mut LRUEntry<K, V> {
+    fn find_ptr(node: &mut *mut LRUEntry<K, V>, hash: u32, key: &K) {
         unsafe {
             while !((*node).is_null()
-                || (**node).hash == hash && ((**node).key.assume_init_ref()).eq(key))
+                || (**node).hash == hash && key.eq((**node).key.assume_init_ref()))
             {
-                node = &mut (**node).next_hash;
+                *node = (**node).next_hash;
             }
         }
-        node
     }
 
     fn find_ptr_by_ptr(
@@ -327,18 +323,6 @@ impl<K: Eq, V> HashTable<K, V> {
             }
         }
         node
-    }
-}
-
-fn detach<K: Eq, V>(n: *mut LRUEntry<K, V>) {
-    debug_assert!(!n.is_null());
-    unsafe {
-        if !(*n).next.is_null() {
-            (*(*n).next).prev = (*n).prev;
-        }
-        if !(*n).prev.is_null() {
-            (*(*n).prev).next = (*n).next;
-        }
     }
 }
 
@@ -412,7 +396,7 @@ mod tests {
             let key = i.to_string();
             let value = i.to_string();
             let h = murmur_hash(key.as_bytes(), 0x87654321);
-            lru_cache.insert(key, value, h);
+            lru_cache.insert_no_exists(key, value, h);
         }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
@@ -431,7 +415,7 @@ mod tests {
             let key = i.to_string();
             let value = i.to_string();
             let h = murmur_hash(key.as_bytes(), 0x87654321);
-            lru_cache.insert(key, value, h);
+            lru_cache.insert_no_exists(key, value, h);
         }
         assert_eq!(lru_cache.table.len, CACHE_CAP);
 
@@ -443,13 +427,44 @@ mod tests {
     }
 
     #[test]
+    fn test_erase() {
+        let mut lru_cache = LRUCache::new();
+        for i in 0..CACHE_CAP * 2 {
+            let key = i.to_string();
+            let value = i.to_string();
+            let h = murmur_hash(key.as_bytes(), 0x87654321);
+            lru_cache.insert_no_exists(key, value, h);
+        }
+        for i in 0..CACHE_CAP * 2 {
+            if (i & 1) == 0 {
+                let key = i.to_string();
+                let h = murmur_hash(key.as_bytes(), 0x87654321);
+                lru_cache.erase(&key, h);
+            }
+        }
+        for i in 0..CACHE_CAP * 2 {
+            let key = i.to_string();
+            let h = murmur_hash(key.as_bytes(), 0x87654321);
+            let tracker = lru_cache.look_up(&key, h);
+            if (i & 1) == 0 || i < CACHE_CAP {
+                assert!(tracker.0.is_null());
+            } else {
+                assert!(!tracker.0.is_null());
+                unsafe {
+                    assert_eq!((*tracker.0).value.assume_init_ref(), &key);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_shard_lru_cache() {
         let lru_cache = Arc::new(ShardLRUCache::default());
         for i in 0..CACHE_CAP {
             let key = i.to_string();
             let value = i.to_string();
             let h = murmur_hash(key.as_bytes(), 0x87654321);
-            lru_cache.insert(key, value, h);
+            lru_cache.insert_no_exists(key, value, h);
         }
 
         let key = 3.to_string();

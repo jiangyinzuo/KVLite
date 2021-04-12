@@ -382,7 +382,7 @@ impl TableReadHandle {
                 filter: bloom_filter,
                 index: index_block,
             };
-            lru_cache.insert(self.table_key, cache, self.hash);
+            lru_cache.insert_no_exists(self.table_key, cache, self.hash);
             if let Some((offset, length)) = may_contain_key {
                 let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
                 return option;
