@@ -9,8 +9,6 @@ matrix:
     - os: linux
       dist: focal
       rust: nightly
-    - os: windows
-      rust: nightly
 
 script:
   - rustup component add llvm-tools-preview
