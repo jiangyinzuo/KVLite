@@ -28,6 +28,17 @@ fn main() {
 RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-linux-gnu
 ```
 
+## Performance
+
+Unbuntu20.04  
+Linux version 5.4.0-70-generic  
+Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
+
+|            |  insert | query |
+| ---------- |---------|-------|
+| 10^5       |  522ms  |  32ms |
+| 10^6       |  4.72s  | 4.08s |
+
 ## References
 
 - [LevelDB](https://github.com/google/leveldb)

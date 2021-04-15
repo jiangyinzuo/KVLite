@@ -1,6 +1,5 @@
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::DBCommandMut;
-use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::{KeyValue, MemTable};
 use crate::Result;
 use std::sync::RwLock;
@@ -36,11 +35,8 @@ impl DBCommandMut for SkipMapMemTable {
 
     fn remove(&mut self, key: String) -> Result<()> {
         let _guard = self.rw_lock.write().unwrap();
-        if self.inner.insert(key, String::new()) {
-            Ok(())
-        } else {
-            Err(KeyNotFound)
-        }
+        self.inner.insert(key, String::new());
+        Ok(())
     }
 }
 

@@ -1,14 +1,3 @@
-use crate::cache::ShardLRUCache;
-use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
-use crate::memory::MemTable;
-use crate::sstable::manager::level_n::LevelNManager;
-use crate::sstable::table_cache::IndexCache;
-use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
-use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
-use crate::wal::WriteAheadLog;
-use crate::Result;
-use crossbeam_channel::Receiver;
-use rand::Rng;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
@@ -16,6 +5,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
+
+use crossbeam_channel::Receiver;
+use rand::Rng;
+
+use crate::cache::ShardLRUCache;
+use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
+use crate::db::ACTIVE_SIZE_THRESHOLD;
+use crate::memory::MemTable;
+use crate::sstable::manager::level_n::LevelNManager;
+use crate::sstable::table_cache::IndexCache;
+use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
+use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
+use crate::wal::WriteAheadLog;
+use crate::Result;
 
 /// Struct for read and write level0 sstable.
 pub struct Level0Manager {
@@ -274,7 +277,7 @@ impl Level0Manager {
     /// If total size of level 0 is larger than 1 MB, it should be compacted.
     fn size_over(&self) -> bool {
         let size = self.level_size();
-        size > 1024 * 5
+        size > ACTIVE_SIZE_THRESHOLD as u64 * LEVEL0_FILES_THRESHOLD as u64 * 10
     }
 
     pub fn random_handle(&self) -> Arc<TableReadHandle> {
@@ -327,13 +330,12 @@ impl Level0Manager {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::{DBCommandMut, ACTIVE_SIZE_THRESHOLD};
+    use crate::db::DBCommandMut;
+    use crate::db::ACTIVE_SIZE_THRESHOLD;
     use crate::memory::{KeyValue, SkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
-    use crate::sstable::manager::level_n::LevelNManager;
     use crate::wal::WriteAheadLog;
-    use std::cmp::Ordering;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;

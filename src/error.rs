@@ -12,9 +12,6 @@ pub enum KVLiteError {
     #[error("{0}")]
     ThreadPoolBuildError(#[from] ThreadPoolBuildError),
 
-    #[error("key not found")]
-    KeyNotFound,
-
     #[error("invalid command")]
     InvalidCommand,
 
@@ -25,9 +22,9 @@ pub enum KVLiteError {
 impl PartialEq for KVLiteError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::IOError(_), Self::IOError(_))
-            | (Self::KeyNotFound, Self::KeyNotFound)
-            | (Self::InvalidCommand, Self::InvalidCommand) => true,
+            (Self::IOError(_), Self::IOError(_)) | (Self::InvalidCommand, Self::InvalidCommand) => {
+                true
+            }
             (Self::Custom(s1), Self::Custom(s2)) => s1.eq(s2),
             _ => false,
         }
