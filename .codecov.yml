@@ -10,3 +10,6 @@ coverage:
         # basic
         target: 75%
         threshold: 20%
+ignore:
+  - "examples/"
+  - "benches/"

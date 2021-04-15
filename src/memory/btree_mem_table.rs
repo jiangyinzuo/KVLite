@@ -1,5 +1,4 @@
 use crate::db::DBCommandMut;
-use crate::error::KVLiteError::KeyNotFound;
 use crate::memory::{KeyValue, MemTable};
 use crate::Result;
 use std::collections::BTreeMap;
@@ -25,10 +24,8 @@ impl DBCommandMut for BTreeMemTable {
 
     fn remove(&mut self, key: String) -> Result<()> {
         let _lock = self.rw_lock.write().unwrap();
-        match self.inner.insert(key, String::new()) {
-            Some(_) => Ok(()),
-            None => Err(KeyNotFound),
-        }
+        self.inner.insert(key, String::new());
+        Ok(())
     }
 }
 

@@ -11,7 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::thread::JoinHandle;
 
+#[cfg(debug_assertions)]
 pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
+#[cfg(not(debug_assertions))]
+pub const ACTIVE_SIZE_THRESHOLD: usize = 300000;
+
 pub const MAX_LEVEL: usize = 7;
 
 pub(crate) const fn max_level_shift() -> usize {
@@ -205,8 +209,7 @@ impl<M: MemTable> Drop for KVLite<M> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::db::ACTIVE_SIZE_THRESHOLD;
-    use crate::db::{KVLite, MAX_LEVEL};
+    use crate::db::{KVLite, ACTIVE_SIZE_THRESHOLD, MAX_LEVEL};
     use crate::error::KVLiteError;
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
@@ -246,10 +249,7 @@ pub(crate) mod tests {
         let db = KVLite::<M>::open(path).unwrap();
         db.set("hello".into(), format!("world_{}", value_prefix))
             .unwrap();
-        assert_eq!(
-            KVLiteError::KeyNotFound,
-            db.remove("no_exist".into()).unwrap_err()
-        );
+        db.remove("no_exist".into()).unwrap();
         assert_eq!(
             format!("world_{}", value_prefix),
             db.get(&"hello".to_owned()).unwrap().unwrap()

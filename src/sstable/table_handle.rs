@@ -204,6 +204,7 @@ impl TableWriter {
             self.filter.len(),
             self.kv_total,
         );
+        #[cfg(debug_assertions)]
         debug_assert_eq!(self.kv_count, self.kv_total);
 
         self.writer.flush().unwrap();

@@ -36,6 +36,7 @@ impl<R: Read + Seek> Read for BufReaderWithPos<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let len = self.reader.read(buf)?;
         self.pos += len as u64;
+        #[cfg(debug_assertions)]
         debug_assert!(self.pos <= self.end, "{}, {}", self.pos, self.end);
         Ok(len)
     }
@@ -44,6 +45,7 @@ impl<R: Read + Seek> Read for BufReaderWithPos<R> {
 impl<R: Read + Seek> Seek for BufReaderWithPos<R> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.pos = self.reader.seek(pos)?;
+        #[cfg(debug_assertions)]
         debug_assert!(self.pos <= self.end, "{}, {}", self.pos, self.end);
         Ok(self.pos)
     }
