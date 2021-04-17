@@ -1,4 +1,5 @@
 use crate::Result;
+use std::fs::File;
 use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
@@ -54,6 +55,13 @@ impl<R: Read + Seek> Seek for BufReaderWithPos<R> {
 pub struct BufWriterWithPos<W: Write + Seek> {
     writer: BufWriter<W>,
     pub pos: u64,
+}
+
+impl BufWriterWithPos<File> {
+    pub fn sync_data(&mut self) -> Result<()> {
+        self.writer.get_mut().sync_data()?;
+        Ok(())
+    }
 }
 
 impl<W: Write + Seek> BufWriterWithPos<W> {

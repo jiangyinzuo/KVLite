@@ -67,6 +67,7 @@ impl WriteAheadLog {
             }
         }
         self.log1.flush()?;
+        self.log1.sync_data()?;
         Ok(())
     }
 

@@ -208,6 +208,7 @@ impl TableWriter {
         debug_assert_eq!(self.kv_count, self.kv_total);
 
         self.writer.flush().unwrap();
+        self.writer.sync_data().unwrap();
     }
 
     #[inline]

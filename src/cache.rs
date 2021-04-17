@@ -391,7 +391,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_lru_cache() {
         let mut lru_cache = LRUCache::new();
 

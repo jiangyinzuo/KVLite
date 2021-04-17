@@ -37,7 +37,7 @@ Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
 |            |  insert | query |
 | ---------- |---------|-------|
 | 10^5       |  522ms  |  32ms |
-| 10^6       |  4.72s  | 4.08s |
+| 10^6       |  5.07s  | 4.38s |
 
 ## References
 

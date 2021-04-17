@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 #[cfg(debug_assertions)]
 pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
 #[cfg(not(debug_assertions))]
-pub const ACTIVE_SIZE_THRESHOLD: usize = 300000;
+pub const ACTIVE_SIZE_THRESHOLD: usize = 1000;
 
 pub const MAX_LEVEL: usize = 7;
 
@@ -210,7 +210,6 @@ impl<M: MemTable> Drop for KVLite<M> {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::db::{KVLite, ACTIVE_SIZE_THRESHOLD, MAX_LEVEL};
-    use crate::error::KVLiteError;
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
     use log::info;
