@@ -99,9 +99,9 @@ pub fn read_u32<R: Read + Seek>(reader: &mut BufReaderWithPos<R>) -> Result<u32>
     Ok(u32::from_le_bytes(nums))
 }
 
-pub fn read_string_exact(reader: &mut (impl Read + Seek), length: u32) -> Result<String> {
-    let mut max_key = String::new();
+pub fn read_bytes_exact(reader: &mut (impl Read + Seek), length: u32) -> Result<Vec<u8>> {
+    let mut max_key = vec![0; length as usize];
     let mut handle = reader.take(length as u64);
-    handle.read_to_string(&mut max_key)?;
+    handle.read_exact(&mut max_key)?;
     Ok(max_key)
 }

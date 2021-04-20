@@ -1,6 +1,6 @@
 use crate::cache::ShardLRUCache;
 use crate::compact::level_n::start_compact;
-use crate::db::MAX_LEVEL;
+use crate::db::{Key, Value, MAX_LEVEL};
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 /// Struct for adding and removing sstable files.
 pub struct LevelNManager {
     db_path: String,
-    level_tables: [std::sync::RwLock<BTreeMap<(String, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
+    level_tables: [std::sync::RwLock<BTreeMap<(Key, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
@@ -94,7 +94,7 @@ impl LevelNManager {
                             .write()
                             .unwrap();
                         guard.insert(
-                            (handle.max_key().to_string(), handle.table_id()),
+                            (handle.max_key().clone(), handle.table_id()),
                             Arc::new(handle),
                         );
                     }
@@ -160,19 +160,18 @@ impl LevelNManager {
     pub fn get_level_tables_lock(
         &self,
         level: NonZeroUsize,
-    ) -> &std::sync::RwLock<BTreeMap<(String, u64), Arc<TableReadHandle>>> {
+    ) -> &std::sync::RwLock<BTreeMap<(Key, u64), Arc<TableReadHandle>>> {
         let lock = self.level_tables.get(level.get() - 1).unwrap();
         lock
     }
 
-    pub fn query_tables(&self, key: &String) -> Result<Option<String>> {
+    pub fn query_tables(&self, key: &Key) -> Result<Option<Value>> {
         for level in 1..=MAX_LEVEL {
             let tables_lock =
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
             let tables_guard = tables_lock.read().unwrap();
 
-            if let Some((k, table_read_handle)) = tables_guard.range((key.to_string(), 0)..).next()
-            {
+            if let Some((k, table_read_handle)) = tables_guard.range((key.clone(), 0)..).next() {
                 debug_assert!(key.le(&k.0));
                 debug_assert!(table_read_handle.readable());
                 let entry_tracker = self
@@ -240,7 +239,7 @@ impl LevelNManager {
             .write()
             .unwrap();
         let t = guard
-            .remove(&(table_handle.max_key().into(), table_handle.table_id()))
+            .remove(&(table_handle.max_key().clone(), table_handle.table_id()))
             .unwrap();
 
         t.ready_to_delete();
@@ -270,8 +269,8 @@ impl LevelNManager {
     pub fn get_overlap_tables(
         &self,
         level: NonZeroUsize,
-        min_key: &String,
-        max_key: &String,
+        min_key: &Key,
+        max_key: &Key,
     ) -> VecDeque<Arc<TableReadHandle>> {
         let tables_lock = self.get_level_tables_lock(level);
         let tables_guard = tables_lock.read().unwrap();
@@ -281,7 +280,7 @@ impl LevelNManager {
         // min_key:       "3"
         //                 |-------------->
         // max_key:  "1", "3", "5", "7" ...
-        for (_key, handle) in tables_guard.range((min_key.to_string(), 0)..) {
+        for (_key, handle) in tables_guard.range((min_key.clone(), 0)..) {
             if handle.is_overlapping(min_key, max_key) {
                 if handle.test_and_set_compacting() {
                     let handle = handle.clone();

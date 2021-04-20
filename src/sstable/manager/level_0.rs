@@ -11,7 +11,7 @@ use rand::Rng;
 
 use crate::cache::ShardLRUCache;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
-use crate::db::ACTIVE_SIZE_THRESHOLD;
+use crate::db::{Key, Value, ACTIVE_SIZE_THRESHOLD};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_cache::IndexCache;
@@ -205,7 +205,7 @@ impl Level0Manager {
         &self.level0_tables
     }
 
-    pub fn query_level0_tables(&self, key: &String) -> Result<Option<String>> {
+    pub fn query_level0_tables(&self, key: &Key) -> Result<Option<Value>> {
         let tables_guard = self.level0_tables.read().unwrap();
 
         // query the latest table first
@@ -289,15 +289,16 @@ impl Level0Manager {
     }
 
     /// Return level0 tables to compact
-    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableReadHandle>>, String, String) {
+    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableReadHandle>>, Key, Key) {
         let guard = self.level0_tables.read().unwrap();
 
         let mut tables = Vec::new();
         tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
 
         let mut count = 0;
-        let mut min_key: Option<&String> = None;
-        let mut max_key = "";
+        let mut min_key: Option<&Key> = None;
+        let max = Key::default();
+        let mut max_key: &Key = &max;
         for (_id, table) in guard.iter() {
             if table.test_and_set_compacting() {
                 tables.push(table.clone());
@@ -313,11 +314,7 @@ impl Level0Manager {
                 }
             }
         }
-        let min_key = match min_key {
-            Some(m) => m.to_string(),
-            None => unreachable!(),
-        };
-        (tables, min_key, max_key.to_string())
+        (tables, min_key.unwrap().clone(), max_key.clone())
     }
 
     pub(crate) fn close(&self) {
@@ -382,7 +379,10 @@ mod tests {
             let mut imm_mem_guard = imm_mem.write().unwrap();
             for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
                 imm_mem_guard
-                    .set(format!("key{}", i), format!("value{}", i))
+                    .set(
+                        format!("key{}", i).into_bytes(),
+                        format!("value{}", i).into_bytes(),
+                    )
                     .unwrap();
             }
             manager
@@ -397,12 +397,12 @@ mod tests {
         assert!(manager.level_size() > 0);
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
-            let key = format!("key{}", i);
+            let key = format!("key{}", i).into_bytes();
             let v = manager
                 .query_level0_tables(&key)
                 .unwrap()
                 .unwrap_or_else(|| leveln_manager.query_tables(&key).unwrap().unwrap());
-            assert_eq!(format!("value{}", i), v);
+            assert_eq!(format!("value{}", i).into_bytes(), v);
         }
 
         drop(sender);

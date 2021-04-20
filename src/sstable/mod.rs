@@ -78,7 +78,8 @@
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 
-use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
+use crate::db::Key;
+use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 
 pub(super) mod data_block;
 pub(super) mod filter_block;
@@ -91,12 +92,12 @@ pub mod table_handle;
 pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
 pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
 
-fn get_min_key(reader: &mut BufReaderWithPos<File>) -> String {
+fn get_min_key(reader: &mut BufReaderWithPos<File>) -> Key {
     reader.seek(SeekFrom::Start(0)).unwrap();
     let key_length = read_u32(reader).unwrap();
     // value_length
     reader.seek(SeekFrom::Current(4)).unwrap();
-    read_string_exact(reader, key_length).unwrap()
+    read_bytes_exact(reader, key_length).unwrap()
 }
 
 pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {

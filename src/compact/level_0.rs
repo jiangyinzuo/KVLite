@@ -1,4 +1,5 @@
 use crate::collections::skip_list::skipmap::{IntoIter, SkipMap};
+use crate::db::{Key, Value};
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::TableReadHandle;
@@ -107,7 +108,7 @@ impl Compactor {
                 };
             }
 
-            let mut level0_iter: IntoIter<String, String> = level0_skip_map.into_iter();
+            let mut level0_iter: IntoIter<Key, Value> = level0_skip_map.into_iter();
             let mut kv = level0_iter.current_mut_no_consume();
 
             for level1_table_handle in self.level1_table_handles.iter() {
@@ -187,7 +188,7 @@ impl Compactor {
             .may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
     }
 
-    fn merge_level0_tables(&self) -> SkipMap<String, String> {
+    fn merge_level0_tables(&self) -> SkipMap<Key, Value> {
         let mut skip_map = SkipMap::new();
         for table in &self.level0_table_handles {
             for (key, value) in table.iter() {
@@ -197,7 +198,7 @@ impl Compactor {
         skip_map
     }
 
-    fn add_table_handle_from_vec(&self, temp_kvs: Vec<(String, String)>) {
+    fn add_table_handle_from_vec(&self, temp_kvs: Vec<(Key, Value)>) {
         if !temp_kvs.is_empty() {
             let mut new_table = self.leveln_manager.create_table_write_handle(
                 unsafe { NonZeroUsize::new_unchecked(1) },
@@ -208,7 +209,7 @@ impl Compactor {
         }
     }
 
-    fn add_table_handle_from_vec_ref(&self, temp_kvs: Vec<(&String, &String)>) {
+    fn add_table_handle_from_vec_ref(&self, temp_kvs: Vec<(&Key, &Value)>) {
         debug_assert!(!temp_kvs.is_empty());
         let mut new_table = self.leveln_manager.create_table_write_handle(
             unsafe { NonZeroUsize::new_unchecked(1) },

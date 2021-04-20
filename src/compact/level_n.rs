@@ -1,6 +1,8 @@
+use crate::db::{Key, Value};
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::TableReadHandle;
 use std::cmp::Ordering;
+use std::collections::hash_map::VacantEntry;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -50,7 +52,7 @@ impl Compactor {
 
         let new_table_size = total / next_level_table_handles.len().max(2) + 1;
 
-        let mut temp_kvs = vec![];
+        let mut temp_kvs: Vec<(Key, Value)> = vec![];
         let mut table_to_compact_iter = self.handle_to_compact.iter();
 
         macro_rules! add_kv {
@@ -74,7 +76,7 @@ impl Compactor {
         } else {
             enum CurLevelState {
                 Start,
-                HasValue((String, String)),
+                HasValue((Key, Value)),
                 End,
             }
 
@@ -183,7 +185,7 @@ impl Compactor {
             .may_compact(unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) });
     }
 
-    fn add_table_handle(&self, temp_kvs: Vec<(String, String)>) {
+    fn add_table_handle(&self, temp_kvs: Vec<(Key, Value)>) {
         debug_assert!(!temp_kvs.is_empty());
         let mut new_table = self.leveln_manager.create_table_write_handle(
             unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) },
@@ -215,12 +217,18 @@ mod tests {
             );
             let mut kvs = vec![];
             for i in range.clone() {
-                kvs.push((format!("key{}", i), format!("value{}_{}", i, level)));
+                kvs.push((
+                    format!("key{}", i).into_bytes(),
+                    format!("value{}_{}", i, level).into_bytes(),
+                ));
             }
             handle.write_sstable_from_vec(kvs).unwrap();
             debug_assert!(std::path::Path::new(&temp_file_name(&handle.file_path)).exists());
 
-            assert_eq!(handle.max_key(), &format!("key{}", range.end - 1));
+            assert_eq!(
+                handle.max_key(),
+                &format!("key{}", range.end - 1).into_bytes()
+            );
             manager.upsert_table_handle(handle);
         }
 
@@ -230,7 +238,7 @@ mod tests {
         let one = NonZeroUsize::new(1).unwrap();
         let handle_to_compact = manager.get_handle_to_compact(one).unwrap();
         assert_eq!(handle_to_compact.table_id(), 1);
-        assert_eq!(handle_to_compact.max_key(), "key119");
+        assert_eq!(handle_to_compact.max_key(), "key119".as_bytes());
         start_compact(one, handle_to_compact, manager.clone());
         assert_eq!(manager.level_size(1), 0);
     }

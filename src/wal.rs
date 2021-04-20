@@ -1,4 +1,5 @@
-use crate::ioutils::{read_string_exact, read_u32, BufReaderWithPos};
+use crate::db::{Key, Value};
+use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
 use crate::Result;
 use std::fs;
@@ -51,19 +52,19 @@ impl WriteAheadLog {
     }
 
     /// Append a [WriteCommand] to `mut_log`
-    pub fn append(&mut self, key: &String, value: Option<&String>) -> Result<()> {
+    pub fn append(&mut self, key: &Key, value: Option<&Value>) -> Result<()> {
         let key_length = (key.len() as u32).to_le_bytes();
         self.log1.write_all(&key_length)?;
         match value {
             Some(v) => {
                 let value_length = (v.len() as u32).to_le_bytes();
                 self.log1.write_all(&value_length)?;
-                self.log1.write_all(key.as_bytes())?;
-                self.log1.write_all(v.as_bytes())?;
+                self.log1.write_all(key)?;
+                self.log1.write_all(v)?;
             }
             None => {
                 self.log1.write_all(&0u32.to_le_bytes())?;
-                self.log1.write_all(key.as_bytes())?;
+                self.log1.write_all(key)?;
             }
         }
         self.log1.flush()?;
@@ -101,9 +102,9 @@ fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
     reader.seek(SeekFrom::Start(0))?;
     while let Ok(key_length) = read_u32(&mut reader) {
         let value_length = read_u32(&mut reader)?;
-        let key = read_string_exact(&mut reader, key_length)?;
+        let key = read_bytes_exact(&mut reader, key_length)?;
         if value_length > 0 {
-            let value = read_string_exact(&mut reader, value_length)?;
+            let value = read_bytes_exact(&mut reader, value_length)?;
             mem_table.set(key, value)?;
         } else {
             mem_table.remove(key)?;
@@ -125,16 +126,21 @@ mod tests {
         let path = temp_dir.path().to_str().unwrap();
 
         let mut mut_mem = SkipMapMemTable::default();
-        let imm_mem = SkipMapMemTable::default();
 
         let mut wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
+        assert!(mut_mem.is_empty());
+
         for i in 1..4 {
             mut_mem = SkipMapMemTable::default();
             for j in 0..100 {
-                wal.append(&format!("{}key{}", i, j), Some(&format!("{}value{}", i, j)))
-                    .unwrap();
+                wal.append(
+                    &format!("{}key{}", i, j).into_bytes(),
+                    Some(&format!("{}value{}", i, j).into_bytes()),
+                )
+                .unwrap();
                 if (j & 1) == 1 {
-                    wal.append(&format!("{}key{}", i, j), None).unwrap();
+                    wal.append(&format!("{}key{}", i, j).into_bytes(), None)
+                        .unwrap();
                 }
             }
             wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();

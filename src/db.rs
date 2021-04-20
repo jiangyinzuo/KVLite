@@ -28,10 +28,13 @@ pub(crate) const fn max_level_shift() -> usize {
     idx
 }
 
+pub type Key = Vec<u8>;
+pub type Value = Vec<u8>;
+
 pub trait DBCommandMut {
-    fn get(&self, key: &str) -> Result<Option<String>>;
-    fn set(&mut self, key: String, value: String) -> crate::Result<()>;
-    fn remove(&mut self, key: String) -> crate::Result<()>;
+    fn get(&self, key: &Key) -> Result<Option<Value>>;
+    fn set(&mut self, key: Key, value: Value) -> crate::Result<()>;
+    fn remove(&mut self, key: Key) -> crate::Result<()>;
 }
 
 pub struct KVLite<T: MemTable> {
@@ -118,7 +121,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
     }
 
-    fn query(&self, key: &String) -> Result<Option<String>> {
+    fn query(&self, key: &Key) -> Result<Option<Value>> {
         // query mutable memory table
         {
             let mem_table_guard = self.mut_mem_table.read().unwrap();
@@ -157,7 +160,7 @@ impl<T: 'static + MemTable> KVLite<T> {
 }
 
 impl<T: 'static + MemTable> KVLite<T> {
-    pub fn get(&self, key: &String) -> Result<Option<String>> {
+    pub fn get(&self, key: &Key) -> Result<Option<Value>> {
         match self.query(key)? {
             Some(v) => {
                 if v.is_empty() {
@@ -170,7 +173,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
     }
 
-    pub fn set(&self, key: String, value: String) -> Result<()> {
+    pub fn set(&self, key: Key, value: Value) -> Result<()> {
         {
             let mut wal_guard = self.wal.lock().unwrap();
             wal_guard.append(&key, Some(&value))?;
@@ -185,7 +188,7 @@ impl<T: 'static + MemTable> KVLite<T> {
         Ok(())
     }
 
-    pub fn remove(&self, key: String) -> Result<()> {
+    pub fn remove(&self, key: Key) -> Result<()> {
         let mut wal_writer_lock = self.wal.lock().unwrap();
         wal_writer_lock.append(&key, None)?;
 
@@ -209,7 +212,7 @@ impl<M: MemTable> Drop for KVLite<M> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::db::{KVLite, ACTIVE_SIZE_THRESHOLD, MAX_LEVEL};
+    use crate::db::{KVLite, Key, ACTIVE_SIZE_THRESHOLD, MAX_LEVEL};
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
     use log::info;
@@ -246,42 +249,49 @@ pub(crate) mod tests {
 
     fn _test_command<M: 'static + MemTable>(path: &Path, value_prefix: u32) {
         let db = KVLite::<M>::open(path).unwrap();
-        db.set("hello".into(), format!("world_{}", value_prefix))
-            .unwrap();
+        db.set(
+            "hello".into(),
+            format!("world_{}", value_prefix).into_bytes(),
+        )
+        .unwrap();
         db.remove("no_exist".into()).unwrap();
+        let hello = Vec::from("hello");
         assert_eq!(
-            format!("world_{}", value_prefix),
-            db.get(&"hello".to_owned()).unwrap().unwrap()
+            format!("world_{}", value_prefix).into_bytes(),
+            db.get(&hello).unwrap().unwrap()
         );
         db.remove("hello".into()).unwrap();
 
-        let v = db.get(&"hello".to_owned()).unwrap();
+        let v = db.get(&hello).unwrap();
         assert!(v.is_none(), "{:?}", v);
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
             db.set(
-                format!("key{}", if i < ACTIVE_SIZE_THRESHOLD { 0 } else { i }),
-                format!("value{}_{}", i, value_prefix),
+                format!("key{}", if i < ACTIVE_SIZE_THRESHOLD { 0 } else { i }).into_bytes(),
+                format!("value{}_{}", i, value_prefix).into_bytes(),
             )
             .unwrap();
         }
         for i in 0..ACTIVE_SIZE_THRESHOLD {
-            db.set(format!("key{}", i), format!("value{}_{}", i, value_prefix))
-                .unwrap();
+            db.set(
+                format!("key{}", i).into_bytes(),
+                format!("value{}_{}", i, value_prefix).into_bytes(),
+            )
+            .unwrap();
         }
 
         assert_eq!(
-            db.get(&"key3".to_string()).unwrap().unwrap(),
-            format!("value3_{}", value_prefix)
+            db.get(&Vec::from("key3")).unwrap().unwrap(),
+            format!("value3_{}", value_prefix).as_bytes()
         );
 
         fn query<M: MemTable + 'static>(db1: Arc<KVLite<M>>, value_prefix: u32) {
             let mut not_found_key = vec![];
             for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
-                let v = db1.get(&format!("key{}", i));
+                let v = db1.get(&format!("key{}", i).into_bytes());
                 let value = v.unwrap();
                 if let Some(value) = value {
-                    if format!("value{}_{}", i, value_prefix) != value {
+                    if format!("value{}_{}", i, value_prefix).as_bytes().ne(&value) {
                         not_found_key.push(i);
                     }
                 } else {
@@ -296,10 +306,10 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_secs(5));
                 for key in not_found_key {
                     println!("{}", key);
-                    let v = db1.get(&format!("key{}", key));
+                    let v = db1.get(&format!("key{}", key).into_bytes());
                     let value = v.unwrap();
                     if let Some(value) = value {
-                        assert_eq!(format!("value{}_{}", key, value_prefix), value);
+                        assert_eq!(format!("value{}_{}", key, value_prefix).into_bytes(), value);
                     } else {
                         count += 1;
                     }
@@ -331,22 +341,19 @@ pub(crate) mod tests {
     }
 
     fn check(path: &Path) {
+        let min = Key::default();
+
         let db_path = path.to_str().unwrap();
         let leveln_manager = create_manager(db_path);
         for i in 1..=MAX_LEVEL {
             let lock =
                 leveln_manager.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(i) });
             let read_guard = lock.read().unwrap();
-            let mut last_min_key = "";
-            let mut last_max_key = "";
+            let mut last_min_key;
+            let mut last_max_key: &Key = &min;
             for (_, table) in read_guard.iter() {
                 let (min_key, max_key) = table.min_max_key();
-                assert!(
-                    last_max_key.to_string().lt(min_key),
-                    "last_max_key: {}, min_key: {}",
-                    last_max_key,
-                    min_key
-                );
+                assert!(last_max_key.lt(min_key));
                 assert!(min_key <= max_key);
                 last_min_key = min_key;
                 last_max_key = max_key;
@@ -365,7 +372,11 @@ pub(crate) mod tests {
 
         let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
-            db.set(format!("{}", i), format!("value{}", i)).unwrap();
+            db.set(
+                format!("{}", i).into_bytes(),
+                format!("value{}", i).into_bytes(),
+            )
+            .unwrap();
         }
         drop(db);
 
@@ -373,15 +384,19 @@ pub(crate) mod tests {
 
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             assert_eq!(
-                Some(format!("value{}", i)),
-                db.get(&format!("{}", i)).unwrap()
+                Some(format!("value{}", i).into_bytes()),
+                db.get(&format!("{}", i).into_bytes()).unwrap()
             );
         }
         for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
-            db.set(format!("{}", i), format!("value{}", i)).unwrap();
+            db.set(
+                format!("{}", i).into_bytes(),
+                format!("value{}", i).into_bytes(),
+            )
+            .unwrap();
             assert_eq!(
-                Some(format!("value{}", i)),
-                db.get(&format!("{}", i)).unwrap()
+                Some(format!("value{}", i).into_bytes()),
+                db.get(&format!("{}", i).into_bytes()).unwrap()
             );
         }
 
@@ -415,8 +430,9 @@ pub(crate) mod tests {
         for _ in 0..3 {
             for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
                 assert_eq!(
-                    Some(format!("value{}", i)),
-                    db.get(&format!("{}", i)).expect("error in read thread1")
+                    Some(format!("value{}", i).into_bytes()),
+                    db.get(&format!("{}", i).into_bytes())
+                        .expect("error in read thread1")
                 );
             }
         }
@@ -448,13 +464,14 @@ pub(crate) mod tests {
 
         let map = create_random_map(20000);
         for (k, v) in map.iter() {
-            db.set(k.to_string(), v.to_string()).unwrap();
+            db.set(Vec::from(k.to_le_bytes()), Vec::from(v.to_le_bytes()))
+                .unwrap();
         }
         info!("start query");
         let mut not_found_map = HashMap::new();
         for (i, (k, v)) in map.iter().enumerate() {
-            if let Some(s) = db.get(&k.to_string()).unwrap() {
-                assert_eq!(s, v.to_string());
+            if let Some(s) = db.get(&Vec::from(k.to_le_bytes())).unwrap() {
+                assert_eq!(s, v.to_le_bytes());
             } else {
                 not_found_map.insert(*k, *v);
             }
@@ -466,8 +483,8 @@ pub(crate) mod tests {
             warn!("{} keys not found", not_found_map.len());
             std::thread::sleep(Duration::from_secs(5));
             for (k, v) in not_found_map {
-                if let Some(s) = db.get(&k.to_string()).unwrap() {
-                    assert_eq!(s, v.to_string());
+                if let Some(s) = db.get(&Vec::from(k.to_le_bytes())).unwrap() {
+                    assert_eq!(s, v.to_le_bytes());
                 } else {
                     panic!("{} {}", k, v);
                 }

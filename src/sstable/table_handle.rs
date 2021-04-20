@@ -1,6 +1,6 @@
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
-use crate::db::max_level_shift;
+use crate::db::{max_level_shift, Key, Value};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::KeyValue;
@@ -12,6 +12,7 @@ use crate::sstable::table_cache::IndexCache;
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
@@ -67,29 +68,26 @@ impl TableWriteHandle {
         for (i, (k, v)) in table.kv_iter().enumerate() {
             self.writer.write_key_value(k, v);
             if self.writer.count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
-                self.writer.add_index(k.to_string());
+                self.writer.add_index(k.clone());
             }
         }
         self.writer.write_index_filter_footer();
         Ok(())
     }
 
-    pub fn write_sstable_from_vec_ref(
-        &mut self,
-        kvs: Vec<(&String, &String)>,
-    ) -> crate::Result<()> {
+    pub fn write_sstable_from_vec_ref(&mut self, kvs: Vec<(&Key, &Value)>) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in kvs.iter().enumerate() {
             self.writer.write_key_value(*k, *v);
             if self.writer.count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
-                self.writer.add_index(k.to_string());
+                self.writer.add_index((*k).clone());
             }
         }
         self.writer.write_index_filter_footer();
         Ok(())
     }
 
-    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(String, String)>) -> crate::Result<()> {
+    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(Key, Value)>) -> crate::Result<()> {
         // write Data Blocks
         let length = kvs.len();
         for (i, (k, v)) in kvs.into_iter().enumerate() {
@@ -128,7 +126,7 @@ impl TableWriteHandle {
     }
 
     #[inline]
-    pub fn max_key(&self) -> &String {
+    pub fn max_key(&self) -> &Key {
         self.writer.max_key()
     }
 }
@@ -159,10 +157,9 @@ impl TableWriter {
         }
     }
 
-    pub(crate) fn write_key_value(&mut self, k: &String, v: &String) {
+    pub(crate) fn write_key_value(&mut self, k: &Key, v: &Key) {
         debug_assert!(!k.is_empty(), "attempt to write empty key");
 
-        let (k, v) = (k.as_bytes(), v.as_bytes());
         let (k_len, v_len) = (k.len() as u32, v.len() as u32);
 
         // length of key | length of value | key | value
@@ -182,7 +179,7 @@ impl TableWriter {
         debug_assert!(self.filter.may_contain(k));
     }
 
-    pub(crate) fn add_index(&mut self, max_key: String) {
+    pub(crate) fn add_index(&mut self, max_key: Key) {
         self.index_block.add_index(
             self.last_pos as u32,
             (self.writer.pos - self.last_pos) as u32,
@@ -212,7 +209,7 @@ impl TableWriter {
     }
 
     #[inline]
-    pub(crate) fn max_key(&self) -> &String {
+    pub(crate) fn max_key(&self) -> &Key {
         self.index_block.max_key()
     }
 }
@@ -224,8 +221,8 @@ pub struct TableReadHandle {
     table_key: u64,
     hash: u32,
     status: RwLock<TableStatus>,
-    min_key: String,
-    max_key: String,
+    min_key: Key,
+    max_key: Key,
     kv_total: u32,
     file_size: u64,
 }
@@ -246,7 +243,7 @@ impl TableReadHandle {
         let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
 
         let min_key = get_min_key(&mut buf_reader);
-        let max_key = index_block.max_key().to_string();
+        let max_key = index_block.max_key().clone();
 
         let table_key = Self::calc_table_key(table_id, level);
         TableReadHandle {
@@ -290,7 +287,7 @@ impl TableReadHandle {
 
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
         let min_key = get_min_key(&mut buf_reader);
-        let max_key = table_write_handle.max_key().to_string();
+        let max_key: Key = table_write_handle.max_key().clone();
 
         let table_id = table_write_handle.table_id;
         let level = table_write_handle.level;
@@ -352,8 +349,8 @@ impl TableReadHandle {
     }
 
     /// Query value by `key` with `cache`
-    pub fn query_sstable_with_cache(&self, key: &String, cache: &IndexCache) -> Option<String> {
-        if cache.filter.may_contain(key.as_bytes()) {
+    pub fn query_sstable_with_cache(&self, key: &Key, cache: &IndexCache) -> Option<Value> {
+        if cache.filter.may_contain(key) {
             if let Some((offset, length)) = cache.index.may_contain_key(key) {
                 let mut buf_reader = self.create_buf_reader_with_pos();
                 let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
@@ -366,9 +363,9 @@ impl TableReadHandle {
     /// Query value by `key` and insert cache into `lru_cache`.
     pub fn query_sstable(
         &self,
-        key: &String,
+        key: &Key,
         lru_cache: &Arc<ShardLRUCache<u64, IndexCache>>,
-    ) -> Option<String> {
+    ) -> Option<Value> {
         let mut buf_reader = self.create_buf_reader_with_pos();
         let footer = Footer::load_footer(&mut buf_reader).unwrap();
         let bloom_filter = load_filter_block(
@@ -377,7 +374,7 @@ impl TableReadHandle {
             &mut buf_reader,
         );
 
-        if bloom_filter.may_contain(key.as_bytes()) {
+        if bloom_filter.may_contain(key) {
             let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
             let may_contain_key = index_block.may_contain_key(key);
             let cache = IndexCache {
@@ -417,17 +414,17 @@ impl TableReadHandle {
     }
 
     #[inline]
-    pub fn min_max_key(&self) -> (&String, &String) {
+    pub fn min_max_key(&self) -> (&Key, &Key) {
         (&self.min_key, &self.max_key)
     }
 
     #[inline]
-    pub fn min_key(&self) -> &String {
+    pub fn min_key(&self) -> &Key {
         &self.min_key
     }
 
     #[inline]
-    pub fn max_key(&self) -> &String {
+    pub fn max_key(&self) -> &Key {
         &self.max_key
     }
 
@@ -435,7 +432,7 @@ impl TableReadHandle {
     /// ----         ------      -----    ----
     ///   |---|       |--|     |---|    |------|
     ///```
-    pub fn is_overlapping(&self, min_key: &String, max_key: &String) -> bool {
+    pub fn is_overlapping(&self, min_key: &Key, max_key: &Key) -> bool {
         self.min_key.le(min_key) && min_key.le(&self.max_key)
             || self.min_key.le(max_key) && max_key.le(&self.max_key)
             || min_key.le(&self.min_key) && self.max_key.le(max_key)
@@ -460,7 +457,7 @@ pub(crate) fn temp_file_name(file_name: &str) -> String {
 
 pub struct Iter<'table> {
     reader: BufReaderWithPos<File>,
-    max_key: &'table str,
+    max_key: &'table Key,
     end: bool,
 }
 
@@ -481,15 +478,14 @@ impl<'table> Iter<'table> {
 }
 
 impl<'table> Iterator for Iter<'table> {
-    /// key, value
-    type Item = (String, String);
+    type Item = (Key, Value);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.end {
             None
         } else {
             let (k, v) = get_next_key_value(&mut self.reader);
-            if k == self.max_key {
+            if k.eq(self.max_key) {
                 self.end = true;
             }
             Some((k, v))
@@ -514,7 +510,10 @@ pub(crate) mod tests {
 
         let mut kvs = vec![];
         for i in range {
-            kvs.push((format!("key{}", i), format!("value{}_{}", i, level)));
+            kvs.push((
+                format!("key{}", i).into_bytes(),
+                format!("value{}_{}", i, level).into_bytes(),
+            ));
         }
         write_handle.write_sstable_from_vec(kvs).unwrap();
         write_handle
@@ -539,10 +538,16 @@ pub(crate) mod tests {
 
         let read_handle = create_read_handle(&path, 1, 1, 0..100);
         assert_eq!(read_handle.table_key(), 9);
-        assert_eq!(read_handle.min_key(), "key0");
-        assert_eq!(read_handle.max_key(), "key99");
+        assert_eq!(read_handle.min_key(), "key0".as_bytes());
+        assert_eq!(read_handle.max_key(), "key99".as_bytes());
         for (i, kv) in read_handle.iter().enumerate() {
-            assert_eq!(kv, (format!("key{}", i), format!("value{}_1", i)));
+            assert_eq!(
+                kv,
+                (
+                    format!("key{}", i).into_bytes(),
+                    format!("value{}_1", i).into_bytes()
+                )
+            );
         }
     }
 }
