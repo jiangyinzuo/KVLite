@@ -1,5 +1,6 @@
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
+use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::{max_level_shift, Key, Value};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
@@ -388,6 +389,29 @@ impl TableReadHandle {
             }
         }
         None
+    }
+
+    /// Query all the key-value pairs in [`key_start`, `key_end`] and insert them into `kvs`
+    /// Return whether table_read_handle is overlapping with [`key_start`, `key_end`] 
+    pub fn range_query(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) -> bool {
+        if self.is_overlapping(key_start, key_end) {
+            let mut buf_reader = self.create_buf_reader_with_pos();
+            let footer = Footer::load_footer(&mut buf_reader).unwrap();
+            let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
+            if let Some(offset) = index_block.find_first_ge(key_start) {
+                buf_reader.seek(SeekFrom::Start(offset as u64)).unwrap();
+                while buf_reader.position() < footer.index_block_offset as u64 {
+                    let (k, v) = get_next_key_value(&mut buf_reader);
+                    if k.le(key_end) {
+                        kvs.insert(k, v);
+                    } else {
+                        return true;
+                    }
+                }
+            }
+            return true;
+        }
+        false
     }
 
     /// Check whether status of sstable is `Store`.

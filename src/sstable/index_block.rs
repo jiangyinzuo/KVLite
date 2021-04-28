@@ -56,6 +56,13 @@ impl IndexBlock {
         self.binary_search(key)
     }
 
+    /// Returns first Data Block's start offset whose max key is greater or equal to `key`
+    pub fn find_first_ge(&self, key: &Key) -> Option<u32> {
+        match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
+            Ok(i) | Err(i) => self.indexes.get(i).map(|e| e.0),
+        }
+    }
+
     /// Get maximum key from [SSTableIndex]
     pub(crate) fn max_key(&self) -> &Key {
         let last = self.indexes.last().unwrap_or_else(|| unsafe {

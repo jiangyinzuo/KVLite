@@ -27,6 +27,11 @@ impl<R: Read + Seek> BufReaderWithPos<R> {
             end,
         })
     }
+    
+    #[inline]
+    pub fn position(&self) -> u64 {
+        self.pos
+    }
 
     pub fn into_inner(self) -> R {
         self.reader.into_inner()

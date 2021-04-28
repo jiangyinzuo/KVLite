@@ -1,4 +1,5 @@
 use crate::cache::ShardLRUCache;
+use crate::collections::skip_list::skipmap::SkipMap;
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
@@ -31,7 +32,8 @@ pub(crate) const fn max_level_shift() -> usize {
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
 
-pub trait DBCommandMut {
+pub trait DBCommand {
+    fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>);
     fn get(&self, key: &Key) -> Result<Option<Value>>;
     fn set(&mut self, key: Key, value: Value) -> crate::Result<()>;
     fn remove(&mut self, key: Key) -> crate::Result<()>;
@@ -144,22 +146,20 @@ impl<T: 'static + MemTable> KVLite<T> {
         }
 
         // query level0 sstables
-        let option = self.level0_manager.query_level0_tables(key).unwrap();
+        let option = self.level0_manager.query(key).unwrap();
         if option.is_some() {
             return Ok(option);
         }
 
         // query sstables
-        let option = self.leveln_manager.query_tables(key).unwrap();
+        let option = self.leveln_manager.query(key).unwrap();
         Ok(option)
     }
 
     pub fn db_path(&self) -> &String {
         &self.db_path
     }
-}
 
-impl<T: 'static + MemTable> KVLite<T> {
     pub fn get(&self, key: &Key) -> Result<Option<Value>> {
         match self.query(key)? {
             Some(v) => {
@@ -171,6 +171,23 @@ impl<T: 'static + MemTable> KVLite<T> {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn range_get(&self, key_start: &Key, key_end: &Key) -> Result<SkipMap<Key, Value>> {
+        let mut skip_map = SkipMap::new();
+        self.leveln_manager
+            .range_query(key_start, key_end, &mut skip_map);
+        self.level0_manager
+            .range_query(key_start, key_end, &mut skip_map);
+        {
+            let imm_guard = self.imm_mem_table.read().unwrap();
+            imm_guard.range_get(key_start, key_end, &mut skip_map);
+        }
+        {
+            let mem_table_guard = self.mut_mem_table.read().unwrap();
+            mem_table_guard.range_get(key_start, key_end, &mut skip_map);
+        }
+        Ok(skip_map)
     }
 
     pub fn set(&self, key: Key, value: Value) -> Result<()> {
@@ -247,6 +264,43 @@ pub(crate) mod tests {
         }
     }
 
+    fn query<M: MemTable + 'static>(db1: Arc<KVLite<M>>, value_prefix: u32) {
+        let mut not_found_key = vec![];
+        for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
+            let v = db1.get(&format!("key{}", i).into_bytes());
+            let value = v.unwrap();
+            if let Some(value) = value {
+                if format!("value{}_{}", i, value_prefix).as_bytes().ne(&value) {
+                    not_found_key.push(i);
+                }
+            } else {
+                not_found_key.push(i);
+            }
+        }
+
+        if !not_found_key.is_empty() {
+            let mut count = 0;
+            let length = not_found_key.len();
+            warn!("{} keys not found", length);
+            std::thread::sleep(Duration::from_secs(5));
+            for key in not_found_key {
+                println!("{}", key);
+                let v = db1.get(&format!("key{}", key).into_bytes());
+                let value = v.unwrap();
+                if let Some(value) = value {
+                    assert_eq!(format!("value{}_{}", key, value_prefix).into_bytes(), value);
+                } else {
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                panic!("{} keys still not found", count);
+            } else {
+                info!("{} keys now found", length);
+            }
+        }
+    }
+
     fn _test_command<M: 'static + MemTable>(path: &Path, value_prefix: u32) {
         let db = KVLite::<M>::open(path).unwrap();
         db.set(
@@ -284,43 +338,6 @@ pub(crate) mod tests {
             db.get(&Vec::from("key3")).unwrap().unwrap(),
             format!("value3_{}", value_prefix).as_bytes()
         );
-
-        fn query<M: MemTable + 'static>(db1: Arc<KVLite<M>>, value_prefix: u32) {
-            let mut not_found_key = vec![];
-            for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
-                let v = db1.get(&format!("key{}", i).into_bytes());
-                let value = v.unwrap();
-                if let Some(value) = value {
-                    if format!("value{}_{}", i, value_prefix).as_bytes().ne(&value) {
-                        not_found_key.push(i);
-                    }
-                } else {
-                    not_found_key.push(i);
-                }
-            }
-
-            if !not_found_key.is_empty() {
-                let mut count = 0;
-                let length = not_found_key.len();
-                warn!("{} keys not found", length);
-                std::thread::sleep(Duration::from_secs(5));
-                for key in not_found_key {
-                    println!("{}", key);
-                    let v = db1.get(&format!("key{}", key).into_bytes());
-                    let value = v.unwrap();
-                    if let Some(value) = value {
-                        assert_eq!(format!("value{}_{}", key, value_prefix).into_bytes(), value);
-                    } else {
-                        count += 1;
-                    }
-                }
-                if count > 0 {
-                    panic!("{} keys still not found", count);
-                } else {
-                    info!("{} keys now found", length);
-                }
-            }
-        }
 
         info!("start query");
 
@@ -360,6 +377,33 @@ pub(crate) mod tests {
             }
         }
         leveln_manager.close();
+    }
+
+    #[test]
+    fn test_range_query() {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("range_query")
+            .tempdir()
+            .unwrap();
+        let path = temp_dir.path();
+        let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
+        for i in 1i32..(ACTIVE_SIZE_THRESHOLD * 5) as i32 {
+            db.set(Vec::from(i.to_be_bytes()), Vec::from(i.to_be_bytes()))
+                .unwrap();
+        }
+
+        let skip_map = db
+            .range_get(
+                &Vec::from(1i32.to_be_bytes()),
+                &Vec::from(100i32.to_be_bytes()),
+            )
+            .unwrap();
+        assert_eq!(100, skip_map.len());
+        for node in skip_map.iter() {
+            unsafe {
+                assert_eq!((*node).entry.key, (*node).entry.value);
+            }
+        }
     }
 
     #[test]

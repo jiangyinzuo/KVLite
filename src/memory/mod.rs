@@ -4,12 +4,12 @@ mod btree_mem_table;
 mod skip_map_mem_table;
 
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::{DBCommandMut, Key, Value};
+use crate::db::{DBCommand, Key, Value};
 pub use btree_mem_table::BTreeMemTable;
 pub use skip_map_mem_table::SkipMapMemTable;
 
 /// Table in Memory
-pub trait MemTable: DBCommandMut + KeyValue + Default + Send + Sync {}
+pub trait MemTable: DBCommand + KeyValue + Default + Send + Sync {}
 
 pub trait KeyValue {
     fn len(&self) -> usize;
