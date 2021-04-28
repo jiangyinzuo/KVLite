@@ -47,11 +47,13 @@ fn skip_map_get(b: &mut Bencher) {
 
 fn table_set(mem_table: &mut impl MemTable) {
     for i in 0..SIZE {
-        mem_table.set(format!("{}", i), format!("{}", i)).unwrap();
+        mem_table
+            .set(Vec::from(i.to_be_bytes()), Vec::from(i.to_be_bytes()))
+            .unwrap();
     }
     for i in 0..SIZE {
         mem_table
-            .set(format!("{}", i), format!("{}", i + 1))
+            .set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
             .unwrap();
     }
 }
@@ -59,7 +61,7 @@ fn table_set(mem_table: &mut impl MemTable) {
 fn table_get(mem_table: &mut impl MemTable) {
     for _ in 0..10 {
         for j in 0..SIZE + 10 {
-            mem_table.get(&format!("{}", j)).unwrap();
+            mem_table.get(&Vec::from(j.to_be_bytes())).unwrap();
         }
     }
 }

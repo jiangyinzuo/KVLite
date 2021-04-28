@@ -1,3 +1,9 @@
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::marker::PhantomData;
+use std::ops::Deref;
+use std::sync::{Arc, RwLock};
+
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
@@ -11,11 +17,6 @@ use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::IndexBlock;
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
-use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::sync::{Arc, RwLock};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum TableStatus {
@@ -392,8 +393,13 @@ impl TableReadHandle {
     }
 
     /// Query all the key-value pairs in [`key_start`, `key_end`] and insert them into `kvs`
-    /// Return whether table_read_handle is overlapping with [`key_start`, `key_end`] 
-    pub fn range_query(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) -> bool {
+    /// Return whether table_read_handle is overlapping with [`key_start`, `key_end`]
+    pub fn range_query(
+        &self,
+        key_start: &Key,
+        key_end: &Key,
+        kvs: &mut SkipMap<Key, Value>,
+    ) -> bool {
         if self.is_overlapping(key_start, key_end) {
             let mut buf_reader = self.create_buf_reader_with_pos();
             let footer = Footer::load_footer(&mut buf_reader).unwrap();
@@ -519,9 +525,9 @@ impl<'table> Iterator for Iter<'table> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::ops::Range;
 
     use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
-    use std::ops::Range;
 
     pub(crate) fn create_write_handle(
         db_path: &str,

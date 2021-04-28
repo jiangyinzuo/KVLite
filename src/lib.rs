@@ -6,8 +6,6 @@
 #[macro_use]
 extern crate log;
 
-pub use db::KVLite;
-
 mod bloom;
 pub mod cache;
 pub mod collections;

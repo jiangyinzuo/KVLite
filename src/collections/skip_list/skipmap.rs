@@ -74,6 +74,8 @@ pub struct SkipMap<K: Ord + Default, V: Default> {
     tail: AtomicPtr<Node<K, V>>,
     cur_max_level: AtomicUsize,
     len: usize,
+    _key: PhantomData<K>,
+    _value: PhantomData<V>,
 }
 
 unsafe impl<K: Ord + Default, V: Default> Send for SkipMap<K, V> {}
@@ -86,6 +88,8 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
             len: 0,
+            _key: PhantomData,
+            _value: PhantomData,
         }
     }
 
@@ -145,6 +149,44 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
                     }
                     level -= 1;
                 }
+            }
+        }
+    }
+
+    pub fn get_clone(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        let node = self.find_first_ge(key, None);
+        unsafe {
+            if node.is_null() || (*node).entry.key.ne(key) {
+                None
+            } else {
+                Some((*node).entry.value.clone())
+            }
+        }
+    }
+
+    pub fn range_get(&self, key_start: &K, key_end: &K, kvs: &mut Self)
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let mut node = self.find_first_ge(key_start, None);
+        unsafe {
+            while !node.is_null() && (*node).entry.key.le(key_end) {
+                kvs.insert((*node).entry.key.clone(), (*node).entry.value.clone());
+                node = (*node).get_next(0);
+            }
+        }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        // todo: optimize the time complexity
+        for n in other.into_ptr_iter() {
+            unsafe {
+                let kv: Entry<K, V> = std::mem::take(&mut (*n).entry);
+                self.insert(kv.key, kv.value);
             }
         }
     }
@@ -224,6 +266,15 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
+    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, K, V> {
+        unsafe {
+            IterPtr {
+                node: (*self.head).get_next(0),
+                _marker: PhantomData,
+            }
+        }
+    }
+
     pub fn iter<'a>(&self) -> Iter<'a, K, V> {
         unsafe {
             Iter {
@@ -278,6 +329,13 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
             Some(unsafe { &(*self.tail.load(Ordering::Acquire)).entry })
         }
     }
+
+    pub fn into_ptr_iter(self) -> IntoPtrIter<K, V> {
+        unsafe {
+            let node = (*self.head).get_next(0);
+            IntoPtrIter { inner: self, node }
+        }
+    }
 }
 
 impl<K: Ord + Default, V: Default> Default for SkipMap<K, V> {
@@ -300,13 +358,34 @@ impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
     }
 }
 
-/// Iteration over the contents of a SkipMap
 pub struct Iter<'a, K: Ord + Default, V: Default> {
     node: *const Node<K, V>,
     _marker: PhantomData<&'a Node<K, V>>,
 }
 
-impl<'a, K: Ord + Default, V: Default> Iter<'a, K, V> {
+impl<'a, K: Ord + Default, V: Default> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.node.is_null() {
+            None
+        } else {
+            let n = self.node;
+            unsafe {
+                self.node = (*self.node).get_next(0);
+                Some((&(*n).entry.key, &(*n).entry.value))
+            }
+        }
+    }
+}
+
+/// Iteration over the contents of a SkipMap
+pub struct IterPtr<'a, K: Ord + Default, V: Default> {
+    node: *const Node<K, V>,
+    _marker: PhantomData<&'a Node<K, V>>,
+}
+
+impl<'a, K: Ord + Default, V: Default> IterPtr<'a, K, V> {
     pub fn current_no_consume(&self) -> *const Node<K, V> {
         self.node
     }
@@ -323,8 +402,46 @@ impl<'a, K: Ord + Default, V: Default> Iter<'a, K, V> {
     }
 }
 
-impl<'a, K: Ord + Default, V: Default> Iterator for Iter<'a, K, V> {
+impl<'a, K: Ord + Default, V: Default> Iterator for IterPtr<'a, K, V> {
     type Item = *const Node<K, V>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.node.is_null() {
+            None
+        } else {
+            let n = self.node;
+            unsafe {
+                self.node = (*self.node).get_next(0);
+            }
+            Some(n)
+        }
+    }
+}
+
+pub struct IntoPtrIter<K: Ord + Default, V: Default> {
+    inner: SkipMap<K, V>,
+    node: *mut Node<K, V>,
+}
+
+impl<K: Ord + Default, V: Default> IntoPtrIter<K, V> {
+    pub fn current_mut_no_consume(&self) -> *mut Node<K, V> {
+        self.node as *mut _
+    }
+
+    /// # Notice
+    ///
+    /// Make sure `self.node` is not null.
+    pub fn next_node(&mut self) -> *mut Node<K, V> {
+        debug_assert!(!self.node.is_null());
+        unsafe {
+            self.node = (*self.node).get_next(0);
+        }
+        self.node
+    }
+}
+
+impl<K: Ord + Default, V: Default> Iterator for IntoPtrIter<K, V> {
+    type Item = *mut Node<K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.node.is_null() {
@@ -344,25 +461,8 @@ pub struct IntoIter<K: Ord + Default, V: Default> {
     node: *mut Node<K, V>,
 }
 
-impl<K: Ord + Default, V: Default> IntoIter<K, V> {
-    pub fn current_mut_no_consume(&self) -> *mut Node<K, V> {
-        self.node as *mut _
-    }
-
-    /// # Notice
-    ///
-    /// Make sure `self.node` is not null.
-    pub fn next_node(&mut self) -> *mut Node<K, V> {
-        debug_assert!(!self.node.is_null());
-        unsafe {
-            self.node = (*self.node).get_next(0);
-        }
-        self.node
-    }
-}
-
 impl<K: Ord + Default, V: Default> Iterator for IntoIter<K, V> {
-    type Item = *mut Node<K, V>;
+    type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.node.is_null() {
@@ -371,14 +471,15 @@ impl<K: Ord + Default, V: Default> Iterator for IntoIter<K, V> {
             let n = self.node;
             unsafe {
                 self.node = (*self.node).get_next(0);
+                let entry = std::mem::take(&mut (*n).entry);
+                Some(entry.key_value())
             }
-            Some(n)
         }
     }
 }
 
 impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
-    type Item = *mut Node<K, V>;
+    type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -392,7 +493,7 @@ impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::skip_list::skipmap::SkipMap;
-    use crate::db::tests::create_random_map;
+    use crate::db::no_transaction_db::tests::create_random_map;
 
     #[test]
     fn test_key() {
@@ -422,7 +523,7 @@ mod tests {
         }
 
         let mut count = 0;
-        for node in skip_map.iter() {
+        for node in skip_map.iter_ptr() {
             unsafe {
                 assert_eq!(format!("value{}", count), (*node).entry.value);
             }
@@ -445,6 +546,22 @@ mod tests {
     }
 
     #[test]
+    fn test_merge() {
+        let mut map1 = SkipMap::new();
+        let mut map2 = SkipMap::new();
+        map1.insert("hello".to_string(), "world".to_string());
+        map2.insert("hello".to_string(), "world3".to_string());
+        map2.insert("a".to_string(), "b".to_string());
+        map1.merge(map2);
+        assert_eq!(2, map1.len());
+        assert_eq!(
+            "world3".to_string(),
+            map1.get_clone(&"hello".to_string()).unwrap()
+        );
+        assert_eq!("b".to_string(), map1.get_clone(&"a".to_string()).unwrap());
+    }
+
+    #[test]
     fn test_remove() {
         let mut skip_map: SkipMap<i32, String> = SkipMap::new();
         for i in 0..100 {
@@ -455,7 +572,7 @@ mod tests {
         }
         assert_eq!(2, skip_map.len());
         let value = [0, 99];
-        for (node, v) in skip_map.iter().zip(value.iter()) {
+        for (node, v) in skip_map.iter_ptr().zip(value.iter()) {
             unsafe {
                 assert_eq!((*node).entry.key, *v);
             }
