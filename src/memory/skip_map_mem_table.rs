@@ -1,5 +1,5 @@
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::{DBCommandMut, Key, Value};
+use crate::db::{DBCommand, Key, Value};
 use crate::memory::{KeyValue, MemTable};
 use crate::Result;
 use std::sync::RwLock;
@@ -10,7 +10,18 @@ pub struct SkipMapMemTable {
     inner: SkipMap<Key, Value>,
 }
 
-impl DBCommandMut for SkipMapMemTable {
+impl DBCommand for SkipMapMemTable {
+    fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
+        let _guard = self.rw_lock.read().unwrap();
+        let mut node = self.inner.find_first_ge(key_start, None);
+        unsafe {
+            while !node.is_null() && (*node).entry.key.le(key_end) {
+                kvs.insert((*node).entry.key.clone(), (*node).entry.key.clone());
+                node = (*node).get_next(0);
+            }
+        }
+    }
+
     fn get(&self, key: &Key) -> Result<Option<Value>> {
         let _guard = self.rw_lock.read().unwrap();
         let node = self.inner.find_first_ge(key, None);
@@ -66,7 +77,7 @@ impl MemTable for SkipMapMemTable {}
 
 #[cfg(test)]
 mod tests {
-    use crate::db::DBCommandMut;
+    use crate::db::DBCommand;
     use crate::memory::SkipMapMemTable;
 
     #[test]

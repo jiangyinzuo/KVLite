@@ -1,4 +1,5 @@
-use crate::db::{DBCommandMut, Key, Value};
+use crate::collections::skip_list::skipmap::SkipMap;
+use crate::db::{DBCommand, Key, Value};
 use crate::memory::{KeyValue, MemTable};
 use crate::Result;
 use std::collections::BTreeMap;
@@ -10,7 +11,15 @@ pub struct BTreeMemTable {
     inner: BTreeMap<Key, Value>,
 }
 
-impl DBCommandMut for BTreeMemTable {
+impl DBCommand for BTreeMemTable {
+    fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
+        let _guard = self.rw_lock.read().unwrap();
+        self.inner.get_key_value(key_end);
+        for (k, v) in self.inner.range::<Key, _>(key_start..=key_end) {
+            kvs.insert(k.clone(), v.clone());
+        }
+    }
+
     fn get(&self, key: &Key) -> Result<Option<Value>> {
         let _lock = self.rw_lock.read().unwrap();
         Ok(self.inner.get(key).cloned())
@@ -51,18 +60,12 @@ impl KeyValue for BTreeMemTable {
 
     fn first_key(&self) -> Option<&Key> {
         let _lock = self.rw_lock.read().unwrap();
-        match self.inner.first_key_value() {
-            Some((k, v)) => Some(k),
-            None => None,
-        }
+        self.inner.first_key_value().map(|(k, v)| k)
     }
 
     fn last_key(&self) -> Option<&Key> {
         let _lock = self.rw_lock.read().unwrap();
-        match self.inner.last_key_value() {
-            Some((k, v)) => Some(k),
-            None => None,
-        }
+        self.inner.last_key_value().map(|(k, v)| k)
     }
 }
 
@@ -70,7 +73,7 @@ impl MemTable for BTreeMemTable {}
 
 #[cfg(test)]
 mod tests {
-    use crate::db::DBCommandMut;
+    use crate::db::DBCommand;
     use crate::memory::{BTreeMemTable, KeyValue};
     use crate::Result;
 

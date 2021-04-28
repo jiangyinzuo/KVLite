@@ -1,15 +1,5 @@
-use std::collections::BTreeMap;
-use std::num::NonZeroUsize;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
-use std::thread::JoinHandle;
-
-use crossbeam_channel::Receiver;
-use rand::Rng;
-
 use crate::cache::ShardLRUCache;
+use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::db::{Key, Value, ACTIVE_SIZE_THRESHOLD};
 use crate::memory::MemTable;
@@ -19,6 +9,15 @@ use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::WriteAheadLog;
 use crate::Result;
+use crossbeam_channel::Receiver;
+use rand::Rng;
+use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::thread::JoinHandle;
 
 /// Struct for read and write level0 sstable.
 pub struct Level0Manager {
@@ -205,11 +204,21 @@ impl Level0Manager {
         &self.level0_tables
     }
 
-    pub fn query_level0_tables(&self, key: &Key) -> Result<Option<Value>> {
+    pub fn range_query(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
         let tables_guard = self.level0_tables.read().unwrap();
 
         // query the latest table first
         for table in tables_guard.values().rev() {
+            table.range_query(key_start, key_end, kvs);
+        }
+    }
+
+    pub fn query(&self, key: &Key) -> Result<Option<Value>> {
+        let tables_guard = self.level0_tables.read().unwrap();
+
+        // query the latest table first
+        for table in tables_guard.values().rev() {
+            // get cache
             let entry_tracker = self.index_cache.look_up(&table.table_key(), table.hash());
             let option = if !entry_tracker.0.is_null() {
                 let index_cache = unsafe { (*entry_tracker.0).value() };
@@ -327,7 +336,7 @@ impl Level0Manager {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::DBCommandMut;
+    use crate::db::DBCommand;
     use crate::db::ACTIVE_SIZE_THRESHOLD;
     use crate::memory::{KeyValue, SkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
@@ -399,9 +408,9 @@ mod tests {
         for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
             let key = format!("key{}", i).into_bytes();
             let v = manager
-                .query_level0_tables(&key)
+                .query(&key)
                 .unwrap()
-                .unwrap_or_else(|| leveln_manager.query_tables(&key).unwrap().unwrap());
+                .unwrap_or_else(|| leveln_manager.query(&key).unwrap().unwrap());
             assert_eq!(format!("value{}", i).into_bytes(), v);
         }
 

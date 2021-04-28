@@ -1,4 +1,5 @@
 use crate::cache::ShardLRUCache;
+use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_n::start_compact;
 use crate::db::{Key, Value, MAX_LEVEL};
 use crate::sstable::table_cache::IndexCache;
@@ -165,7 +166,20 @@ impl LevelNManager {
         lock
     }
 
-    pub fn query_tables(&self, key: &Key) -> Result<Option<Value>> {
+    pub fn range_query(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
+        for level in (1..=MAX_LEVEL).rev() {
+            let tables_lock =
+                self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
+            let tables_guard = tables_lock.read().unwrap();
+            for (_k, table_read_handle) in tables_guard.range((key_start.clone(), 0)..) {
+                if !table_read_handle.range_query(key_start, key_end, kvs) {
+                    break
+                }
+            }
+        }
+    }
+
+    pub fn query(&self, key: &Key) -> Result<Option<Value>> {
         for level in 1..=MAX_LEVEL {
             let tables_lock =
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
