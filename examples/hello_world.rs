@@ -1,10 +1,11 @@
+use kvlite::db::no_transaction_db::NoTransactionDB;
+use kvlite::db::DB;
 use kvlite::memory::SkipMapMemTable;
-use kvlite::KVLite;
 use tempfile::TempDir;
 
 fn main() {
     let temp_dir = TempDir::new().unwrap();
-    let db = KVLite::<SkipMapMemTable>::open(temp_dir.path()).unwrap();
+    let db = NoTransactionDB::<SkipMapMemTable>::open(temp_dir.path()).unwrap();
 
     let hello = Vec::from("hello");
     let value = Vec::from("value1");

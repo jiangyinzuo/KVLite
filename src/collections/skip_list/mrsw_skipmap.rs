@@ -1,6 +1,7 @@
 use crate::collections::skip_list::{rand_level, MAX_LEVEL};
 use crate::collections::Entry;
 use std::alloc::Layout;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -76,6 +77,8 @@ pub struct MultiSkipMap<K: Ord + Default, V: Default> {
     tail: AtomicPtr<Node<K, V>>,
     cur_max_level: AtomicUsize,
     len: AtomicUsize,
+    _key: PhantomData<K>,
+    _value: PhantomData<V>,
 }
 
 unsafe impl<K: Ord + Default, V: Default> Send for MultiSkipMap<K, V> {}
@@ -88,6 +91,8 @@ impl<K: Ord + Default, V: Default> MultiSkipMap<K, V> {
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
             len: AtomicUsize::default(),
+            _key: PhantomData,
+            _value: PhantomData,
         }
     }
 

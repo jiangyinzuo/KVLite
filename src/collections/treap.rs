@@ -21,38 +21,38 @@ impl<K: Ord + Default, V: Default> TreapNode<K, V> {
         }
     }
 
-    //     p               q
+    //     pessimistic               q
     //    / \             / \
-    //   A  q   --->     p  C
+    //   A  q   --->     pessimistic  C
     //     / \          / \
     //    B  C         A  B
     fn left_rotate(&mut self) {
-        // Cut right subtree of p
+        // Cut right subtree of pessimistic
         let right = mem::replace(&mut self.right_son, None);
         if let Some(mut node) = right {
-            // Let subtree q be root and `node` point to p
+            // Let subtree q be root and `node` point to pessimistic
             mem::swap(self, &mut *node);
-            // Move subtree B from q to right subtree of p
+            // Move subtree B from q to right subtree of pessimistic
             mem::swap(&mut self.left_son, &mut node.right_son);
-            // Let p be left child of q
+            // Let pessimistic be left child of q
             self.left_son = Some(node);
         }
     }
 
-    //       q               p
+    //       q               pessimistic
     //      / \             / \
-    //     p  C   --->     A  q
+    //     pessimistic  C   --->     A  q
     //    / \                / \
     //   A  B               B  C
     fn right_rotate(&mut self) {
         // Cut left subtree of q
         let left = mem::replace(&mut self.left_son, None);
         if let Some(mut node) = left {
-            // Let subtree p be root and `node` point to q
+            // Let subtree pessimistic be root and `node` point to q
             mem::swap(self, &mut *node);
-            // Move subtree B from p to left subtree of q
+            // Move subtree B from pessimistic to left subtree of q
             mem::swap(&mut self.right_son, &mut node.left_son);
-            // Let q be right child of p
+            // Let q be right child of pessimistic
             self.right_son = Some(node);
         }
     }

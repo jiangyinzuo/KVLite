@@ -1,3 +1,11 @@
+use std::collections::{BTreeMap, VecDeque};
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
+use std::thread::JoinHandle;
+
+use crossbeam_channel::{Receiver, Sender};
+
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_n::start_compact;
@@ -5,12 +13,6 @@ use crate::db::{Key, Value, MAX_LEVEL};
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
-use crossbeam_channel::{Receiver, Sender};
-use std::collections::{BTreeMap, VecDeque};
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
-use std::thread::JoinHandle;
 
 /// Struct for adding and removing sstable files.
 pub struct LevelNManager {
@@ -173,7 +175,7 @@ impl LevelNManager {
             let tables_guard = tables_lock.read().unwrap();
             for (_k, table_read_handle) in tables_guard.range((key_start.clone(), 0)..) {
                 if !table_read_handle.range_query(key_start, key_end, kvs) {
-                    break
+                    break;
                 }
             }
         }
@@ -373,11 +375,12 @@ impl LevelNManager {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::Arc;
+
     use crate::cache::ShardLRUCache;
     use crate::db::MAX_LEVEL;
     use crate::sstable::manager::level_n::LevelNManager;
     use crate::sstable::table_handle::tests::create_read_handle;
-    use std::sync::Arc;
 
     pub(crate) fn create_manager(db_path: &str) -> Arc<LevelNManager> {
         let index_cache = Arc::new(ShardLRUCache::default());

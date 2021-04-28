@@ -1,11 +1,12 @@
-use crate::db::{Key, Value};
-use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
-use crate::memory::MemTable;
-use crate::Result;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+use crate::db::{Key, Value};
+use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
+use crate::memory::MemTable;
+use crate::Result;
 
 pub struct WriteAheadLog {
     log_path: PathBuf,
@@ -116,9 +117,10 @@ fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use crate::memory::{KeyValue, SkipMapMemTable};
     use crate::wal::WriteAheadLog;
-    use tempfile::TempDir;
 
     #[test]
     fn test() {

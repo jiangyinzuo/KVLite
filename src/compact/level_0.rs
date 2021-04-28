@@ -1,12 +1,13 @@
-use crate::collections::skip_list::skipmap::{IntoIter, SkipMap};
-use crate::db::{Key, Value};
-use crate::sstable::manager::level_0::Level0Manager;
-use crate::sstable::manager::level_n::LevelNManager;
-use crate::sstable::table_handle::TableReadHandle;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use crate::collections::skip_list::skipmap::{IntoPtrIter, SkipMap};
+use crate::db::{Key, Value};
+use crate::sstable::manager::level_0::Level0Manager;
+use crate::sstable::manager::level_n::LevelNManager;
+use crate::sstable::table_handle::TableReadHandle;
 
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 
@@ -65,7 +66,7 @@ impl Compactor {
             debug_assert!(level1_table_size >= LEVEL0_FILES_THRESHOLD);
 
             let mut temp_kvs = vec![];
-            for kv in level0_skip_map.iter() {
+            for kv in level0_skip_map.iter_ptr() {
                 unsafe {
                     temp_kvs.push((&(*kv).entry.key, &(*kv).entry.value));
                 }
@@ -108,7 +109,7 @@ impl Compactor {
                 };
             }
 
-            let mut level0_iter: IntoIter<Key, Value> = level0_skip_map.into_iter();
+            let mut level0_iter: IntoPtrIter<Key, Value> = level0_skip_map.into_ptr_iter();
             let mut kv = level0_iter.current_mut_no_consume();
 
             for level1_table_handle in self.level1_table_handles.iter() {

@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
+use std::sync::RwLock;
+
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::{DBCommand, Key, Value};
 use crate::memory::{KeyValue, MemTable};
 use crate::Result;
-use std::collections::BTreeMap;
-use std::sync::RwLock;
 
 /// Wrapper of `BTreeMap<String, String>`
 pub struct BTreeMemTable {
@@ -69,7 +70,12 @@ impl KeyValue for BTreeMemTable {
     }
 }
 
-impl MemTable for BTreeMemTable {}
+impl MemTable for BTreeMemTable {
+    fn merge(&mut self, kvs: SkipMap<Key, Value>) {
+        let _guard = self.rw_lock.write().unwrap();
+        self.inner.extend(kvs.into_iter());
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,9 @@
-use crate::db::{Key, Value};
-use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
+
+use crate::db::{Key, Value};
+use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 
 pub(super) fn get_value_from_data_block(
     reader: &mut BufReaderWithPos<File>,

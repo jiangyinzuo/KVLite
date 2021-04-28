@@ -1,3 +1,14 @@
+use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::thread::JoinHandle;
+
+use crossbeam_channel::Receiver;
+use rand::Rng;
+
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
@@ -9,15 +20,6 @@ use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::WriteAheadLog;
 use crate::Result;
-use crossbeam_channel::Receiver;
-use rand::Rng;
-use std::collections::BTreeMap;
-use std::num::NonZeroUsize;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
-use std::thread::JoinHandle;
 
 /// Struct for read and write level0 sstable.
 pub struct Level0Manager {
@@ -336,16 +338,18 @@ impl Level0Manager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex, RwLock};
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+
     use crate::db::DBCommand;
     use crate::db::ACTIVE_SIZE_THRESHOLD;
     use crate::memory::{KeyValue, SkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::WriteAheadLog;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex, RwLock};
-    use std::time::Duration;
-    use tempfile::TempDir;
 
     #[test]
     fn test() {

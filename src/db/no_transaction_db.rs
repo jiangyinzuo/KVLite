@@ -1,5 +1,6 @@
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
+use crate::db::{Key, Value, ACTIVE_SIZE_THRESHOLD, DB};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
@@ -12,38 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::thread::JoinHandle;
 
-#[cfg(debug_assertions)]
-pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
-#[cfg(not(debug_assertions))]
-pub const ACTIVE_SIZE_THRESHOLD: usize = 1000;
-
-pub const MAX_LEVEL: usize = 7;
-
-pub(crate) const fn max_level_shift() -> usize {
-    let mut idx = 1;
-    let mut value = 2;
-    while value <= MAX_LEVEL {
-        value *= 2;
-        idx += 1;
-    }
-    idx
-}
-
-pub type Key = Vec<u8>;
-pub type Value = Vec<u8>;
-
-pub trait DBCommand {
-    fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>);
-    fn get(&self, key: &Key) -> Result<Option<Value>>;
-    fn set(&mut self, key: Key, value: Value) -> crate::Result<()>;
-    fn remove(&mut self, key: Key) -> crate::Result<()>;
-}
-
-pub struct KVLite<T: MemTable> {
+pub struct NoTransactionDB<M: MemTable> {
     db_path: String,
-    wal: Arc<Mutex<WriteAheadLog>>,
-    mut_mem_table: RwLock<T>,
-    imm_mem_table: Arc<RwLock<T>>,
+    pub(crate) wal: Arc<Mutex<WriteAheadLog>>,
+    pub(crate) mut_mem_table: RwLock<M>,
+    imm_mem_table: Arc<RwLock<M>>,
 
     level0_manager: Arc<Level0Manager>,
     leveln_manager: Arc<LevelNManager>,
@@ -53,20 +27,20 @@ pub struct KVLite<T: MemTable> {
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
 }
 
-impl<T: 'static + MemTable> KVLite<T> {
-    pub fn open(db_path: impl AsRef<Path>) -> Result<KVLite<T>> {
+impl<M: MemTable + 'static> DB<M> for NoTransactionDB<M> {
+    fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
 
         let index_cache = Arc::new(ShardLRUCache::default());
         let leveln_manager = LevelNManager::open_tables(db_path.clone(), index_cache.clone());
 
-        let mut mut_mem_table = T::default();
+        let mut mut_mem_table = M::default();
 
         let wal = Arc::new(Mutex::new(
             WriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
         ));
 
-        let imm_mem_table = Arc::new(RwLock::new(T::default()));
+        let imm_mem_table = Arc::new(RwLock::new(M::default()));
         let channel = crossbeam_channel::unbounded();
 
         let background_task_write_to_level0_is_running = Arc::new(AtomicBool::default());
@@ -80,7 +54,7 @@ impl<T: 'static + MemTable> KVLite<T> {
             background_task_write_to_level0_is_running.clone(),
         );
 
-        Ok(KVLite {
+        Ok(NoTransactionDB {
             db_path,
             wal,
             mut_mem_table: RwLock::new(mut_mem_table),
@@ -93,7 +67,63 @@ impl<T: 'static + MemTable> KVLite<T> {
         })
     }
 
-    fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<T>) {
+    fn get(&self, key: &Key) -> Result<Option<Value>> {
+        match self.query(key)? {
+            Some(v) => {
+                if v.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(v))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set(&self, key: Key, value: Value) -> Result<()> {
+        {
+            let mut wal_guard = self.wal.lock().unwrap();
+            wal_guard.append(&key, Some(&value))?;
+        }
+
+        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
+
+        mem_table_guard.set(key, value)?;
+
+        self.may_freeze(mem_table_guard);
+
+        Ok(())
+    }
+
+    fn remove(&self, key: Key) -> Result<()> {
+        let mut wal_writer_lock = self.wal.lock().unwrap();
+        wal_writer_lock.append(&key, None)?;
+
+        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
+        mem_table_guard.remove(key)?;
+        self.may_freeze(mem_table_guard);
+        Ok(())
+    }
+
+    fn range_get(&self, key_start: &Key, key_end: &Key) -> Result<SkipMap<Key, Value>> {
+        let mut skip_map = SkipMap::new();
+        self.leveln_manager
+            .range_query(key_start, key_end, &mut skip_map);
+        self.level0_manager
+            .range_query(key_start, key_end, &mut skip_map);
+        {
+            let imm_guard = self.imm_mem_table.read().unwrap();
+            imm_guard.range_get(key_start, key_end, &mut skip_map);
+        }
+        {
+            let mem_table_guard = self.mut_mem_table.read().unwrap();
+            mem_table_guard.range_get(key_start, key_end, &mut skip_map);
+        }
+        Ok(skip_map)
+    }
+}
+impl<T: 'static + MemTable> NoTransactionDB<T> {
+    pub(crate) fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<T>) {
         if mem_guard.len() >= ACTIVE_SIZE_THRESHOLD
             && !self
                 .background_task_write_to_level0_is_running
@@ -159,64 +189,9 @@ impl<T: 'static + MemTable> KVLite<T> {
     pub fn db_path(&self) -> &String {
         &self.db_path
     }
-
-    pub fn get(&self, key: &Key) -> Result<Option<Value>> {
-        match self.query(key)? {
-            Some(v) => {
-                if v.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(v))
-                }
-            }
-            None => Ok(None),
-        }
-    }
-
-    pub fn range_get(&self, key_start: &Key, key_end: &Key) -> Result<SkipMap<Key, Value>> {
-        let mut skip_map = SkipMap::new();
-        self.leveln_manager
-            .range_query(key_start, key_end, &mut skip_map);
-        self.level0_manager
-            .range_query(key_start, key_end, &mut skip_map);
-        {
-            let imm_guard = self.imm_mem_table.read().unwrap();
-            imm_guard.range_get(key_start, key_end, &mut skip_map);
-        }
-        {
-            let mem_table_guard = self.mut_mem_table.read().unwrap();
-            mem_table_guard.range_get(key_start, key_end, &mut skip_map);
-        }
-        Ok(skip_map)
-    }
-
-    pub fn set(&self, key: Key, value: Value) -> Result<()> {
-        {
-            let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.append(&key, Some(&value))?;
-        }
-
-        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
-
-        mem_table_guard.set(key, value)?;
-
-        self.may_freeze(mem_table_guard);
-
-        Ok(())
-    }
-
-    pub fn remove(&self, key: Key) -> Result<()> {
-        let mut wal_writer_lock = self.wal.lock().unwrap();
-        wal_writer_lock.append(&key, None)?;
-
-        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
-        mem_table_guard.remove(key)?;
-        self.may_freeze(mem_table_guard);
-        Ok(())
-    }
 }
 
-impl<M: MemTable> Drop for KVLite<M> {
+impl<M: MemTable> Drop for NoTransactionDB<M> {
     fn drop(&mut self) {
         self.write_level0_channel.take();
         if let Some(handle) = self.level0_writer_handle.take() {
@@ -229,16 +204,20 @@ impl<M: MemTable> Drop for KVLite<M> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::db::{KVLite, Key, ACTIVE_SIZE_THRESHOLD, MAX_LEVEL};
-    use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
-    use crate::sstable::manager::level_n::tests::create_manager;
-    use log::info;
-    use rand::Rng;
     use std::collections::HashMap;
     use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Barrier};
     use std::time::Duration;
+
+    use log::info;
+    use rand::Rng;
+
+    use crate::db::no_transaction_db::NoTransactionDB;
+    use crate::db::{Key, ACTIVE_SIZE_THRESHOLD, DB, MAX_LEVEL};
+    use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
+    use crate::sstable::manager::level_n::tests::create_manager;
+    use std::convert::TryInto;
 
     const TEST_CMD_TIMES: usize = 40;
 
@@ -264,7 +243,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn query<M: MemTable + 'static>(db1: Arc<KVLite<M>>, value_prefix: u32) {
+    fn query<M: MemTable + 'static>(db1: Arc<NoTransactionDB<M>>, value_prefix: u32) {
         let mut not_found_key = vec![];
         for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
             let v = db1.get(&format!("key{}", i).into_bytes());
@@ -302,7 +281,7 @@ pub(crate) mod tests {
     }
 
     fn _test_command<M: 'static + MemTable>(path: &Path, value_prefix: u32) {
-        let db = KVLite::<M>::open(path).unwrap();
+        let db = NoTransactionDB::<M>::open(path).unwrap();
         db.set(
             "hello".into(),
             format!("world_{}", value_prefix).into_bytes(),
@@ -386,9 +365,9 @@ pub(crate) mod tests {
             .tempdir()
             .unwrap();
         let path = temp_dir.path();
-        let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<SkipMapMemTable>::open(path).unwrap();
         for i in 1i32..(ACTIVE_SIZE_THRESHOLD * 5) as i32 {
-            db.set(Vec::from(i.to_be_bytes()), Vec::from(i.to_be_bytes()))
+            db.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
                 .unwrap();
         }
 
@@ -399,9 +378,12 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(100, skip_map.len());
-        for node in skip_map.iter() {
+        for node in skip_map.iter_ptr() {
             unsafe {
-                assert_eq!((*node).entry.key, (*node).entry.value);
+                assert_eq!(
+                    i32::from_be_bytes((*node).entry.key.clone().try_into().unwrap()) + 1,
+                    i32::from_be_bytes((*node).entry.value.clone().try_into().unwrap())
+                );
             }
         }
     }
@@ -414,7 +396,7 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<SkipMapMemTable>::open(path).unwrap();
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             db.set(
                 format!("{}", i).into_bytes(),
@@ -424,7 +406,7 @@ pub(crate) mod tests {
         }
         drop(db);
 
-        let db = KVLite::<BTreeMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<BTreeMemTable>::open(path).unwrap();
 
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             assert_eq!(
@@ -445,7 +427,7 @@ pub(crate) mod tests {
         }
 
         drop(db);
-        let db = Arc::new(KVLite::<SkipMapMemTable>::open(path).unwrap());
+        let db = Arc::new(NoTransactionDB::<SkipMapMemTable>::open(path).unwrap());
         for _ in 0..4 {
             test_log(db.clone());
         }
@@ -470,7 +452,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn test_log<M: MemTable + 'static>(db: Arc<KVLite<M>>) {
+    fn test_log<M: MemTable + 'static>(db: Arc<NoTransactionDB<M>>) {
         for _ in 0..3 {
             for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
                 assert_eq!(
@@ -504,7 +486,7 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db = KVLite::<SkipMapMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<SkipMapMemTable>::open(path).unwrap();
 
         let map = create_random_map(20000);
         for (k, v) in map.iter() {

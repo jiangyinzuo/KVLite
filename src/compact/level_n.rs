@@ -1,10 +1,11 @@
-use crate::db::{Key, Value};
-use crate::sstable::manager::level_n::LevelNManager;
-use crate::sstable::table_handle::TableReadHandle;
 use std::cmp::Ordering;
 use std::collections::hash_map::VacantEntry;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use crate::db::{Key, Value};
+use crate::sstable::manager::level_n::LevelNManager;
+use crate::sstable::table_handle::TableReadHandle;
 
 pub(crate) fn start_compact(
     compact_level: NonZeroUsize,
@@ -198,10 +199,11 @@ impl Compactor {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use crate::compact::level_n::start_compact;
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::sstable::table_handle::temp_file_name;
-    use std::num::NonZeroUsize;
 
     #[test]
     fn test_compact() {

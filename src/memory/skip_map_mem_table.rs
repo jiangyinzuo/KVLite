@@ -1,8 +1,9 @@
+use std::sync::RwLock;
+
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::{DBCommand, Key, Value};
 use crate::memory::{KeyValue, MemTable};
 use crate::Result;
-use std::sync::RwLock;
 
 #[derive(Default)]
 pub struct SkipMapMemTable {
@@ -13,29 +14,12 @@ pub struct SkipMapMemTable {
 impl DBCommand for SkipMapMemTable {
     fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
         let _guard = self.rw_lock.read().unwrap();
-        let mut node = self.inner.find_first_ge(key_start, None);
-        unsafe {
-            while !node.is_null() && (*node).entry.key.le(key_end) {
-                kvs.insert((*node).entry.key.clone(), (*node).entry.key.clone());
-                node = (*node).get_next(0);
-            }
-        }
+        self.inner.range_get(key_start, key_end, kvs);
     }
 
     fn get(&self, key: &Key) -> Result<Option<Value>> {
         let _guard = self.rw_lock.read().unwrap();
-        let node = self.inner.find_first_ge(key, None);
-        if node.is_null() {
-            Ok(None)
-        } else {
-            let node = unsafe { node.as_mut().unwrap() };
-            let k = &node.entry.key;
-            if k.eq(key) && !node.entry.value.is_empty() {
-                Ok(Some(node.entry.value.clone()))
-            } else {
-                Ok(None)
-            }
-        }
+        Ok(self.inner.get_clone(key))
     }
 
     fn set(&mut self, key: Key, value: Value) -> Result<()> {
@@ -59,7 +43,7 @@ impl KeyValue for SkipMapMemTable {
     fn kv_iter(&self) -> Box<dyn Iterator<Item = (&Key, &Key)> + '_> {
         Box::new(
             self.inner
-                .iter()
+                .iter_ptr()
                 .map(|n| unsafe { (&(*n).entry.key, &(*n).entry.value) }),
         )
     }
@@ -73,7 +57,12 @@ impl KeyValue for SkipMapMemTable {
     }
 }
 
-impl MemTable for SkipMapMemTable {}
+impl MemTable for SkipMapMemTable {
+    fn merge(&mut self, kvs: SkipMap<Key, Value>) {
+        let _guard = self.rw_lock.write().unwrap();
+        self.inner.merge(kvs);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -94,6 +83,6 @@ mod tests {
             table.get(&one).unwrap().unwrap()
         );
         table.remove(one.clone()).unwrap();
-        assert!(table.get(&one).unwrap().is_none());
+        assert_eq!(table.get(&one).unwrap().unwrap(), vec![]);
     }
 }
