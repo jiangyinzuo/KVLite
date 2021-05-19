@@ -57,12 +57,12 @@ impl<M: MemTable<UserKey> + 'static> WriteBatch<M> {
 /// cannot provide weaker isolation levels, such as READ UNCOMMITTED, that could
 /// potentially provide higher throughput for some applications.
 pub struct WriteCommittedDB<M: MemTable<UserKey> + 'static> {
-    inner: NoTransactionDB<M>,
+    inner: NoTransactionDB<UserKey, M>,
 }
 
 impl<M: MemTable<UserKey> + 'static> DB<UserKey, M> for WriteCommittedDB<M> {
     fn open(db_path: impl AsRef<Path>) -> Result<Self> {
-        let inner = NoTransactionDB::<M>::open(db_path)?;
+        let inner = NoTransactionDB::<UserKey, M>::open(db_path)?;
         Ok(WriteCommittedDB { inner })
     }
 
@@ -113,6 +113,7 @@ impl<M: MemTable<UserKey> + 'static> WriteCommittedDB<M> {
 mod tests {
     use std::sync::Arc;
 
+    use crate::db::key_types::UserKey;
     use crate::db::transaction::write_committed::WriteCommittedDB;
     use crate::db::DB;
     use crate::memory::SkipMapMemTable;
@@ -122,7 +123,7 @@ mod tests {
         let temp_dir = tempfile::Builder::new().prefix("txn").tempdir().unwrap();
         let path = temp_dir.path();
 
-        let db = Arc::new(WriteCommittedDB::<SkipMapMemTable>::open(path).unwrap());
+        let db = Arc::new(WriteCommittedDB::<SkipMapMemTable<UserKey>>::open(path).unwrap());
         let mut txn1 = WriteCommittedDB::start_transaction(&db);
         for i in 1..=10i32 {
             txn1.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))

@@ -3,24 +3,24 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::db::key_types::UserKey;
+use crate::db::key_types::{MemKey, UserKey};
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
 use crate::Result;
 
-pub struct WriteAheadLog {
+pub struct SimpleWriteAheadLog {
     log_path: PathBuf,
     log0: File,
     log1: File,
 }
 
-impl WriteAheadLog {
+impl SimpleWriteAheadLog {
     /// Open the logs at `db_path` and load to memory tables
-    pub fn open_and_load_logs(
+    pub fn open_and_load_logs<K: MemKey>(
         db_path: &str,
-        mut_mem_table: &mut impl MemTable<UserKey>,
-    ) -> Result<WriteAheadLog> {
+        mut_mem_table: &mut impl MemTable<K>,
+    ) -> Result<SimpleWriteAheadLog> {
         let log_path = log_path(db_path.as_ref());
         fs::create_dir_all(&log_path)?;
 
@@ -46,7 +46,7 @@ impl WriteAheadLog {
         load_log(&log1, mut_mem_table).unwrap();
         load_log(&log0, mut_mem_table).unwrap();
 
-        Ok(WriteAheadLog {
+        Ok(SimpleWriteAheadLog {
             log_path,
             log0,
             log1,
@@ -99,12 +99,12 @@ fn mut_log_file(dir: &Path) -> PathBuf {
 }
 
 // load log to mem_table
-fn load_log(file: &File, mem_table: &mut impl MemTable<UserKey>) -> Result<()> {
+fn load_log<K: MemKey>(file: &File, mem_table: &mut impl MemTable<K>) -> Result<()> {
     let mut reader = BufReaderWithPos::new(file)?;
     reader.seek(SeekFrom::Start(0))?;
     while let Ok(key_length) = read_u32(&mut reader) {
         let value_length = read_u32(&mut reader)?;
-        let key = read_bytes_exact(&mut reader, key_length)?;
+        let key = K::restore_from_log(read_bytes_exact(&mut reader, key_length)?);
         if value_length > 0 {
             let value = read_bytes_exact(&mut reader, value_length)?;
             mem_table.set(key, value)?;
@@ -120,17 +120,18 @@ fn load_log(file: &File, mem_table: &mut impl MemTable<UserKey>) -> Result<()> {
 mod tests {
     use tempfile::TempDir;
 
-    use crate::memory::{KeyValue, SkipMapMemTable};
-    use crate::wal::WriteAheadLog;
+    use crate::db::key_types::UserKey;
+    use crate::memory::{SkipMapMemTable, UserKeyValueIterator};
+    use crate::wal::simple_wal::SimpleWriteAheadLog;
 
     #[test]
     fn test() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().to_str().unwrap();
 
-        let mut mut_mem = SkipMapMemTable::default();
+        let mut mut_mem = SkipMapMemTable::<UserKey>::default();
 
-        let mut wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
+        let mut wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());
 
         for i in 1..4 {
@@ -146,13 +147,13 @@ mod tests {
                         .unwrap();
                 }
             }
-            wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
+            wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
             assert_eq!(100 * i, mut_mem.len());
         }
         wal.freeze_mut_log().unwrap();
         wal.clear_imm_log().unwrap();
         mut_mem = SkipMapMemTable::default();
-        wal = WriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
+        wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());
     }
 }

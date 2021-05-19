@@ -7,6 +7,7 @@ use std::cmp::Ordering;
 pub trait MemKey: Ord + Send + Sync + Default {
     fn user_key(&self) -> &UserKey;
     fn into_user_key(self) -> UserKey;
+    fn restore_from_log(key: UserKey) -> Self;
 }
 
 /// Raw user key
@@ -20,6 +21,11 @@ impl MemKey for UserKey {
     fn into_user_key(self) -> UserKey {
         self
     }
+
+    #[inline]
+    fn restore_from_log(key: UserKey) -> Self {
+        key
+    }
 }
 
 pub type LSN = u64;
@@ -29,6 +35,12 @@ pub type LSN = u64;
 pub struct LSNKey {
     user_key: UserKey,
     lsn: LSN,
+}
+
+impl LSNKey {
+    pub fn new(user_key: UserKey, lsn: LSN) -> LSNKey {
+        LSNKey { user_key, lsn }
+    }
 }
 
 impl PartialOrd for LSNKey {
@@ -57,5 +69,12 @@ impl MemKey for LSNKey {
 
     fn into_user_key(self) -> UserKey {
         self.user_key
+    }
+
+    fn restore_from_log(key: UserKey) -> Self {
+        LSNKey {
+            user_key: key,
+            lsn: 0,
+        }
     }
 }

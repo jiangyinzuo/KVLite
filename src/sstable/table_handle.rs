@@ -10,7 +10,7 @@ use crate::db::key_types::UserKey;
 use crate::db::{max_level_shift, Value};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
-use crate::memory::KeyValue;
+use crate::memory::UserKeyValueIterator;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
 use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
@@ -65,7 +65,7 @@ impl TableWriteHandle {
         }
     }
 
-    pub fn write_sstable(&mut self, table: &impl KeyValue) -> crate::Result<()> {
+    pub fn write_sstable(&mut self, table: &impl UserKeyValueIterator) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in table.kv_iter().enumerate() {
             self.writer.write_key_value(k, v);

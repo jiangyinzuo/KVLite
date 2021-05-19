@@ -1,10 +1,9 @@
-use std::sync::RwLock;
-
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::key_types::{MemKey, UserKey};
+use crate::db::key_types::{LSNKey, MemKey, UserKey};
 use crate::db::{DBCommand, Value};
-use crate::memory::{KeyValue, MemTable};
+use crate::memory::{MemTable, UserKeyValueIterator};
 use crate::Result;
+use std::sync::RwLock;
 
 #[derive(Default)]
 pub struct SkipMapMemTable<K: MemKey> {
@@ -36,12 +35,12 @@ impl DBCommand<UserKey> for SkipMapMemTable<UserKey> {
     }
 }
 
-impl KeyValue for SkipMapMemTable<UserKey> {
+impl UserKeyValueIterator for SkipMapMemTable<UserKey> {
     fn len(&self) -> usize {
         self.inner.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&UserKey, &UserKey)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&UserKey, &Value)> + '_> {
         Box::new(
             self.inner
                 .iter_ptr()
@@ -60,6 +59,57 @@ impl KeyValue for SkipMapMemTable<UserKey> {
 
 impl MemTable<UserKey> for SkipMapMemTable<UserKey> {
     fn merge(&mut self, kvs: SkipMap<UserKey, Value>) {
+        let _guard = self.rw_lock.write().unwrap();
+        self.inner.merge(kvs);
+    }
+}
+
+impl DBCommand<LSNKey> for SkipMapMemTable<LSNKey> {
+    fn range_get(&self, key_start: &LSNKey, key_end: &LSNKey, kvs: &mut SkipMap<UserKey, Value>) {
+        todo!()
+    }
+
+    fn get(&self, key: &LSNKey) -> Result<Option<Value>> {
+        todo!()
+    }
+
+    fn set(&mut self, key: LSNKey, value: Value) -> Result<()> {
+        todo!()
+    }
+
+    fn remove(&mut self, key: LSNKey) -> Result<()> {
+        todo!()
+    }
+}
+
+impl UserKeyValueIterator for SkipMapMemTable<LSNKey> {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&UserKey, &Value)>> {
+        Box::new(
+            self.inner
+                .iter_ptr()
+                .map(|n| unsafe { ((*n).entry.key.user_key(), &(*n).entry.value) }),
+        )
+    }
+
+    fn first_key(&self) -> Option<&UserKey> {
+        self.inner
+            .first_key_value()
+            .map(|entry| entry.key.user_key())
+    }
+
+    fn last_key(&self) -> Option<&UserKey> {
+        self.inner
+            .last_key_value()
+            .map(|entry| entry.key.user_key())
+    }
+}
+
+impl MemTable<LSNKey> for SkipMapMemTable<LSNKey> {
+    fn merge(&mut self, kvs: SkipMap<LSNKey, Value>) {
         let _guard = self.rw_lock.write().unwrap();
         self.inner.merge(kvs);
     }

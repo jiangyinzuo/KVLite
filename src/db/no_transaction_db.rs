@@ -1,11 +1,11 @@
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::key_types::UserKey;
+use crate::db::key_types::{MemKey, UserKey};
 use crate::db::{Value, ACTIVE_SIZE_THRESHOLD, DB};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
-use crate::wal::WriteAheadLog;
+use crate::wal::simple_wal::SimpleWriteAheadLog;
 use crate::Result;
 use crossbeam_channel::Sender;
 use std::ops::DerefMut;
@@ -14,13 +14,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::thread::JoinHandle;
 
-pub struct NoTransactionDB<M: MemTable<UserKey> + 'static> {
+pub struct NoTransactionDB<K: MemKey + 'static, M: MemTable<K> + 'static> {
     db_path: String,
-    pub(crate) wal: Arc<Mutex<WriteAheadLog>>,
+    pub(crate) wal: Arc<Mutex<SimpleWriteAheadLog>>,
     pub(crate) mut_mem_table: RwLock<M>,
     imm_mem_table: Arc<RwLock<M>>,
 
-    level0_manager: Arc<Level0Manager<UserKey, M>>,
+    level0_manager: Arc<Level0Manager<K, M>>,
     leveln_manager: Arc<LevelNManager>,
 
     level0_writer_handle: Option<JoinHandle<()>>,
@@ -28,7 +28,7 @@ pub struct NoTransactionDB<M: MemTable<UserKey> + 'static> {
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
 }
 
-impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for NoTransactionDB<M> {
+impl<K: MemKey + 'static, M: MemTable<K> + 'static> DB<K, M> for NoTransactionDB<K, M> {
     fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
 
@@ -38,14 +38,14 @@ impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for 
         let mut mut_mem_table = M::default();
 
         let wal = Arc::new(Mutex::new(
-            WriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
+            SimpleWriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
         ));
 
         let imm_mem_table = Arc::new(RwLock::new(M::default()));
         let channel = crossbeam_channel::unbounded();
 
         let background_task_write_to_level0_is_running = Arc::new(AtomicBool::default());
-        let (level0_manager, level0_writer_handle) = Level0Manager::start_task_write_level0(
+        let (level0_manager, level0_writer_handle) = Level0Manager::<K, M>::start_task_write_level0(
             db_path.clone(),
             leveln_manager.clone(),
             wal.clone(),
@@ -68,7 +68,7 @@ impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for 
         })
     }
 
-    fn get(&self, key: &UserKey) -> Result<Option<Value>> {
+    fn get(&self, key: &K) -> Result<Option<Value>> {
         match self.query(key)? {
             Some(v) => {
                 if v.is_empty() {
@@ -81,10 +81,10 @@ impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for 
         }
     }
 
-    fn set(&self, key: UserKey, value: Value) -> Result<()> {
+    fn set(&self, key: K, value: Value) -> Result<()> {
         {
             let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.append(&key, Some(&value))?;
+            wal_guard.append(key.user_key(), Some(&value))?;
         }
 
         let mut mem_table_guard = self.mut_mem_table.write().unwrap();
@@ -96,9 +96,9 @@ impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for 
         Ok(())
     }
 
-    fn remove(&self, key: UserKey) -> Result<()> {
+    fn remove(&self, key: K) -> Result<()> {
         let mut wal_writer_lock = self.wal.lock().unwrap();
-        wal_writer_lock.append(&key, None)?;
+        wal_writer_lock.append(key.user_key(), None)?;
 
         let mut mem_table_guard = self.mut_mem_table.write().unwrap();
         mem_table_guard.remove(key)?;
@@ -106,12 +106,12 @@ impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for 
         Ok(())
     }
 
-    fn range_get(&self, key_start: &UserKey, key_end: &UserKey) -> Result<SkipMap<UserKey, Value>> {
-        let mut skip_map = SkipMap::new();
+    fn range_get(&self, key_start: &K, key_end: &K) -> Result<SkipMap<UserKey, Value>> {
+        let mut skip_map: SkipMap<UserKey, Value> = SkipMap::new();
         self.leveln_manager
-            .range_query(key_start, key_end, &mut skip_map);
+            .range_query(key_start.user_key(), key_end.user_key(), &mut skip_map);
         self.level0_manager
-            .range_query(key_start, key_end, &mut skip_map);
+            .range_query(key_start.user_key(), key_end.user_key(), &mut skip_map);
         {
             let imm_guard = self.imm_mem_table.read().unwrap();
             imm_guard.range_get(key_start, key_end, &mut skip_map);
@@ -124,8 +124,8 @@ impl<M: std::default::Default + MemTable<UserKey> + 'static> DB<UserKey, M> for 
     }
 }
 
-impl<T: 'static + MemTable<UserKey> + Default> NoTransactionDB<T> {
-    pub(crate) fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<T>) {
+impl<K: 'static + MemKey, M: MemTable<K> + 'static> NoTransactionDB<K, M> {
+    pub(crate) fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<M>) {
         if mem_guard.len() >= ACTIVE_SIZE_THRESHOLD
             && !self
                 .background_task_write_to_level0_is_running
@@ -155,7 +155,7 @@ impl<T: 'static + MemTable<UserKey> + Default> NoTransactionDB<T> {
         }
     }
 
-    fn query(&self, key: &UserKey) -> Result<Option<Value>> {
+    fn query(&self, key: &K) -> Result<Option<Value>> {
         // query mutable memory table
         {
             let mem_table_guard = self.mut_mem_table.read().unwrap();
@@ -178,13 +178,13 @@ impl<T: 'static + MemTable<UserKey> + Default> NoTransactionDB<T> {
         }
 
         // query level0 sstables
-        let option = self.level0_manager.query(key).unwrap();
+        let option = self.level0_manager.query(key.user_key()).unwrap();
         if option.is_some() {
             return Ok(option);
         }
 
         // query sstables
-        let option = self.leveln_manager.query(key).unwrap();
+        let option = self.leveln_manager.query(key.user_key()).unwrap();
         Ok(option)
     }
 
@@ -193,7 +193,7 @@ impl<T: 'static + MemTable<UserKey> + Default> NoTransactionDB<T> {
     }
 }
 
-impl<M: 'static + MemTable<UserKey>> Drop for NoTransactionDB<M> {
+impl<K: 'static + MemKey, M: MemTable<K> + 'static> Drop for NoTransactionDB<K, M> {
     fn drop(&mut self) {
         self.write_level0_channel.take();
         if let Some(handle) = self.level0_writer_handle.take() {
@@ -216,7 +216,7 @@ pub(crate) mod tests {
     use log::info;
     use rand::Rng;
 
-    use crate::db::key_types::UserKey;
+    use crate::db::key_types::{MemKey, UserKey};
     use crate::db::no_transaction_db::NoTransactionDB;
     use crate::db::{ACTIVE_SIZE_THRESHOLD, DB, MAX_LEVEL};
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
@@ -240,13 +240,13 @@ pub(crate) mod tests {
             for i in 0..2 {
                 _test_command::<BTreeMemTable<UserKey>>(path, i);
                 check(path);
-                _test_command::<SkipMapMemTable>(path, i);
+                _test_command::<SkipMapMemTable<UserKey>>(path, i);
                 check(path);
             }
         }
     }
 
-    fn query<M: MemTable<UserKey> + 'static>(db1: Arc<NoTransactionDB<M>>, value_prefix: u32) {
+    fn query(db1: Arc<NoTransactionDB<UserKey, impl MemTable<UserKey>>>, value_prefix: u32) {
         let mut not_found_key = vec![];
         for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
             let v = db1.get(&format!("key{}", i).into_bytes());
@@ -284,7 +284,7 @@ pub(crate) mod tests {
     }
 
     fn _test_command<M: 'static + MemTable<UserKey>>(path: &Path, value_prefix: u32) {
-        let db = NoTransactionDB::<M>::open(path).unwrap();
+        let db = NoTransactionDB::<UserKey, M>::open(path).unwrap();
         db.set(
             "hello".into(),
             format!("world_{}", value_prefix).into_bytes(),
@@ -368,7 +368,7 @@ pub(crate) mod tests {
             .tempdir()
             .unwrap();
         let path = temp_dir.path();
-        let db = NoTransactionDB::<SkipMapMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<UserKey, SkipMapMemTable<UserKey>>::open(path).unwrap();
         for i in 1i32..(ACTIVE_SIZE_THRESHOLD * 5) as i32 {
             db.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
                 .unwrap();
@@ -399,7 +399,7 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db = NoTransactionDB::<SkipMapMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<UserKey, SkipMapMemTable<UserKey>>::open(path).unwrap();
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             db.set(
                 format!("{}", i).into_bytes(),
@@ -409,7 +409,7 @@ pub(crate) mod tests {
         }
         drop(db);
 
-        let db = NoTransactionDB::<BTreeMemTable<UserKey>>::open(path).unwrap();
+        let db = NoTransactionDB::<UserKey, BTreeMemTable<UserKey>>::open(path).unwrap();
 
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             assert_eq!(
@@ -430,7 +430,8 @@ pub(crate) mod tests {
         }
 
         drop(db);
-        let db = Arc::new(NoTransactionDB::<SkipMapMemTable>::open(path).unwrap());
+        let db =
+            Arc::new(NoTransactionDB::<UserKey, SkipMapMemTable<UserKey>>::open(path).unwrap());
         for _ in 0..4 {
             test_log(db.clone());
         }
@@ -455,7 +456,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn test_log<M: MemTable<UserKey> + 'static>(db: Arc<NoTransactionDB<M>>) {
+    fn test_log<M: MemTable<UserKey> + 'static>(db: Arc<NoTransactionDB<UserKey, M>>) {
         for _ in 0..3 {
             for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
                 assert_eq!(
@@ -489,7 +490,7 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db = NoTransactionDB::<SkipMapMemTable>::open(path).unwrap();
+        let db = NoTransactionDB::<UserKey, SkipMapMemTable<UserKey>>::open(path).unwrap();
 
         let map = create_random_map(20000);
         for (k, v) in map.iter() {

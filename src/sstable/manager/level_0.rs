@@ -20,7 +20,7 @@ use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
-use crate::wal::WriteAheadLog;
+use crate::wal::simple_wal::SimpleWriteAheadLog;
 use crate::Result;
 
 /// Struct for read and write level0 sstable.
@@ -34,7 +34,7 @@ pub struct Level0Manager<K: MemKey, M: MemTable<K>> {
     sender: crossbeam_channel::Sender<bool>,
 
     /// Table ID is increasing order.
-    wal: Arc<Mutex<WriteAheadLog>>,
+    wal: Arc<Mutex<SimpleWriteAheadLog>>,
 
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
@@ -48,7 +48,7 @@ impl<K: MemKey + 'static, M: MemTable<K> + 'static> Level0Manager<K, M> {
     fn open_tables(
         db_path: String,
         table_manager: Arc<LevelNManager>,
-        wal: Arc<Mutex<WriteAheadLog>>,
+        wal: Arc<Mutex<SimpleWriteAheadLog>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> Result<Arc<Level0Manager<K, M>>> {
@@ -104,7 +104,7 @@ impl<K: MemKey + 'static, M: MemTable<K> + 'static> Level0Manager<K, M> {
     pub(crate) fn start_task_write_level0(
         db_path: String,
         leveln_manager: Arc<LevelNManager>,
-        wal: Arc<Mutex<WriteAheadLog>>,
+        wal: Arc<Mutex<SimpleWriteAheadLog>>,
         imm_mem_table: Arc<RwLock<M>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         recv: Receiver<()>,
@@ -355,12 +355,13 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::db::key_types::UserKey;
     use crate::db::DBCommand;
     use crate::db::ACTIVE_SIZE_THRESHOLD;
-    use crate::memory::{KeyValue, SkipMapMemTable};
+    use crate::memory::{SkipMapMemTable, UserKeyValueIterator};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
-    use crate::wal::WriteAheadLog;
+    use crate::wal::simple_wal::SimpleWriteAheadLog;
 
     #[test]
     fn test() {
@@ -378,10 +379,10 @@ mod tests {
     fn test_query(path: String, insert_value: bool) {
         let leveln_manager = create_manager(&path);
 
-        let mut mut_mem = SkipMapMemTable::default();
+        let mut mut_mem = SkipMapMemTable::<UserKey>::default();
 
         let (sender, receiver) = crossbeam_channel::unbounded();
-        let wal = WriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();
+        let wal = SimpleWriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();
 
         assert!(mut_mem.is_empty());
 

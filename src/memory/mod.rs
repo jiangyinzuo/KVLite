@@ -11,11 +11,13 @@ mod btree_mem_table;
 mod skip_map_mem_table;
 
 /// Table in Memory
-pub trait MemTable<K: MemKey + Ord>: DBCommand<K> + Default + KeyValue + Send + Sync {
+pub trait MemTable<K: MemKey + Ord>:
+    DBCommand<K> + Default + UserKeyValueIterator + Send + Sync
+{
     fn merge(&mut self, kvs: SkipMap<K, Value>);
 }
 
-pub trait KeyValue {
+pub trait UserKeyValueIterator {
     fn len(&self) -> usize;
 
     #[inline]
@@ -30,7 +32,7 @@ pub trait KeyValue {
     fn last_key(&self) -> Option<&UserKey>;
 }
 
-impl KeyValue for SkipMap<UserKey, Value> {
+impl UserKeyValueIterator for SkipMap<UserKey, Value> {
     fn len(&self) -> usize {
         self.len()
     }

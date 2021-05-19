@@ -6,6 +6,7 @@ use key_types::UserKey;
 use std::path::Path;
 
 pub mod key_types;
+pub mod lsn_db;
 pub mod no_transaction_db;
 pub mod transaction;
 
@@ -29,7 +30,7 @@ pub(crate) const fn max_level_shift() -> usize {
 pub type Value = Vec<u8>;
 
 pub trait DBCommand<K: MemKey> {
-    fn range_get(&self, key_start: &K, key_end: &K, kvs: &mut SkipMap<K, Value>);
+    fn range_get(&self, key_start: &K, key_end: &K, kvs: &mut SkipMap<UserKey, Value>);
     fn get(&self, key: &K) -> crate::Result<Option<Value>>;
     fn set(&mut self, key: K, value: Value) -> crate::Result<()>;
     fn remove(&mut self, key: K) -> crate::Result<()>;
@@ -37,8 +38,8 @@ pub trait DBCommand<K: MemKey> {
 
 pub trait DB<K: MemKey, M: MemTable<K>>: Sized {
     fn open(db_path: impl AsRef<Path>) -> Result<Self>;
-    fn get(&self, key: &UserKey) -> Result<Option<Value>>;
-    fn set(&self, key: UserKey, value: Value) -> Result<()>;
-    fn remove(&self, key: UserKey) -> Result<()>;
-    fn range_get(&self, key_start: &UserKey, key_end: &UserKey) -> Result<SkipMap<UserKey, Value>>;
+    fn get(&self, key: &K) -> Result<Option<Value>>;
+    fn set(&self, key: K, value: Value) -> Result<()>;
+    fn remove(&self, key: K) -> Result<()>;
+    fn range_get(&self, key_start: &K, key_end: &K) -> Result<SkipMap<UserKey, Value>>;
 }
