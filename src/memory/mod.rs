@@ -25,11 +25,8 @@ pub trait UserKeyValueIterator {
         self.len() == 0
     }
 
+    /// # Note: UserKey should not be duplicated.
     fn kv_iter(&self) -> Box<dyn Iterator<Item = (&UserKey, &Value)> + '_>;
-
-    fn first_key(&self) -> Option<&UserKey>;
-
-    fn last_key(&self) -> Option<&UserKey>;
 }
 
 impl UserKeyValueIterator for SkipMap<UserKey, Value> {
@@ -42,13 +39,5 @@ impl UserKeyValueIterator for SkipMap<UserKey, Value> {
             self.iter_ptr()
                 .map(|node| unsafe { (&(*node).entry.key, &(*node).entry.value) }),
         )
-    }
-
-    fn first_key(&self) -> Option<&UserKey> {
-        self.first_key_value().map(|entry| &entry.key)
-    }
-
-    fn last_key(&self) -> Option<&UserKey> {
-        self.last_key_value().map(|entry| &entry.key)
     }
 }

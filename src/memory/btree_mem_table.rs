@@ -59,16 +59,6 @@ impl UserKeyValueIterator for BTreeMemTable<UserKey> {
         let _lock = self.rw_lock.read().unwrap();
         Box::new(self.inner.iter())
     }
-
-    fn first_key(&self) -> Option<&UserKey> {
-        let _lock = self.rw_lock.read().unwrap();
-        self.inner.first_key_value().map(|(k, v)| k)
-    }
-
-    fn last_key(&self) -> Option<&UserKey> {
-        let _lock = self.rw_lock.read().unwrap();
-        self.inner.last_key_value().map(|(k, v)| k)
-    }
 }
 
 impl MemTable<UserKey> for BTreeMemTable<UserKey> {
