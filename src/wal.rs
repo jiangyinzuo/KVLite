@@ -3,7 +3,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::db::{Key, Value};
+use crate::db::key_types::UserKey;
+use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
 use crate::Result;
@@ -18,7 +19,7 @@ impl WriteAheadLog {
     /// Open the logs at `db_path` and load to memory tables
     pub fn open_and_load_logs(
         db_path: &str,
-        mut_mem_table: &mut impl MemTable,
+        mut_mem_table: &mut impl MemTable<UserKey>,
     ) -> Result<WriteAheadLog> {
         let log_path = log_path(db_path.as_ref());
         fs::create_dir_all(&log_path)?;
@@ -53,7 +54,7 @@ impl WriteAheadLog {
     }
 
     /// Append a [WriteCommand] to `mut_log`
-    pub fn append(&mut self, key: &Key, value: Option<&Value>) -> Result<()> {
+    pub fn append(&mut self, key: &UserKey, value: Option<&Value>) -> Result<()> {
         let key_length = (key.len() as u32).to_le_bytes();
         self.log1.write_all(&key_length)?;
         match value {
@@ -98,7 +99,7 @@ fn mut_log_file(dir: &Path) -> PathBuf {
 }
 
 // load log to mem_table
-fn load_log(file: &File, mem_table: &mut impl MemTable) -> Result<()> {
+fn load_log(file: &File, mem_table: &mut impl MemTable<UserKey>) -> Result<()> {
     let mut reader = BufReaderWithPos::new(file)?;
     reader.seek(SeekFrom::Start(0))?;
     while let Ok(key_length) = read_u32(&mut reader) {

@@ -1,10 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::collections::skip_list::skipmap::{IntoPtrIter, SkipMap};
-use crate::db::{Key, Value};
+use crate::db::key_types::{MemKey, UserKey};
+use crate::db::Value;
+use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::TableReadHandle;
@@ -14,8 +17,8 @@ pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 /// Merge all the `level0_table_handles` and `level1_tables` to `new_table`,
 /// then insert `new_table` to `TableManager`.
 /// In `level0_manager`, oldest table is at first
-pub(crate) fn compact_and_insert(
-    level0_manager: &Arc<Level0Manager>,
+pub(crate) fn compact_and_insert<K: 'static + MemKey, M: 'static + MemTable<K>>(
+    level0_manager: &Arc<Level0Manager<K, M>>,
     leveln_manager: &Arc<LevelNManager>,
     level0_table_handles: Vec<Arc<TableReadHandle>>,
     level1_table_handles: VecDeque<Arc<TableReadHandle>>,
@@ -29,22 +32,24 @@ pub(crate) fn compact_and_insert(
     compactor.run();
 }
 
-struct Compactor {
-    level0_manager: Arc<Level0Manager>,
+struct Compactor<K: MemKey, M: MemTable<K>> {
+    level0_manager: Arc<Level0Manager<K, M>>,
     leveln_manager: Arc<LevelNManager>,
     level0_table_handles: Vec<Arc<TableReadHandle>>,
     level1_table_handles: VecDeque<Arc<TableReadHandle>>,
     #[cfg(debug_assertions)]
     kv_count: usize,
+    _phantom_key: PhantomData<K>,
+    _phantom_table: PhantomData<M>,
 }
 
-impl Compactor {
+impl<K: 'static + MemKey, M: 'static + MemTable<K>> Compactor<K, M> {
     fn new(
-        level0_manager: Arc<Level0Manager>,
+        level0_manager: Arc<Level0Manager<K, M>>,
         leveln_manager: Arc<LevelNManager>,
         level0_table_handles: Vec<Arc<TableReadHandle>>,
         level1_table_handles: VecDeque<Arc<TableReadHandle>>,
-    ) -> Compactor {
+    ) -> Compactor<K, M> {
         Compactor {
             level0_manager,
             leveln_manager,
@@ -52,6 +57,8 @@ impl Compactor {
             level1_table_handles,
             #[cfg(debug_assertions)]
             kv_count: 0,
+            _phantom_key: PhantomData,
+            _phantom_table: PhantomData,
         }
     }
 
@@ -109,7 +116,7 @@ impl Compactor {
                 };
             }
 
-            let mut level0_iter: IntoPtrIter<Key, Value> = level0_skip_map.into_ptr_iter();
+            let mut level0_iter: IntoPtrIter<UserKey, Value> = level0_skip_map.into_ptr_iter();
             let mut kv = level0_iter.current_mut_no_consume();
 
             for level1_table_handle in self.level1_table_handles.iter() {
@@ -189,7 +196,7 @@ impl Compactor {
             .may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
     }
 
-    fn merge_level0_tables(&self) -> SkipMap<Key, Value> {
+    fn merge_level0_tables(&self) -> SkipMap<UserKey, Value> {
         let mut skip_map = SkipMap::new();
         for table in &self.level0_table_handles {
             for (key, value) in table.iter() {
@@ -199,7 +206,7 @@ impl Compactor {
         skip_map
     }
 
-    fn add_table_handle_from_vec(&self, temp_kvs: Vec<(Key, Value)>) {
+    fn add_table_handle_from_vec(&self, temp_kvs: Vec<(UserKey, Value)>) {
         if !temp_kvs.is_empty() {
             let mut new_table = self.leveln_manager.create_table_write_handle(
                 unsafe { NonZeroUsize::new_unchecked(1) },
@@ -210,7 +217,7 @@ impl Compactor {
         }
     }
 
-    fn add_table_handle_from_vec_ref(&self, temp_kvs: Vec<(&Key, &Value)>) {
+    fn add_table_handle_from_vec_ref(&self, temp_kvs: Vec<(&UserKey, &Value)>) {
         debug_assert!(!temp_kvs.is_empty());
         let mut new_table = self.leveln_manager.create_table_write_handle(
             unsafe { NonZeroUsize::new_unchecked(1) },
