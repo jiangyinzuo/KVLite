@@ -1,38 +1,41 @@
-use std::path::Path;
-use std::sync::Arc;
-
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::key_types::UserKey;
+use crate::db::key_types::InternalKey;
 use crate::db::no_transaction_db::NoTransactionDB;
 use crate::db::{Value, DB};
 use crate::memory::MemTable;
 use crate::Result;
+use std::path::Path;
+use std::sync::Arc;
 
-pub struct WriteBatch<M: MemTable<UserKey> + 'static> {
+pub struct WriteBatch<M: MemTable<InternalKey, InternalKey> + 'static> {
     db: Arc<WriteCommittedDB<M>>,
-    table: SkipMap<UserKey, Value>,
+    table: SkipMap<InternalKey, Value>,
 }
 
-impl<M: MemTable<UserKey> + 'static> WriteBatch<M> {
-    pub fn range_get(&self, key_start: &UserKey, key_end: &UserKey) -> SkipMap<UserKey, Value> {
+impl<M: MemTable<InternalKey, InternalKey> + 'static> WriteBatch<M> {
+    pub fn range_get(
+        &self,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+    ) -> SkipMap<InternalKey, Value> {
         let mut kvs = self.db.range_get(key_start, key_end).unwrap();
         self.table.range_get(key_start, key_end, &mut kvs);
         kvs
     }
 
-    pub fn get(&self, key: &UserKey) -> Result<Option<Value>> {
+    pub fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
         match self.table.get_clone(key) {
             Some(v) => Ok(Some(v)),
             None => self.db.get(key),
         }
     }
 
-    pub fn set(&mut self, key: UserKey, value: Value) -> Result<()> {
+    pub fn set(&mut self, key: InternalKey, value: Value) -> Result<()> {
         self.table.insert(key, value);
         Ok(())
     }
 
-    pub fn remove(&mut self, key: UserKey) -> Result<()> {
+    pub fn remove(&mut self, key: InternalKey) -> Result<()> {
         self.table.insert(key, Value::default());
         Ok(())
     }
@@ -56,34 +59,40 @@ impl<M: MemTable<UserKey> + 'static> WriteBatch<M> {
 /// becomes a major contributor to lower throughput. Moreover this write policy
 /// cannot provide weaker isolation levels, such as READ UNCOMMITTED, that could
 /// potentially provide higher throughput for some applications.
-pub struct WriteCommittedDB<M: MemTable<UserKey> + 'static> {
-    inner: NoTransactionDB<UserKey, M>,
+pub struct WriteCommittedDB<M: MemTable<InternalKey, InternalKey> + 'static> {
+    inner: NoTransactionDB<InternalKey, InternalKey, M>,
 }
 
-impl<M: MemTable<UserKey> + 'static> DB<UserKey, M> for WriteCommittedDB<M> {
+impl<M: MemTable<InternalKey, InternalKey> + 'static> DB<InternalKey, InternalKey, M>
+    for WriteCommittedDB<M>
+{
     fn open(db_path: impl AsRef<Path>) -> Result<Self> {
-        let inner = NoTransactionDB::<UserKey, M>::open(db_path)?;
+        let inner = NoTransactionDB::<InternalKey, InternalKey, M>::open(db_path)?;
         Ok(WriteCommittedDB { inner })
     }
 
-    fn get(&self, key: &UserKey) -> Result<Option<Value>> {
+    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
         self.inner.get(key)
     }
 
-    fn set(&self, key: UserKey, value: Value) -> Result<()> {
+    fn set(&self, key: InternalKey, value: Value) -> Result<()> {
         self.inner.set(key, value)
     }
 
-    fn remove(&self, key: UserKey) -> Result<()> {
+    fn remove(&self, key: InternalKey) -> Result<()> {
         self.inner.remove(key)
     }
 
-    fn range_get(&self, key_start: &UserKey, key_end: &UserKey) -> Result<SkipMap<UserKey, Value>> {
+    fn range_get(
+        &self,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+    ) -> Result<SkipMap<InternalKey, Value>> {
         self.inner.range_get(key_start, key_end)
     }
 }
 
-impl<M: MemTable<UserKey> + 'static> WriteCommittedDB<M> {
+impl<M: MemTable<InternalKey, InternalKey> + 'static> WriteCommittedDB<M> {
     pub fn start_transaction(db: &Arc<Self>) -> WriteBatch<M> {
         WriteBatch {
             db: db.clone(),
@@ -91,7 +100,7 @@ impl<M: MemTable<UserKey> + 'static> WriteCommittedDB<M> {
         }
     }
 
-    pub fn write_batch(&self, batch: SkipMap<UserKey, Value>) -> Result<()> {
+    pub fn write_batch(&self, batch: SkipMap<InternalKey, Value>) -> Result<()> {
         {
             let mut wal_guard = self.inner.wal.lock().unwrap();
             for (key, value) in batch.iter() {
@@ -113,7 +122,7 @@ impl<M: MemTable<UserKey> + 'static> WriteCommittedDB<M> {
 mod tests {
     use std::sync::Arc;
 
-    use crate::db::key_types::UserKey;
+    use crate::db::key_types::InternalKey;
     use crate::db::transaction::write_committed::WriteCommittedDB;
     use crate::db::DB;
     use crate::memory::SkipMapMemTable;
@@ -123,7 +132,7 @@ mod tests {
         let temp_dir = tempfile::Builder::new().prefix("txn").tempdir().unwrap();
         let path = temp_dir.path();
 
-        let db = Arc::new(WriteCommittedDB::<SkipMapMemTable<UserKey>>::open(path).unwrap());
+        let db = Arc::new(WriteCommittedDB::<SkipMapMemTable<InternalKey>>::open(path).unwrap());
         let mut txn1 = WriteCommittedDB::start_transaction(&db);
         for i in 1..=10i32 {
             txn1.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))

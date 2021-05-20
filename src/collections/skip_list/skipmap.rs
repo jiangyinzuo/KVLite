@@ -116,12 +116,98 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     }
 
     /// # Safety
-    /// node should be null or initialized
+    /// node s
+    /// hould be null or initialized
     pub unsafe fn node_cmp(node: *mut Node<K, V>, key: &K) -> std::cmp::Ordering {
         if node.is_null() {
             return std::cmp::Ordering::Greater;
         }
         (*node).entry.key.cmp(key)
+    }
+
+    /// # Example
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
+    /// for i in 1..10 {
+    ///     skip_map.insert(i, i + 1);
+    /// }
+    /// let node = skip_map.find_first_ge(&3, None);
+    /// unsafe {
+    ///     let node = SkipMap::find_last_le_from_node(node, &9);
+    ///     assert_eq!((*node).entry.value, 10);
+    ///     let node2 = SkipMap::find_last_le_from_node(node, &-123);
+    ///     assert_eq!(node, node2);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    /// `node` should be a part of skip-map and should not be nullptr
+    pub unsafe fn find_last_le_from_node(mut node: *mut Node<K, V>, key: &K) -> *mut Node<K, V> {
+        debug_assert!(!node.is_null());
+        if (*node).entry.key.eq(key) {
+            return node;
+        }
+        let mut level = (*node).level;
+        loop {
+            let next = (*node).get_next(level);
+            match Self::node_cmp(next, key) {
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        return node;
+                    }
+                    level -= 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    return next;
+                }
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+            }
+        }
+    }
+
+    /// # Example
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
+    /// for i in 1..10 {
+    ///     skip_map.insert(i, i + 1);
+    /// }
+    /// let node = skip_map.find_first_ge(&3, None);
+    /// unsafe {
+    ///     let node = SkipMap::find_first_ge_from_node(node, &7);
+    ///     assert_eq!((*node).entry.value, 8);
+    /// }
+    /// ```
+    /// # Safety
+    /// `node` should be a part of skip-map and should not be nullptr
+    pub unsafe fn find_first_ge_from_node(mut node: *mut Node<K, V>, key: &K) -> *mut Node<K, V> {
+        debug_assert!(!node.is_null());
+        if (*node).entry.key.eq(key) {
+            return node;
+        }
+        let mut level = (*node).level;
+        loop {
+            let next = (*node).get_next(level);
+            match Self::node_cmp(next, key) {
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        return next;
+                    }
+                    level -= 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    return next;
+                }
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+            }
+        }
     }
 
     /// Return the first node `N` whose key is greater or equal than given `key`.
@@ -164,7 +250,7 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
 
     /// Return the last node whose key is less than or equal to `key`,
     /// if does not exist, return nullptr.
-    /// 
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -269,7 +355,9 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         {
             for (level, prev) in prev_nodes.iter().enumerate() {
                 unsafe {
-                    debug_assert!((**prev).entry.key.le(&key));
+                    debug_assert!(
+                        (*prev) == self.dummy_head as *mut _ || (**prev).entry.key.le(&key)
+                    );
                     Self::node_lt_key((**prev).get_next(level), &key);
                 }
             }

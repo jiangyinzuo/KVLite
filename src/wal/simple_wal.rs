@@ -3,7 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::db::key_types::{MemKey, UserKey};
+use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
@@ -17,9 +17,9 @@ pub struct SimpleWriteAheadLog {
 
 impl SimpleWriteAheadLog {
     /// Open the logs at `db_path` and load to memory tables
-    pub fn open_and_load_logs<K: MemKey>(
+    pub fn open_and_load_logs<SK: MemKey, UK: MemKey>(
         db_path: &str,
-        mut_mem_table: &mut impl MemTable<K>,
+        mut_mem_table: &mut impl MemTable<SK, UK>,
     ) -> Result<SimpleWriteAheadLog> {
         let log_path = log_path(db_path.as_ref());
         fs::create_dir_all(&log_path)?;
@@ -54,7 +54,7 @@ impl SimpleWriteAheadLog {
     }
 
     /// Append a [WriteCommand] to `mut_log`
-    pub fn append(&mut self, key: &UserKey, value: Option<&Value>) -> Result<()> {
+    pub fn append(&mut self, key: &InternalKey, value: Option<&Value>) -> Result<()> {
         let key_length = (key.len() as u32).to_le_bytes();
         self.log1.write_all(&key_length)?;
         match value {
@@ -99,12 +99,15 @@ fn mut_log_file(dir: &Path) -> PathBuf {
 }
 
 // load log to mem_table
-fn load_log<K: MemKey>(file: &File, mem_table: &mut impl MemTable<K>) -> Result<()> {
+fn load_log<SK: MemKey, UK: MemKey>(
+    file: &File,
+    mem_table: &mut impl MemTable<SK, UK>,
+) -> Result<()> {
     let mut reader = BufReaderWithPos::new(file)?;
     reader.seek(SeekFrom::Start(0))?;
     while let Ok(key_length) = read_u32(&mut reader) {
         let value_length = read_u32(&mut reader)?;
-        let key = K::restore_from_log(read_bytes_exact(&mut reader, key_length)?);
+        let key = SK::from(read_bytes_exact(&mut reader, key_length)?);
         if value_length > 0 {
             let value = read_bytes_exact(&mut reader, value_length)?;
             mem_table.set(key, value)?;
@@ -120,7 +123,7 @@ fn load_log<K: MemKey>(file: &File, mem_table: &mut impl MemTable<K>) -> Result<
 mod tests {
     use tempfile::TempDir;
 
-    use crate::db::key_types::UserKey;
+    use crate::db::key_types::InternalKey;
     use crate::memory::{SkipMapMemTable, UserKeyValueIterator};
     use crate::wal::simple_wal::SimpleWriteAheadLog;
 
@@ -129,7 +132,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().to_str().unwrap();
 
-        let mut mut_mem = SkipMapMemTable::<UserKey>::default();
+        let mut mut_mem = SkipMapMemTable::<InternalKey>::default();
 
         let mut wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());

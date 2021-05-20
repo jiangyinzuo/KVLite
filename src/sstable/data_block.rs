@@ -2,13 +2,13 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 
-use crate::db::key_types::UserKey;
+use crate::db::key_types::InternalKey;
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 
 pub(super) fn get_value_from_data_block(
     reader: &mut BufReaderWithPos<File>,
-    key: &UserKey,
+    key: &InternalKey,
     start: u32,
     length: u32,
 ) -> Option<Value> {
@@ -30,7 +30,7 @@ pub(super) fn get_value_from_data_block(
     None
 }
 
-pub(super) fn get_next_key_value(reader: &mut BufReaderWithPos<File>) -> (UserKey, Value) {
+pub(super) fn get_next_key_value(reader: &mut BufReaderWithPos<File>) -> (InternalKey, Value) {
     let key_length = read_u32(reader).unwrap();
     let value_length = read_u32(reader).unwrap();
     let key_read = read_bytes_exact(reader, key_length).unwrap();

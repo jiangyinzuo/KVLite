@@ -2,40 +2,45 @@ use std::collections::BTreeMap;
 use std::sync::RwLock;
 
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::key_types::{MemKey, UserKey};
+use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::{MemTable, UserKeyValueIterator};
 use crate::Result;
 
 /// Wrapper of `BTreeMap<String, String>`
-pub struct BTreeMemTable<K: MemKey> {
+pub struct BTreeMemTable<SK: MemKey> {
     rw_lock: RwLock<()>,
-    inner: BTreeMap<K, Value>,
+    inner: BTreeMap<SK, Value>,
 }
 
-impl DBCommand<UserKey> for BTreeMemTable<UserKey> {
-    fn range_get(&self, key_start: &UserKey, key_end: &UserKey, kvs: &mut SkipMap<UserKey, Value>) {
+impl DBCommand<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
+    fn range_get(
+        &self,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+        kvs: &mut SkipMap<InternalKey, Value>,
+    ) {
         let _guard = self.rw_lock.read().unwrap();
         self.inner.get_key_value(key_end);
-        for (k, v) in self.inner.range::<UserKey, _>(key_start..=key_end) {
+        for (k, v) in self.inner.range::<InternalKey, _>(key_start..=key_end) {
             kvs.insert(k.clone(), v.clone());
         }
     }
 
-    fn get(&self, key: &UserKey) -> Result<Option<Value>> {
+    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
         let _lock = self.rw_lock.read().unwrap();
         Ok(self.inner.get(key).cloned())
     }
 
-    fn set(&mut self, key: UserKey, value: Value) -> Result<()> {
+    fn set(&mut self, key: InternalKey, value: Value) -> Result<()> {
         let _lock = self.rw_lock.read().unwrap();
         self.inner.insert(key, value);
         Ok(())
     }
 
-    fn remove(&mut self, key: UserKey) -> Result<()> {
+    fn remove(&mut self, key: InternalKey) -> Result<()> {
         let _lock = self.rw_lock.write().unwrap();
-        self.inner.insert(key, UserKey::default());
+        self.inner.insert(key, InternalKey::default());
         Ok(())
     }
 }
@@ -49,20 +54,20 @@ impl<K: MemKey> Default for BTreeMemTable<K> {
     }
 }
 
-impl UserKeyValueIterator for BTreeMemTable<UserKey> {
+impl UserKeyValueIterator for BTreeMemTable<InternalKey> {
     fn len(&self) -> usize {
         let _lock = self.rw_lock.read().unwrap();
         self.inner.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&UserKey, &Value)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_> {
         let _lock = self.rw_lock.read().unwrap();
         Box::new(self.inner.iter())
     }
 }
 
-impl MemTable<UserKey> for BTreeMemTable<UserKey> {
-    fn merge(&mut self, kvs: SkipMap<UserKey, Value>) {
+impl MemTable<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
+    fn merge(&mut self, kvs: SkipMap<InternalKey, Value>) {
         let _guard = self.rw_lock.write().unwrap();
         self.inner.extend(kvs.into_iter());
     }

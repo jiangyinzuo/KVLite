@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::key_types::UserKey;
+use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{max_level_shift, Value};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
@@ -79,7 +79,7 @@ impl TableWriteHandle {
 
     pub fn write_sstable_from_vec_ref(
         &mut self,
-        kvs: Vec<(&UserKey, &Value)>,
+        kvs: Vec<(&InternalKey, &Value)>,
     ) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in kvs.iter().enumerate() {
@@ -92,7 +92,7 @@ impl TableWriteHandle {
         Ok(())
     }
 
-    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(UserKey, Value)>) -> crate::Result<()> {
+    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(InternalKey, Value)>) -> crate::Result<()> {
         // write Data Blocks
         let length = kvs.len();
         for (i, (k, v)) in kvs.into_iter().enumerate() {
@@ -131,7 +131,7 @@ impl TableWriteHandle {
     }
 
     #[inline]
-    pub fn max_key(&self) -> &UserKey {
+    pub fn max_key(&self) -> &InternalKey {
         self.writer.max_key()
     }
 }
@@ -162,7 +162,7 @@ impl TableWriter {
         }
     }
 
-    pub(crate) fn write_key_value(&mut self, k: &UserKey, v: &UserKey) {
+    pub(crate) fn write_key_value(&mut self, k: &InternalKey, v: &InternalKey) {
         debug_assert!(!k.is_empty(), "attempt to write empty key");
 
         let (k_len, v_len) = (k.len() as u32, v.len() as u32);
@@ -184,7 +184,7 @@ impl TableWriter {
         debug_assert!(self.filter.may_contain(k));
     }
 
-    pub(crate) fn add_index(&mut self, max_key: UserKey) {
+    pub(crate) fn add_index(&mut self, max_key: InternalKey) {
         self.index_block.add_index(
             self.last_pos as u32,
             (self.writer.pos - self.last_pos) as u32,
@@ -214,7 +214,7 @@ impl TableWriter {
     }
 
     #[inline]
-    pub(crate) fn max_key(&self) -> &UserKey {
+    pub(crate) fn max_key(&self) -> &InternalKey {
         self.index_block.max_key()
     }
 }
@@ -226,8 +226,8 @@ pub struct TableReadHandle {
     table_key: u64,
     hash: u32,
     status: RwLock<TableStatus>,
-    min_key: UserKey,
-    max_key: UserKey,
+    min_key: InternalKey,
+    max_key: InternalKey,
     kv_total: u32,
     file_size: u64,
 }
@@ -292,7 +292,7 @@ impl TableReadHandle {
 
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
         let min_key = get_min_key(&mut buf_reader);
-        let max_key: UserKey = table_write_handle.max_key().clone();
+        let max_key: InternalKey = table_write_handle.max_key().clone();
 
         let table_id = table_write_handle.table_id;
         let level = table_write_handle.level;
@@ -354,7 +354,7 @@ impl TableReadHandle {
     }
 
     /// Query value by `key` with `cache`
-    pub fn query_sstable_with_cache(&self, key: &UserKey, cache: &IndexCache) -> Option<Value> {
+    pub fn query_sstable_with_cache(&self, key: &InternalKey, cache: &IndexCache) -> Option<Value> {
         if cache.filter.may_contain(key) {
             if let Some((offset, length)) = cache.index.may_contain_key(key) {
                 let mut buf_reader = self.create_buf_reader_with_pos();
@@ -368,7 +368,7 @@ impl TableReadHandle {
     /// Query value by `key` and insert cache into `lru_cache`.
     pub fn query_sstable(
         &self,
-        key: &UserKey,
+        key: &InternalKey,
         lru_cache: &Arc<ShardLRUCache<u64, IndexCache>>,
     ) -> Option<Value> {
         let mut buf_reader = self.create_buf_reader_with_pos();
@@ -397,11 +397,11 @@ impl TableReadHandle {
 
     /// Query all the key-value pairs in [`key_start`, `key_end`] and insert them into `kvs`
     /// Return whether table_read_handle is overlapping with [`key_start`, `key_end`]
-    pub fn range_query(
+    pub fn range_query<UK: MemKey>(
         &self,
-        key_start: &UserKey,
-        key_end: &UserKey,
-        kvs: &mut SkipMap<UserKey, Value>,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+        kvs: &mut SkipMap<UK, Value>,
     ) -> bool {
         if self.is_overlapping(key_start, key_end) {
             let mut buf_reader = self.create_buf_reader_with_pos();
@@ -412,7 +412,7 @@ impl TableReadHandle {
                 while buf_reader.position() < footer.index_block_offset as u64 {
                     let (k, v) = get_next_key_value(&mut buf_reader);
                     if k.le(key_end) {
-                        kvs.insert(k, v);
+                        kvs.insert(k.into(), v);
                     } else {
                         return true;
                     }
@@ -447,17 +447,17 @@ impl TableReadHandle {
     }
 
     #[inline]
-    pub fn min_max_key(&self) -> (&UserKey, &UserKey) {
+    pub fn min_max_key(&self) -> (&InternalKey, &InternalKey) {
         (&self.min_key, &self.max_key)
     }
 
     #[inline]
-    pub fn min_key(&self) -> &UserKey {
+    pub fn min_key(&self) -> &InternalKey {
         &self.min_key
     }
 
     #[inline]
-    pub fn max_key(&self) -> &UserKey {
+    pub fn max_key(&self) -> &InternalKey {
         &self.max_key
     }
 
@@ -465,7 +465,7 @@ impl TableReadHandle {
     /// ----         ------      -----    ----
     ///   |---|       |--|     |---|    |------|
     ///```
-    pub fn is_overlapping(&self, min_key: &UserKey, max_key: &UserKey) -> bool {
+    pub fn is_overlapping(&self, min_key: &InternalKey, max_key: &InternalKey) -> bool {
         self.min_key.le(min_key) && min_key.le(&self.max_key)
             || self.min_key.le(max_key) && max_key.le(&self.max_key)
             || min_key.le(&self.min_key) && self.max_key.le(max_key)
@@ -490,7 +490,7 @@ pub(crate) fn temp_file_name(file_name: &str) -> String {
 
 pub struct Iter<'table> {
     reader: BufReaderWithPos<File>,
-    max_key: &'table UserKey,
+    max_key: &'table InternalKey,
     end: bool,
 }
 
@@ -511,7 +511,7 @@ impl<'table> Iter<'table> {
 }
 
 impl<'table> Iterator for Iter<'table> {
-    type Item = (UserKey, Value);
+    type Item = (InternalKey, Value);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.end {
