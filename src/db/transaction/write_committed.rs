@@ -189,6 +189,21 @@ where
     M: MemTable<LSNKey<UK>, UK> + 'static,
     L: TransactionWAL<LSNKey<UK>, UK>,
 {
+    pub fn get_by_user_key(&self, key: UK) -> Result<Option<Value>> {
+        let lsn_key = LSNKey::new(key, self.next_lsn.fetch_add(1, Ordering::Release));
+        self.get(&lsn_key)
+    }
+
+    pub fn set_by_user_key(&self, key: UK, value: Value) -> Result<()> {
+        let lsn_key = LSNKey::new(key, self.next_lsn.fetch_add(1, Ordering::Release));
+        self.set(lsn_key, value)
+    }
+
+    pub fn remove_by_user_key(&self, key: UK) -> Result<()> {
+        let lsn_key = LSNKey::new(key, self.next_lsn.fetch_add(1, Ordering::Release));
+        self.remove(lsn_key)
+    }
+
     pub fn snapshot(db: &Arc<Self>) -> SnapShot<UK, M, L> {
         SnapShot {
             db: db.clone(),
@@ -230,7 +245,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::db::key_types::{InternalKey, LSNKey, LSN};
+    use crate::db::key_types::{I32UserKey, InternalKey, LSNKey, LSN};
     use crate::db::transaction::write_committed::WriteCommittedDB;
     use crate::db::DB;
     use crate::memory::SkipMapMemTable;
@@ -278,5 +293,25 @@ mod tests {
             snapshot.get(Vec::from(10i32.to_be_bytes())).unwrap(),
             Some(Vec::from(11i32.to_be_bytes()))
         );
+    }
+
+    #[test]
+    fn test_i32key() {
+        let temp_dir = tempfile::Builder::new().prefix("txn").tempdir().unwrap();
+        let path = temp_dir.path();
+        let db: WriteCommittedDB<
+            I32UserKey,
+            SkipMapMemTable<LSNKey<I32UserKey>>,
+            LSNWriteAheadLog,
+        > = WriteCommittedDB::open(path).unwrap();
+        db.set_by_user_key(I32UserKey::new(4), Vec::from(4i32.to_le_bytes()))
+            .unwrap();
+        let value = db.get_by_user_key(I32UserKey::new(4)).unwrap();
+        assert_eq!(value, Some(Vec::from(4i32.to_le_bytes())));
+        assert!(db.get_by_user_key(I32UserKey::new(0)).unwrap().is_none());
+        for _ in 0..4 {
+            db.remove_by_user_key(I32UserKey::new(4)).unwrap();
+            assert!(db.get_by_user_key(I32UserKey::new(4)).unwrap().is_none());
+        }
     }
 }

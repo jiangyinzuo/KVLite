@@ -2,7 +2,6 @@ use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::MemKey;
 use crate::memory::MemTable;
 use crate::Result;
-use key_types::InternalKey;
 use std::path::Path;
 
 pub mod key_types;
