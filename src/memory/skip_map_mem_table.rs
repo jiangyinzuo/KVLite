@@ -1,7 +1,7 @@
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
-use crate::memory::{MemTable, UserKeyValueIterator};
+use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
 use std::sync::RwLock;
 
@@ -40,7 +40,7 @@ impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
     }
 }
 
-impl UserKeyValueIterator for SkipMapMemTable<InternalKey> {
+impl InternalKeyValueIterator for SkipMapMemTable<InternalKey> {
     fn len(&self) -> usize {
         self.inner_guarded.len()
     }
@@ -110,7 +110,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
             return Ok(None);
         }
         unsafe {
-            if (*node).entry.key.internal_key().eq(key.internal_key()) {
+            if (*node).entry.key.user_key().eq(key.user_key()) {
                 Ok(Some((*node).entry.value.clone()))
             } else {
                 Ok(None)
@@ -131,7 +131,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
     }
 }
 
-impl<K: MemKey + 'static> UserKeyValueIterator for SkipMapMemTable<LSNKey<K>> {
+impl<K: MemKey + 'static> InternalKeyValueIterator for SkipMapMemTable<LSNKey<K>> {
     fn len(&self) -> usize {
         self.inner_guarded.len()
     }
@@ -141,13 +141,13 @@ impl<K: MemKey + 'static> UserKeyValueIterator for SkipMapMemTable<LSNKey<K>> {
             debug_assert!(!n.is_null());
             unsafe {
                 let next = (*n).get_next(0);
-                let user_key = (*n).entry.key.internal_key();
+                let internal_key = (*n).entry.key.internal_key();
                 if next.is_null() {
-                    Some((user_key, &(*n).entry.value))
+                    Some((internal_key, &(*n).entry.value))
                 } else {
-                    match user_key.cmp((*next).entry.key.internal_key()) {
+                    match internal_key.cmp((*next).entry.key.internal_key()) {
                         std::cmp::Ordering::Equal => None,
-                        _ => Some((user_key, &(*n).entry.value)),
+                        _ => Some((internal_key, &(*n).entry.value)),
                     }
                 }
             }
@@ -163,7 +163,7 @@ impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<U
 }
 
 #[cfg(test)]
-mod user_key_tests {
+mod internal_key_tests {
     use crate::db::DBCommand;
     use crate::memory::SkipMapMemTable;
 
@@ -213,5 +213,9 @@ mod lsn_tests {
             &mut kvs,
         );
         assert_eq!(kvs.len(), 31);
+        let option = table
+            .get(&LSNKey::new(I32UserKey::new(20i32), 100))
+            .unwrap();
+        assert_eq!(option, Some(Value::from(20i32.to_be_bytes())));
     }
 }

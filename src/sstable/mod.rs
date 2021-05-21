@@ -97,7 +97,7 @@ fn get_min_key(reader: &mut BufReaderWithPos<File>) -> InternalKey {
     let key_length = read_u32(reader).unwrap();
     // value_length
     reader.seek(SeekFrom::Current(4)).unwrap();
-    read_bytes_exact(reader, key_length).unwrap()
+    read_bytes_exact(reader, key_length as u64).unwrap()
 }
 
 pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {

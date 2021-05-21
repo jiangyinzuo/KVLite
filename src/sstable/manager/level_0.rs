@@ -21,10 +21,11 @@ use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::simple_wal::SimpleWriteAheadLog;
+use crate::wal::WAL;
 use crate::Result;
 
 /// Struct for read and write level0 sstable.
-pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>> {
+pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {
     db_path: String,
 
     level0_tables: std::sync::RwLock<BTreeMap<u64, Arc<TableReadHandle>>>,
@@ -34,7 +35,7 @@ pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>> {
     sender: crossbeam_channel::Sender<bool>,
 
     /// Table ID is increasing order.
-    wal: Arc<Mutex<SimpleWriteAheadLog>>,
+    wal: Arc<Mutex<L>>,
 
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
@@ -45,16 +46,18 @@ pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>> {
     _phantom_table: PhantomData<M>,
 }
 
-impl<SK: 'static + MemKey, UK: MemKey + 'static, M: MemTable<SK, UK> + 'static>
-    Level0Manager<SK, UK, M>
+impl<SK: 'static + MemKey, UK: MemKey + 'static, M: MemTable<SK, UK> + 'static, L>
+    Level0Manager<SK, UK, M, L>
+where
+    L: WAL<SK, UK> + 'static,
 {
     fn open_tables(
         db_path: String,
         table_manager: Arc<LevelNManager>,
-        wal: Arc<Mutex<SimpleWriteAheadLog>>,
+        wal: Arc<Mutex<L>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
-    ) -> Result<Arc<Level0Manager<SK, UK, M>>> {
+    ) -> Result<Arc<Level0Manager<SK, UK, M, L>>> {
         std::fs::create_dir_all(format!("{}/0", db_path)).unwrap();
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
 
@@ -108,12 +111,12 @@ impl<SK: 'static + MemKey, UK: MemKey + 'static, M: MemTable<SK, UK> + 'static>
     pub(crate) fn start_task_write_level0(
         db_path: String,
         leveln_manager: Arc<LevelNManager>,
-        wal: Arc<Mutex<SimpleWriteAheadLog>>,
+        wal: Arc<Mutex<L>>,
         imm_mem_table: Arc<RwLock<M>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         recv: Receiver<()>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
-    ) -> (Arc<Level0Manager<SK, UK, M>>, JoinHandle<()>) {
+    ) -> (Arc<Level0Manager<SK, UK, M, L>>, JoinHandle<()>) {
         let manager = Self::open_tables(
             db_path,
             leveln_manager,
@@ -179,7 +182,7 @@ impl<SK: 'static + MemKey, UK: MemKey + 'static, M: MemTable<SK, UK> + 'static>
     }
 
     fn start_compacting_task(
-        level0_manager: Arc<Level0Manager<SK, UK, M>>,
+        level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
         receiver: Receiver<bool>,
     ) -> JoinHandle<()> {
         let table_manager = level0_manager.table_manager.clone();
@@ -364,10 +367,11 @@ mod tests {
     use crate::db::key_types::InternalKey;
     use crate::db::DBCommand;
     use crate::db::ACTIVE_SIZE_THRESHOLD;
-    use crate::memory::{SkipMapMemTable, UserKeyValueIterator};
+    use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
+    use crate::wal::WAL;
 
     #[test]
     fn test() {

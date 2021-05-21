@@ -1,131 +1,82 @@
-use std::fs;
-use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
+use crate::wal::{WALInner, WAL};
 use crate::Result;
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
 
 pub struct SimpleWriteAheadLog {
-    log_path: PathBuf,
-    log0: File,
-    log1: File,
+    inner: WALInner,
 }
 
-impl SimpleWriteAheadLog {
-    /// Open the logs at `db_path` and load to memory tables
-    pub fn open_and_load_logs<SK: MemKey, UK: MemKey>(
+impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
+    fn open_and_load_logs(
         db_path: &str,
-        mut_mem_table: &mut impl MemTable<SK, UK>,
+        mut_mem_table: &mut impl MemTable<InternalKey, UK>,
     ) -> Result<SimpleWriteAheadLog> {
-        let log_path = log_path(db_path.as_ref());
-        fs::create_dir_all(&log_path)?;
-
-        let imm_log = imm_log_file(log_path.as_ref());
-        let mut_log = mut_log_file(log_path.as_ref());
-
-        let log0 = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .append(true)
-            .open(&imm_log)
-            .unwrap();
-
-        let log1 = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .append(true)
-            .open(&mut_log)
-            .unwrap();
-
-        load_log(&log1, mut_mem_table).unwrap();
-        load_log(&log0, mut_mem_table).unwrap();
-
-        Ok(SimpleWriteAheadLog {
-            log_path,
-            log0,
-            log1,
-        })
+        let wal = SimpleWriteAheadLog {
+            inner: WALInner::open_logs(db_path)?,
+        };
+        Self::load_log(&wal.inner.log1, mut_mem_table).unwrap();
+        Self::load_log(&wal.inner.log0, mut_mem_table).unwrap();
+        Ok(wal)
     }
 
-    /// Append a [WriteCommand] to `mut_log`
-    pub fn append(&mut self, key: &InternalKey, value: Option<&Value>) -> Result<()> {
-        let key_length = (key.len() as u32).to_le_bytes();
-        self.log1.write_all(&key_length)?;
+    fn load_log(file: &File, mem_table: &mut impl MemTable<InternalKey, UK>) -> Result<()> {
+        let mut reader = BufReaderWithPos::new(file)?;
+        reader.seek(SeekFrom::Start(0))?;
+        while let Ok(key_length) = read_u32(&mut reader) {
+            let value_length = read_u32(&mut reader)?;
+            let key = read_bytes_exact(&mut reader, key_length as u64)?;
+            if value_length > 0 {
+                let value = read_bytes_exact(&mut reader, value_length as u64)?;
+                mem_table.set(key, value)?;
+            } else {
+                mem_table.remove(key)?;
+            }
+        }
+        reader.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    fn append(&mut self, key: &InternalKey, value: Option<&Value>) -> Result<()> {
+        let key_length: [u8; 4] = (key.len() as u32).to_le_bytes();
+        self.inner.log1.write_all(&key_length)?;
         match value {
             Some(v) => {
                 let value_length = (v.len() as u32).to_le_bytes();
-                self.log1.write_all(&value_length)?;
-                self.log1.write_all(key)?;
-                self.log1.write_all(v)?;
+                self.inner.log1.write_all(&value_length)?;
+                self.inner.log1.write_all(key)?;
+                self.inner.log1.write_all(v)?;
             }
             None => {
-                self.log1.write_all(&0u32.to_le_bytes())?;
-                self.log1.write_all(key)?;
+                self.inner.log1.write_all(&0u32.to_le_bytes())?;
+                self.inner.log1.write_all(key)?;
             }
         }
-        self.log1.flush()?;
-        self.log1.sync_data()?;
+        self.inner.log1.flush()?;
+        self.inner.log1.sync_data()?;
         Ok(())
     }
 
-    pub fn clear_imm_log(&mut self) -> Result<()> {
-        self.log0.set_len(0)?;
-        Ok(())
+    fn clear_imm_log(&mut self) -> Result<()> {
+        self.inner.clear_imm_log()
     }
 
-    pub fn freeze_mut_log(&mut self) -> Result<()> {
-        std::mem::swap(&mut self.log0, &mut self.log1);
-        self.log1.set_len(0)?;
-        Ok(())
+    fn freeze_mut_log(&mut self) -> Result<()> {
+        self.inner.freeze_mut_log()
     }
-}
-
-fn log_path(db_path: &Path) -> PathBuf {
-    db_path.join("log")
-}
-
-fn imm_log_file(dir: &Path) -> PathBuf {
-    dir.join("0.log")
-}
-
-fn mut_log_file(dir: &Path) -> PathBuf {
-    dir.join("1.log")
-}
-
-// load log to mem_table
-fn load_log<SK: MemKey, UK: MemKey>(
-    file: &File,
-    mem_table: &mut impl MemTable<SK, UK>,
-) -> Result<()> {
-    let mut reader = BufReaderWithPos::new(file)?;
-    reader.seek(SeekFrom::Start(0))?;
-    while let Ok(key_length) = read_u32(&mut reader) {
-        let value_length = read_u32(&mut reader)?;
-        let key = SK::from(read_bytes_exact(&mut reader, key_length)?);
-        if value_length > 0 {
-            let value = read_bytes_exact(&mut reader, value_length)?;
-            mem_table.set(key, value)?;
-        } else {
-            mem_table.remove(key)?;
-        }
-    }
-    reader.seek(SeekFrom::End(0))?;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
-
     use crate::db::key_types::InternalKey;
-    use crate::memory::{SkipMapMemTable, UserKeyValueIterator};
+    use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
     use crate::wal::simple_wal::SimpleWriteAheadLog;
+    use crate::wal::WAL;
+    use tempfile::TempDir;
 
     #[test]
     fn test() {
@@ -134,27 +85,33 @@ mod tests {
 
         let mut mut_mem = SkipMapMemTable::<InternalKey>::default();
 
-        let mut wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
+        let mut wal: SimpleWriteAheadLog =
+            SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());
 
         for i in 1..4 {
             mut_mem = SkipMapMemTable::default();
             for j in 0..100 {
-                wal.append(
+                <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
+                    &mut wal,
                     &format!("{}key{}", i, j).into_bytes(),
                     Some(&format!("{}value{}", i, j).into_bytes()),
                 )
                 .unwrap();
                 if (j & 1) == 1 {
-                    wal.append(&format!("{}key{}", i, j).into_bytes(), None)
-                        .unwrap();
+                    <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
+                        &mut wal,
+                        &format!("{}key{}", i, j).into_bytes(),
+                        None,
+                    )
+                    .unwrap();
                 }
             }
             wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
             assert_eq!(100 * i, mut_mem.len());
         }
-        wal.freeze_mut_log().unwrap();
-        wal.clear_imm_log().unwrap();
+        <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::freeze_mut_log(&mut wal).unwrap();
+        <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::clear_imm_log(&mut wal).unwrap();
         mut_mem = SkipMapMemTable::default();
         wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());

@@ -10,7 +10,7 @@ use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{max_level_shift, Value};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
-use crate::memory::UserKeyValueIterator;
+use crate::memory::InternalKeyValueIterator;
 use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
 use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
@@ -65,7 +65,7 @@ impl TableWriteHandle {
         }
     }
 
-    pub fn write_sstable(&mut self, table: &impl UserKeyValueIterator) -> crate::Result<()> {
+    pub fn write_sstable(&mut self, table: &impl InternalKeyValueIterator) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in table.kv_iter().enumerate() {
             self.writer.write_key_value(k, v);
@@ -275,6 +275,8 @@ impl TableReadHandle {
         murmur_hash(key.as_ne_bytes(), SEED)
     }
 
+    /// Create [TableReadHandle] from table write handle and rename the file.
+    ///
     /// # Notice
     ///
     /// position of `table_write_handle` should be at the end.

@@ -41,7 +41,7 @@ impl IndexBlock {
             let block_length = read_u32(reader).unwrap();
             let max_key_length = read_u32(reader).unwrap();
 
-            let max_key = read_bytes_exact(reader, max_key_length).unwrap();
+            let max_key = read_bytes_exact(reader, max_key_length as u64).unwrap();
             index_block
                 .indexes
                 .push((block_offset, block_length, max_key_length, max_key));

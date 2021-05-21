@@ -1,47 +1,116 @@
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::key_types::InternalKey;
+use crate::db::key_types::{LSNKey, MemKey, LSN};
 use crate::db::no_transaction_db::NoTransactionDB;
 use crate::db::{Value, DB};
 use crate::memory::MemTable;
+use crate::wal::TransactionWAL;
 use crate::Result;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLockWriteGuard};
 
-pub struct WriteBatch<M: MemTable<InternalKey, InternalKey> + 'static> {
-    db: Arc<WriteCommittedDB<M>>,
-    table: SkipMap<InternalKey, Value>,
+pub struct SnapShot<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK> + 'static,
+{
+    db: Arc<WriteCommittedDB<UK, M, L>>,
+    lsn: LSN,
 }
 
-impl<M: MemTable<InternalKey, InternalKey> + 'static> WriteBatch<M> {
-    pub fn range_get(
-        &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
-    ) -> SkipMap<InternalKey, Value> {
-        let mut kvs = self.db.range_get(key_start, key_end).unwrap();
-        self.table.range_get(key_start, key_end, &mut kvs);
+impl<UK, M, L> SnapShot<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK> + 'static,
+{
+    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value> {
+        let key_start = LSNKey::new(key_start, self.lsn);
+        let key_end = LSNKey::new(key_end, self.lsn);
+        self.db.range_get(&key_start, &key_end).unwrap()
+    }
+
+    pub fn get(&self, key: UK) -> Result<Option<Value>> {
+        let key = LSNKey::new(key, self.lsn);
+        self.db.get(&key)
+    }
+}
+
+impl<UK, M, L> Drop for SnapShot<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK> + 'static,
+{
+    fn drop(&mut self) {
+        self.db.num_lsn_acquired.fetch_sub(1, Ordering::Release);
+    }
+}
+
+pub struct WriteBatch<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK> + 'static,
+{
+    db: Arc<WriteCommittedDB<UK, M, L>>,
+    table: SkipMap<LSNKey<UK>, Value>,
+    lsn: LSN,
+}
+
+impl<UK, M, L> WriteBatch<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK>,
+{
+    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value> {
+        let key_start = LSNKey::new(key_start, self.lsn);
+        let key_end = LSNKey::new(key_end, self.lsn);
+        let mut kvs = self.db.range_get(&key_start, &key_end).unwrap();
+        self.table.range_get(&key_start, &key_end, &mut kvs);
         kvs
     }
 
-    pub fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
-        match self.table.get_clone(key) {
+    pub fn get(&self, key: UK) -> Result<Option<Value>> {
+        let key = LSNKey::new(key, self.lsn);
+        match self.table.get_clone(&key) {
             Some(v) => Ok(Some(v)),
-            None => self.db.get(key),
+            None => self.db.get(&key),
         }
     }
 
-    pub fn set(&mut self, key: InternalKey, value: Value) -> Result<()> {
+    pub fn set(&mut self, key: UK, value: Value) -> Result<()> {
+        let key = LSNKey::new(key, self.lsn);
         self.table.insert(key, value);
         Ok(())
     }
 
-    pub fn remove(&mut self, key: InternalKey) -> Result<()> {
+    pub fn remove(&mut self, key: UK) -> Result<()> {
+        let key = LSNKey::new(key, self.lsn);
         self.table.insert(key, Value::default());
         Ok(())
     }
 
-    pub fn commit(self) -> Result<()> {
-        self.db.write_batch(self.table)
+    pub fn rollback(&mut self) -> Result<()> {
+        std::mem::take(&mut self.table);
+        Ok(())
+    }
+}
+
+impl<UK, M, L> Drop for WriteBatch<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK> + 'static,
+{
+    fn drop(&mut self) {
+        if !self.table.is_empty() {
+            let table = std::mem::take(&mut self.table);
+            self.db.write_batch(table).unwrap();
+        }
+        self.db.num_lsn_acquired.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -59,90 +128,155 @@ impl<M: MemTable<InternalKey, InternalKey> + 'static> WriteBatch<M> {
 /// becomes a major contributor to lower throughput. Moreover this write policy
 /// cannot provide weaker isolation levels, such as READ UNCOMMITTED, that could
 /// potentially provide higher throughput for some applications.
-pub struct WriteCommittedDB<M: MemTable<InternalKey, InternalKey> + 'static> {
-    inner: NoTransactionDB<InternalKey, InternalKey, M>,
+pub struct WriteCommittedDB<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK> + 'static,
+{
+    inner: NoTransactionDB<LSNKey<UK>, UK, M, L>,
+    next_lsn: AtomicU64,
+    num_lsn_acquired: AtomicU64,
 }
 
-impl<M: MemTable<InternalKey, InternalKey> + 'static> DB<InternalKey, InternalKey, M>
-    for WriteCommittedDB<M>
+impl<UK, M, L> DB<LSNKey<UK>, UK, M> for WriteCommittedDB<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK>,
 {
     fn open(db_path: impl AsRef<Path>) -> Result<Self> {
-        let inner = NoTransactionDB::<InternalKey, InternalKey, M>::open(db_path)?;
-        Ok(WriteCommittedDB { inner })
+        let inner = NoTransactionDB::<LSNKey<UK>, UK, M, L>::open(db_path)?;
+        Ok(WriteCommittedDB {
+            inner,
+            next_lsn: AtomicU64::new(1),
+            num_lsn_acquired: AtomicU64::new(0),
+        })
     }
 
-    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
+    #[inline]
+    fn get(&self, key: &LSNKey<UK>) -> Result<Option<Value>> {
         self.inner.get(key)
     }
 
-    fn set(&self, key: InternalKey, value: Value) -> Result<()> {
-        self.inner.set(key, value)
+    #[inline]
+    fn set(&self, key: LSNKey<UK>, value: Value) -> Result<()> {
+        let guard = self.inner.set_locked(key, value)?;
+        self.may_freeze(guard);
+        Ok(())
     }
 
-    fn remove(&self, key: InternalKey) -> Result<()> {
-        self.inner.remove(key)
+    #[inline]
+    fn remove(&self, key: LSNKey<UK>) -> Result<()> {
+        let guard = self.inner.remove_locked(key)?;
+        self.may_freeze(guard);
+        Ok(())
     }
 
+    #[inline]
     fn range_get(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
-    ) -> Result<SkipMap<InternalKey, Value>> {
+        key_start: &LSNKey<UK>,
+        key_end: &LSNKey<UK>,
+    ) -> Result<SkipMap<UK, Value>> {
         self.inner.range_get(key_start, key_end)
     }
 }
 
-impl<M: MemTable<InternalKey, InternalKey> + 'static> WriteCommittedDB<M> {
-    pub fn start_transaction(db: &Arc<Self>) -> WriteBatch<M> {
-        WriteBatch {
+impl<UK, M, L> WriteCommittedDB<UK, M, L>
+where
+    UK: MemKey + From<LSNKey<UK>> + 'static,
+    M: MemTable<LSNKey<UK>, UK> + 'static,
+    L: TransactionWAL<LSNKey<UK>, UK>,
+{
+    pub fn snapshot(db: &Arc<Self>) -> SnapShot<UK, M, L> {
+        SnapShot {
             db: db.clone(),
-            table: SkipMap::default(),
+            lsn: db.next_lsn.fetch_add(1, Ordering::Release),
         }
     }
 
-    pub fn write_batch(&self, batch: SkipMap<InternalKey, Value>) -> Result<()> {
+    pub fn start_transaction(db: &Arc<Self>) -> WriteBatch<UK, M, L> {
+        WriteBatch {
+            db: db.clone(),
+            table: SkipMap::default(),
+            lsn: db.next_lsn.fetch_add(1, Ordering::Release),
+        }
+    }
+
+    pub fn write_batch(&self, batch: SkipMap<LSNKey<UK>, Value>) -> Result<()> {
         {
             let mut wal_guard = self.inner.wal.lock().unwrap();
             for (key, value) in batch.iter() {
-                wal_guard.append(key, Some(value))?;
+                wal_guard.append(&key, Some(value))?;
             }
         }
 
         let mut mem_table_guard = self.inner.mut_mem_table.write().unwrap();
-
         mem_table_guard.merge(batch);
 
-        self.inner.may_freeze(mem_table_guard);
-
+        self.may_freeze(mem_table_guard);
         Ok(())
+    }
+
+    fn may_freeze(&self, mem_table_guard: RwLockWriteGuard<M>) {
+        if self.num_lsn_acquired.load(Ordering::Acquire) == 0
+            && self.inner.should_freeze(mem_table_guard.len())
+        {
+            self.inner.freeze(mem_table_guard);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::db::key_types::InternalKey;
+    use crate::db::key_types::{InternalKey, LSNKey, LSN};
     use crate::db::transaction::write_committed::WriteCommittedDB;
     use crate::db::DB;
     use crate::memory::SkipMapMemTable;
+    use crate::wal::lsn_wal::LSNWriteAheadLog;
+    use std::sync::Arc;
 
     #[test]
     fn test_transaction() {
         let temp_dir = tempfile::Builder::new().prefix("txn").tempdir().unwrap();
         let path = temp_dir.path();
 
-        let db = Arc::new(WriteCommittedDB::<SkipMapMemTable<InternalKey>>::open(path).unwrap());
+        let db =
+            Arc::new(
+                WriteCommittedDB::<
+                    InternalKey,
+                    SkipMapMemTable<LSNKey<InternalKey>>,
+                    LSNWriteAheadLog,
+                >::open(path)
+                .unwrap(),
+            );
         let mut txn1 = WriteCommittedDB::start_transaction(&db);
         for i in 1..=10i32 {
             txn1.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
                 .unwrap();
         }
 
-        let key2 = Vec::from(2i32.to_be_bytes());
+        let key2 = LSNKey::new(Vec::from(2i32.to_be_bytes()), LSN::MAX);
         let value2 = Vec::from(3i32.to_be_bytes());
         assert!(db.get(&key2).unwrap().is_none());
-        txn1.commit().unwrap();
+        drop(txn1);
         assert_eq!(db.get(&key2).unwrap().unwrap(), value2);
+        let key2 = LSNKey::new(Vec::from(2i32.to_be_bytes()), LSN::MIN);
+        assert!(db.get(&key2).unwrap().is_none());
+
+        let snapshot = WriteCommittedDB::snapshot(&db);
+        {
+            let mut txn2 = WriteCommittedDB::start_transaction(&db);
+            txn2.set(
+                Vec::from(10i32.to_be_bytes()),
+                Vec::from(1000i32.to_be_bytes()),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            snapshot.get(Vec::from(10i32.to_be_bytes())).unwrap(),
+            Some(Vec::from(11i32.to_be_bytes()))
+        );
     }
 }

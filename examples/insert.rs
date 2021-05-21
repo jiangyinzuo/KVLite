@@ -2,14 +2,18 @@ use kvlite::db::key_types::InternalKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::DB;
 use kvlite::memory::SkipMapMemTable;
+use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 
 const NUM_KVS: i32 = 1000000;
 
 fn main() {
     let path = tempfile::tempdir().unwrap();
-    let db = NoTransactionDB::<InternalKey, InternalKey, SkipMapMemTable<InternalKey>>::open(
-        path.path(),
-    )
+    let db = NoTransactionDB::<
+        InternalKey,
+        InternalKey,
+        SkipMapMemTable<InternalKey>,
+        SimpleWriteAheadLog,
+    >::open(path.path())
     .unwrap();
     let start = std::time::Instant::now();
     for i in 0i32..NUM_KVS {

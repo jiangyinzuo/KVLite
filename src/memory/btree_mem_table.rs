@@ -4,7 +4,7 @@ use std::sync::RwLock;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{DBCommand, Value};
-use crate::memory::{MemTable, UserKeyValueIterator};
+use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
 
 /// Wrapper of `BTreeMap<String, String>`
@@ -54,7 +54,7 @@ impl<K: MemKey> Default for BTreeMemTable<K> {
     }
 }
 
-impl UserKeyValueIterator for BTreeMemTable<InternalKey> {
+impl InternalKeyValueIterator for BTreeMemTable<InternalKey> {
     fn len(&self) -> usize {
         let _lock = self.rw_lock.read().unwrap();
         self.inner.len()
@@ -76,7 +76,7 @@ impl MemTable<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
 #[cfg(test)]
 mod tests {
     use crate::db::DBCommand;
-    use crate::memory::{BTreeMemTable, UserKeyValueIterator};
+    use crate::memory::{BTreeMemTable, InternalKeyValueIterator};
     use crate::Result;
 
     #[test]

@@ -27,7 +27,7 @@ impl<R: Read + Seek> BufReaderWithPos<R> {
             end,
         })
     }
-    
+
     #[inline]
     pub fn position(&self) -> u64 {
         self.pos
@@ -104,9 +104,15 @@ pub fn read_u32<R: Read + Seek>(reader: &mut BufReaderWithPos<R>) -> Result<u32>
     Ok(u32::from_le_bytes(nums))
 }
 
-pub fn read_bytes_exact(reader: &mut (impl Read + Seek), length: u32) -> Result<Vec<u8>> {
+pub fn read_u64<R: Read + Seek>(reader: &mut BufReaderWithPos<R>) -> Result<u64> {
+    let mut nums = [0u8; 8];
+    reader.read_exact(&mut nums)?;
+    Ok(u64::from_le_bytes(nums))
+}
+
+pub fn read_bytes_exact(reader: &mut (impl Read + Seek), length: u64) -> Result<Vec<u8>> {
     let mut max_key = vec![0; length as usize];
-    let mut handle = reader.take(length as u64);
+    let mut handle = reader.take(length);
     handle.read_exact(&mut max_key)?;
     Ok(max_key)
 }

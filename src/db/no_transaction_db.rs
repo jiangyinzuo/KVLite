@@ -5,7 +5,7 @@ use crate::db::{Value, ACTIVE_SIZE_THRESHOLD, DB};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
-use crate::wal::simple_wal::SimpleWriteAheadLog;
+use crate::wal::WAL;
 use crate::Result;
 use crossbeam_channel::Sender;
 use std::ops::DerefMut;
@@ -18,13 +18,14 @@ pub struct NoTransactionDB<
     SK: MemKey + 'static,
     UK: MemKey + 'static,
     M: MemTable<SK, UK> + 'static,
+    L: WAL<SK, UK> + 'static,
 > {
     db_path: String,
-    pub(crate) wal: Arc<Mutex<SimpleWriteAheadLog>>,
+    pub(crate) wal: Arc<Mutex<L>>,
     pub(crate) mut_mem_table: RwLock<M>,
     imm_mem_table: Arc<RwLock<M>>,
 
-    level0_manager: Arc<Level0Manager<SK, UK, M>>,
+    level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
     leveln_manager: Arc<LevelNManager>,
 
     level0_writer_handle: Option<JoinHandle<()>>,
@@ -32,10 +33,12 @@ pub struct NoTransactionDB<
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
 }
 
-impl<SK: MemKey + 'static, UK: MemKey, M: MemTable<SK, UK> + 'static> DB<SK, UK, M>
-    for NoTransactionDB<SK, UK, M>
+impl<SK, UK, M, L> DB<SK, UK, M> for NoTransactionDB<SK, UK, M, L>
 where
-    UK: From<SK>,
+    SK: MemKey + 'static,
+    UK: MemKey + From<SK>,
+    M: MemTable<SK, UK> + 'static,
+    L: WAL<SK, UK> + 'static,
 {
     fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().as_os_str().to_str().unwrap().to_string();
@@ -46,7 +49,7 @@ where
         let mut mut_mem_table = M::default();
 
         let wal = Arc::new(Mutex::new(
-            SimpleWriteAheadLog::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
+            L::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
         ));
 
         let imm_mem_table = Arc::new(RwLock::new(M::default()));
@@ -54,7 +57,7 @@ where
 
         let background_task_write_to_level0_is_running = Arc::new(AtomicBool::default());
         let (level0_manager, level0_writer_handle) =
-            Level0Manager::<SK, UK, M>::start_task_write_level0(
+            Level0Manager::<SK, UK, M, L>::start_task_write_level0(
                 db_path.clone(),
                 leveln_manager.clone(),
                 wal.clone(),
@@ -91,27 +94,18 @@ where
     }
 
     fn set(&self, key: SK, value: Value) -> Result<()> {
-        {
-            let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.append(key.internal_key(), Some(&value))?;
+        let mem_table_guard = self.set_locked(key, value)?;
+        if self.should_freeze(mem_table_guard.len()) {
+            self.freeze(mem_table_guard);
         }
-
-        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
-
-        mem_table_guard.set(key, value)?;
-
-        self.may_freeze(mem_table_guard);
-
         Ok(())
     }
 
     fn remove(&self, key: SK) -> Result<()> {
-        let mut wal_writer_lock = self.wal.lock().unwrap();
-        wal_writer_lock.append(key.internal_key(), None)?;
-
-        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
-        mem_table_guard.remove(key)?;
-        self.may_freeze(mem_table_guard);
+        let mem_table_guard = self.remove_locked(key)?;
+        if self.should_freeze(mem_table_guard.len()) {
+            self.freeze(mem_table_guard);
+        }
         Ok(())
     }
 
@@ -139,33 +133,62 @@ where
     }
 }
 
-impl<SK: 'static + MemKey, UK: MemKey, M: MemTable<SK, UK> + 'static> NoTransactionDB<SK, UK, M> {
-    pub(crate) fn may_freeze(&self, mut mem_guard: RwLockWriteGuard<M>) {
-        if mem_guard.len() >= ACTIVE_SIZE_THRESHOLD
+impl<SK, UK, M, L: 'static> NoTransactionDB<SK, UK, M, L>
+where
+    SK: MemKey + 'static,
+    UK: MemKey,
+    M: MemTable<SK, UK> + 'static,
+    L: WAL<SK, UK>,
+{
+    pub(crate) fn set_locked(&self, key: SK, value: Value) -> Result<RwLockWriteGuard<M>> {
+        {
+            let mut wal_guard = self.wal.lock().unwrap();
+            wal_guard.append(&key, Some(&value))?;
+        }
+
+        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
+
+        mem_table_guard.set(key, value)?;
+
+        Ok(mem_table_guard)
+    }
+
+    pub(crate) fn remove_locked(&self, key: SK) -> Result<RwLockWriteGuard<M>> {
+        let mut wal_writer_lock = self.wal.lock().unwrap();
+        wal_writer_lock.append(&key, None)?;
+
+        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
+        mem_table_guard.remove(key)?;
+        Ok(mem_table_guard)
+    }
+
+    pub(crate) fn should_freeze(&self, table_size: usize) -> bool {
+        table_size >= ACTIVE_SIZE_THRESHOLD
             && !self
                 .background_task_write_to_level0_is_running
                 .load(Ordering::Acquire)
+    }
+
+    pub(crate) fn freeze(&self, mut mem_guard: RwLockWriteGuard<M>) {
+        self.background_task_write_to_level0_is_running
+            .store(true, Ordering::Release);
         {
-            self.background_task_write_to_level0_is_running
-                .store(true, Ordering::Release);
-            {
-                // new log before writing to level0 sstable
-                let mut wal_guard = self.wal.lock().unwrap();
-                wal_guard.freeze_mut_log().unwrap();
-            }
+            // new log before writing to level0 sstable
+            let mut wal_guard = self.wal.lock().unwrap();
+            wal_guard.freeze_mut_log().unwrap();
+        }
 
-            let mut imm_guard = self
-                .imm_mem_table
-                .write()
-                .expect("error in RwLock on imm_tables");
+        let mut imm_guard = self
+            .imm_mem_table
+            .write()
+            .expect("error in RwLock on imm_tables");
 
-            let imm_table = std::mem::take(mem_guard.deref_mut());
-            *imm_guard = imm_table;
-            drop(mem_guard);
-            if let Some(chan) = &self.write_level0_channel {
-                if let Err(e) = chan.send(()) {
-                    warn!("{}", e);
-                }
+        let imm_table = std::mem::take(mem_guard.deref_mut());
+        *imm_guard = imm_table;
+        drop(mem_guard);
+        if let Some(chan) = &self.write_level0_channel {
+            if let Err(e) = chan.send(()) {
+                warn!("{}", e);
             }
         }
     }
@@ -208,8 +231,12 @@ impl<SK: 'static + MemKey, UK: MemKey, M: MemTable<SK, UK> + 'static> NoTransact
     }
 }
 
-impl<SK: 'static + MemKey, UK: MemKey, M: MemTable<SK, UK> + 'static> Drop
-    for NoTransactionDB<SK, UK, M>
+impl<SK, UK, M, L> Drop for NoTransactionDB<SK, UK, M, L>
+where
+    SK: MemKey + 'static,
+    UK: MemKey,
+    M: MemTable<SK, UK> + 'static,
+    L: WAL<SK, UK> + 'static,
 {
     fn drop(&mut self) {
         self.write_level0_channel.take();
@@ -228,6 +255,7 @@ pub(crate) mod tests {
     use crate::db::{ACTIVE_SIZE_THRESHOLD, DB, MAX_LEVEL};
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
+    use crate::wal::simple_wal::SimpleWriteAheadLog;
     use log::info;
     use rand::Rng;
     use std::collections::HashMap;
@@ -263,7 +291,12 @@ pub(crate) mod tests {
 
     fn query(
         db1: Arc<
-            NoTransactionDB<InternalKey, InternalKey, impl MemTable<InternalKey, InternalKey>>,
+            NoTransactionDB<
+                InternalKey,
+                InternalKey,
+                impl MemTable<InternalKey, InternalKey>,
+                SimpleWriteAheadLog,
+            >,
         >,
         value_prefix: u32,
     ) {
@@ -307,7 +340,8 @@ pub(crate) mod tests {
         path: &Path,
         value_prefix: u32,
     ) {
-        let db = NoTransactionDB::<InternalKey, InternalKey, M>::open(path).unwrap();
+        let db = NoTransactionDB::<InternalKey, InternalKey, M, SimpleWriteAheadLog>::open(path)
+            .unwrap();
         db.set(
             "hello".into(),
             format!("world_{}", value_prefix).into_bytes(),
@@ -391,9 +425,13 @@ pub(crate) mod tests {
             .tempdir()
             .unwrap();
         let path = temp_dir.path();
-        let db =
-            NoTransactionDB::<InternalKey, InternalKey, SkipMapMemTable<InternalKey>>::open(path)
-                .unwrap();
+        let db = NoTransactionDB::<
+            InternalKey,
+            InternalKey,
+            SkipMapMemTable<InternalKey>,
+            SimpleWriteAheadLog,
+        >::open(path)
+        .unwrap();
         for i in 1i32..(ACTIVE_SIZE_THRESHOLD * 5) as i32 {
             db.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
                 .unwrap();
@@ -424,9 +462,13 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db =
-            NoTransactionDB::<InternalKey, InternalKey, SkipMapMemTable<InternalKey>>::open(path)
-                .unwrap();
+        let db = NoTransactionDB::<
+            InternalKey,
+            InternalKey,
+            SkipMapMemTable<InternalKey>,
+            SimpleWriteAheadLog,
+        >::open(path)
+        .unwrap();
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             db.set(
                 format!("{}", i).into_bytes(),
@@ -436,9 +478,13 @@ pub(crate) mod tests {
         }
         drop(db);
 
-        let db =
-            NoTransactionDB::<InternalKey, InternalKey, BTreeMemTable<InternalKey>>::open(path)
-                .unwrap();
+        let db = NoTransactionDB::<
+            InternalKey,
+            InternalKey,
+            BTreeMemTable<InternalKey>,
+            SimpleWriteAheadLog,
+        >::open(path)
+        .unwrap();
 
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             assert_eq!(
@@ -460,8 +506,13 @@ pub(crate) mod tests {
 
         drop(db);
         let db = Arc::new(
-            NoTransactionDB::<InternalKey, InternalKey, SkipMapMemTable<InternalKey>>::open(path)
-                .unwrap(),
+            NoTransactionDB::<
+                InternalKey,
+                InternalKey,
+                SkipMapMemTable<InternalKey>,
+                SimpleWriteAheadLog,
+            >::open(path)
+            .unwrap(),
         );
         for _ in 0..4 {
             test_log(db.clone());
@@ -488,7 +539,7 @@ pub(crate) mod tests {
     }
 
     fn test_log<M: MemTable<InternalKey, InternalKey> + 'static>(
-        db: Arc<NoTransactionDB<InternalKey, InternalKey, M>>,
+        db: Arc<NoTransactionDB<InternalKey, InternalKey, M, SimpleWriteAheadLog>>,
     ) {
         for _ in 0..3 {
             for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
@@ -523,9 +574,13 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db =
-            NoTransactionDB::<InternalKey, InternalKey, SkipMapMemTable<InternalKey>>::open(path)
-                .unwrap();
+        let db = NoTransactionDB::<
+            InternalKey,
+            InternalKey,
+            SkipMapMemTable<InternalKey>,
+            SimpleWriteAheadLog,
+        >::open(path)
+        .unwrap();
 
         let map = create_random_map(20000);
         for (k, v) in map.iter() {

@@ -1,10 +1,9 @@
-use std::cmp::Ordering;
-use std::fs::File;
-use std::io::{Seek, SeekFrom};
-
 use crate::db::key_types::InternalKey;
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
+use std::cmp::Ordering;
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
 
 pub(super) fn get_value_from_data_block(
     reader: &mut BufReaderWithPos<File>,
@@ -17,10 +16,10 @@ pub(super) fn get_value_from_data_block(
     while offset < length {
         let key_length = read_u32(reader).unwrap();
         let value_length = read_u32(reader).unwrap();
-        let key_read = read_bytes_exact(reader, key_length).unwrap();
+        let key_read = read_bytes_exact(reader, key_length as u64).unwrap();
         match key.cmp(&key_read) {
             Ordering::Less => return None,
-            Ordering::Equal => return Some(read_bytes_exact(reader, value_length).unwrap()),
+            Ordering::Equal => return Some(read_bytes_exact(reader, value_length as u64).unwrap()),
             Ordering::Greater => {
                 reader.seek(SeekFrom::Current(value_length as i64)).unwrap();
             }
@@ -33,8 +32,8 @@ pub(super) fn get_value_from_data_block(
 pub(super) fn get_next_key_value(reader: &mut BufReaderWithPos<File>) -> (InternalKey, Value) {
     let key_length = read_u32(reader).unwrap();
     let value_length = read_u32(reader).unwrap();
-    let key_read = read_bytes_exact(reader, key_length).unwrap();
-    let value_read = read_bytes_exact(reader, value_length).unwrap_or_else(|e| {
+    let key_read = read_bytes_exact(reader, key_length as u64).unwrap();
+    let value_read = read_bytes_exact(reader, value_length as u64).unwrap_or_else(|e| {
         panic!(
             "{:#?}, key_length: {}, value_length: {}",
             e, key_length, value_length

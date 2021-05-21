@@ -9,10 +9,6 @@ pub trait MemKey:
     Ord + Send + Clone + Sync + Default + Into<InternalKey> + From<InternalKey>
 {
     fn internal_key(&self) -> &InternalKey;
-    fn user_cmp(&self, other: &Self) -> std::cmp::Ordering;
-    fn user_eq(&self, other: &Self) -> bool {
-        self.user_cmp(other) == std::cmp::Ordering::Equal
-    }
 }
 
 /// Raw user key stored in disk
@@ -22,14 +18,15 @@ impl MemKey for InternalKey {
     fn internal_key(&self) -> &InternalKey {
         &self
     }
+}
 
-    #[inline]
-    fn user_cmp(&self, other: &Self) -> Ordering {
-        self.cmp(other)
+impl<K: MemKey> From<LSNKey<K>> for InternalKey {
+    fn from(lsn_key: LSNKey<K>) -> Self {
+        lsn_key.user_key.into()
     }
 }
 
-#[derive(Default, Ord, PartialOrd, Eq, PartialEq, Clone)]
+#[derive(Default, Ord, PartialOrd, Clone)]
 pub struct I32UserKey(i32, Vec<u8>);
 
 unsafe impl Sync for I32UserKey {}
@@ -39,6 +36,14 @@ impl I32UserKey {
         I32UserKey(num, Vec::from(num.to_le_bytes()))
     }
 }
+
+impl PartialEq for I32UserKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl Eq for I32UserKey {}
 
 impl Into<InternalKey> for I32UserKey {
     fn into(self) -> InternalKey {
@@ -64,18 +69,14 @@ impl MemKey for I32UserKey {
     fn internal_key(&self) -> &InternalKey {
         &self.1
     }
-
-    fn user_cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
 }
 
 pub type LSN = u64;
 
 /// User key with log sequence number(LSN)
 #[derive(PartialEq, Eq, Default, Clone)]
-pub struct LSNKey<K: MemKey> {
-    user_key: K,
+pub struct LSNKey<UK: MemKey> {
+    user_key: UK,
     lsn: LSN,
 }
 
@@ -117,12 +118,6 @@ impl<K: MemKey> Ord for LSNKey<K> {
     }
 }
 
-impl<K: MemKey> Into<InternalKey> for LSNKey<K> {
-    fn into(self) -> InternalKey {
-        self.user_key.into()
-    }
-}
-
 impl<K: MemKey> From<InternalKey> for LSNKey<K> {
     fn from(ik: InternalKey) -> LSNKey<K> {
         LSNKey {
@@ -135,9 +130,5 @@ impl<K: MemKey> From<InternalKey> for LSNKey<K> {
 impl<K: MemKey> MemKey for LSNKey<K> {
     fn internal_key(&self) -> &InternalKey {
         self.user_key.internal_key()
-    }
-
-    fn user_cmp(&self, other: &Self) -> Ordering {
-        todo!()
     }
 }

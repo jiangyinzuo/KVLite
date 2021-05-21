@@ -12,12 +12,12 @@ mod skip_map_mem_table;
 
 /// Table in Memory
 pub trait MemTable<SK: MemKey, UK: MemKey>:
-    DBCommand<SK, UK> + Default + UserKeyValueIterator + Send + Sync
+    DBCommand<SK, UK> + Default + InternalKeyValueIterator + Send + Sync
 {
     fn merge(&mut self, kvs: SkipMap<SK, Value>);
 }
 
-pub trait UserKeyValueIterator {
+pub trait InternalKeyValueIterator {
     fn len(&self) -> usize;
 
     #[inline]
@@ -25,11 +25,11 @@ pub trait UserKeyValueIterator {
         self.len() == 0
     }
 
-    /// # Note: UserKey should not be duplicated.
+    /// # Note: InternalKey should not be duplicated.
     fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_>;
 }
 
-impl UserKeyValueIterator for SkipMap<InternalKey, Value> {
+impl InternalKeyValueIterator for SkipMap<InternalKey, Value> {
     fn len(&self) -> usize {
         self.len()
     }

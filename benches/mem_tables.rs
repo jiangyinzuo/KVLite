@@ -46,7 +46,7 @@ fn skip_map_get(b: &mut Bencher) {
     });
 }
 
-fn table_set(mem_table: &mut impl MemTable<InternalKey>) {
+fn table_set(mem_table: &mut impl MemTable<InternalKey, InternalKey>) {
     for i in 0..SIZE {
         mem_table
             .set(Vec::from(i.to_be_bytes()), Vec::from(i.to_be_bytes()))

@@ -11,6 +11,7 @@ use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::TableReadHandle;
+use crate::wal::WAL;
 
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 
@@ -21,8 +22,9 @@ pub(crate) fn compact_and_insert<
     SK: 'static + MemKey,
     UK: 'static + MemKey,
     M: 'static + MemTable<SK, UK>,
+    L: 'static + WAL<SK, UK>,
 >(
-    level0_manager: &Arc<Level0Manager<SK, UK, M>>,
+    level0_manager: &Arc<Level0Manager<SK, UK, M, L>>,
     leveln_manager: &Arc<LevelNManager>,
     level0_table_handles: Vec<Arc<TableReadHandle>>,
     level1_table_handles: VecDeque<Arc<TableReadHandle>>,
@@ -36,8 +38,8 @@ pub(crate) fn compact_and_insert<
     compactor.run();
 }
 
-struct Compactor<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>> {
-    level0_manager: Arc<Level0Manager<SK, UK, M>>,
+struct Compactor<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {
+    level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
     leveln_manager: Arc<LevelNManager>,
     level0_table_handles: Vec<Arc<TableReadHandle>>,
     level1_table_handles: VecDeque<Arc<TableReadHandle>>,
@@ -48,15 +50,17 @@ struct Compactor<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>> {
     _phantom_table: PhantomData<M>,
 }
 
-impl<SK: 'static + MemKey, UK: 'static + MemKey, M: 'static + MemTable<SK, UK>>
-    Compactor<SK, UK, M>
+impl<SK: 'static + MemKey, UK: 'static + MemKey, M: 'static + MemTable<SK, UK>, L: 'static>
+    Compactor<SK, UK, M, L>
+where
+    L: WAL<SK, UK>,
 {
     fn new(
-        level0_manager: Arc<Level0Manager<SK, UK, M>>,
+        level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
         leveln_manager: Arc<LevelNManager>,
         level0_table_handles: Vec<Arc<TableReadHandle>>,
         level1_table_handles: VecDeque<Arc<TableReadHandle>>,
-    ) -> Compactor<SK, UK, M> {
+    ) -> Compactor<SK, UK, M, L> {
         Compactor {
             level0_manager,
             leveln_manager,

@@ -6,7 +6,6 @@ use key_types::InternalKey;
 use std::path::Path;
 
 pub mod key_types;
-pub mod lsn_db;
 pub mod no_transaction_db;
 pub mod transaction;
 
