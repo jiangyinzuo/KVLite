@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,17 +13,19 @@ use rand::Rng;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
-use crate::db::{Key, Value, ACTIVE_SIZE_THRESHOLD};
+use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::{Value, ACTIVE_SIZE_THRESHOLD};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
-use crate::wal::WriteAheadLog;
+use crate::wal::simple_wal::SimpleWriteAheadLog;
+use crate::wal::WAL;
 use crate::Result;
 
 /// Struct for read and write level0 sstable.
-pub struct Level0Manager {
+pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {
     db_path: String,
 
     level0_tables: std::sync::RwLock<BTreeMap<u64, Arc<TableReadHandle>>>,
@@ -32,22 +35,29 @@ pub struct Level0Manager {
     sender: crossbeam_channel::Sender<bool>,
 
     /// Table ID is increasing order.
-    wal: Arc<Mutex<WriteAheadLog>>,
+    wal: Arc<Mutex<L>>,
 
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
 
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
+    _phantom_key: PhantomData<SK>,
+    _phantom_uk: PhantomData<UK>,
+    _phantom_table: PhantomData<M>,
 }
 
-impl Level0Manager {
+impl<SK: 'static + MemKey, UK: MemKey + 'static, M: MemTable<SK, UK> + 'static, L>
+    Level0Manager<SK, UK, M, L>
+where
+    L: WAL<SK, UK> + 'static,
+{
     fn open_tables(
         db_path: String,
         table_manager: Arc<LevelNManager>,
-        wal: Arc<Mutex<WriteAheadLog>>,
+        wal: Arc<Mutex<L>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
-    ) -> Result<Arc<Level0Manager>> {
+    ) -> Result<Arc<Level0Manager<SK, UK, M, L>>> {
         std::fs::create_dir_all(format!("{}/0", db_path)).unwrap();
         let dir = std::fs::read_dir(format!("{}/0", db_path))?;
 
@@ -84,6 +94,9 @@ impl Level0Manager {
             handle: Arc::new(Mutex::new(None)),
             index_cache,
             background_task_write_to_level0_is_running,
+            _phantom_table: PhantomData,
+            _phantom_uk: PhantomData,
+            _phantom_key: PhantomData,
         });
         let handle = Self::start_compacting_task(level0_manager.clone(), receiver);
         {
@@ -98,12 +111,12 @@ impl Level0Manager {
     pub(crate) fn start_task_write_level0(
         db_path: String,
         leveln_manager: Arc<LevelNManager>,
-        wal: Arc<Mutex<WriteAheadLog>>,
-        imm_mem_table: Arc<RwLock<impl MemTable + 'static>>,
+        wal: Arc<Mutex<L>>,
+        imm_mem_table: Arc<RwLock<M>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         recv: Receiver<()>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
-    ) -> (Arc<Level0Manager>, JoinHandle<()>) {
+    ) -> (Arc<Level0Manager<SK, UK, M, L>>, JoinHandle<()>) {
         let manager = Self::open_tables(
             db_path,
             leveln_manager,
@@ -143,7 +156,7 @@ impl Level0Manager {
     }
 
     /// Persistently write the `table` to disk.
-    fn write_to_table(&self, table: &impl MemTable) -> Result<()> {
+    fn write_to_table(&self, table: &M) -> Result<()> {
         let mut handle = self.create_table_write_handle(table.len() as u32);
         handle.write_sstable(table)?;
         self.insert_table_handle(handle);
@@ -169,7 +182,7 @@ impl Level0Manager {
     }
 
     fn start_compacting_task(
-        level0_manager: Arc<Level0Manager>,
+        level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
         receiver: Receiver<bool>,
     ) -> JoinHandle<()> {
         let table_manager = level0_manager.table_manager.clone();
@@ -206,7 +219,12 @@ impl Level0Manager {
         &self.level0_tables
     }
 
-    pub fn range_query(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
+    pub fn range_query(
+        &self,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+        kvs: &mut SkipMap<UK, Value>,
+    ) {
         let tables_guard = self.level0_tables.read().unwrap();
 
         // query the latest table first
@@ -215,7 +233,7 @@ impl Level0Manager {
         }
     }
 
-    pub fn query(&self, key: &Key) -> Result<Option<Value>> {
+    pub fn query(&self, key: &InternalKey) -> Result<Option<Value>> {
         let tables_guard = self.level0_tables.read().unwrap();
 
         // query the latest table first
@@ -300,16 +318,18 @@ impl Level0Manager {
     }
 
     /// Return level0 tables to compact
-    pub fn assign_level0_tables_to_compact(&self) -> (Vec<Arc<TableReadHandle>>, Key, Key) {
+    pub fn assign_level0_tables_to_compact(
+        &self,
+    ) -> (Vec<Arc<TableReadHandle>>, InternalKey, InternalKey) {
         let guard = self.level0_tables.read().unwrap();
 
         let mut tables = Vec::new();
         tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
 
         let mut count = 0;
-        let mut min_key: Option<&Key> = None;
-        let max = Key::default();
-        let mut max_key: &Key = &max;
+        let mut min_key: Option<&InternalKey> = None;
+        let max = InternalKey::default();
+        let mut max_key: &InternalKey = &max;
         for (_id, table) in guard.iter() {
             if table.test_and_set_compacting() {
                 tables.push(table.clone());
@@ -344,12 +364,14 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::db::key_types::InternalKey;
     use crate::db::DBCommand;
     use crate::db::ACTIVE_SIZE_THRESHOLD;
-    use crate::memory::{KeyValue, SkipMapMemTable};
+    use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
-    use crate::wal::WriteAheadLog;
+    use crate::wal::simple_wal::SimpleWriteAheadLog;
+    use crate::wal::WAL;
 
     #[test]
     fn test() {
@@ -367,10 +389,10 @@ mod tests {
     fn test_query(path: String, insert_value: bool) {
         let leveln_manager = create_manager(&path);
 
-        let mut mut_mem = SkipMapMemTable::default();
+        let mut mut_mem = SkipMapMemTable::<InternalKey>::default();
 
         let (sender, receiver) = crossbeam_channel::unbounded();
-        let wal = WriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();
+        let wal = SimpleWriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();
 
         assert!(mut_mem.is_empty());
 

@@ -1,4 +1,4 @@
-use crate::db::Key;
+use crate::db::key_types::InternalKey;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::sstable::footer::Footer;
 use crate::Result;
@@ -8,11 +8,11 @@ use std::io::{Seek, SeekFrom, Write};
 #[derive(Default)]
 pub struct IndexBlock {
     /// offset, length, max key length, max key
-    indexes: Vec<(u32, u32, u32, Key)>,
+    indexes: Vec<(u32, u32, u32, InternalKey)>,
 }
 
 impl IndexBlock {
-    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: Key) {
+    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: InternalKey) {
         self.indexes
             .push((offset, length, max_key.len() as u32, max_key));
     }
@@ -41,7 +41,7 @@ impl IndexBlock {
             let block_length = read_u32(reader).unwrap();
             let max_key_length = read_u32(reader).unwrap();
 
-            let max_key = read_bytes_exact(reader, max_key_length).unwrap();
+            let max_key = read_bytes_exact(reader, max_key_length as u64).unwrap();
             index_block
                 .indexes
                 .push((block_offset, block_length, max_key_length, max_key));
@@ -52,19 +52,19 @@ impl IndexBlock {
     }
 
     /// Returns (offset, length)
-    pub(crate) fn may_contain_key(&self, key: &Key) -> Option<(u32, u32)> {
+    pub(crate) fn may_contain_key(&self, key: &InternalKey) -> Option<(u32, u32)> {
         self.binary_search(key)
     }
 
     /// Returns first Data Block's start offset whose max key is greater or equal to `key`
-    pub fn find_first_ge(&self, key: &Key) -> Option<u32> {
+    pub fn find_first_ge(&self, key: &InternalKey) -> Option<u32> {
         match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
             Ok(i) | Err(i) => self.indexes.get(i).map(|e| e.0),
         }
     }
 
     /// Get maximum key from [SSTableIndex]
-    pub(crate) fn max_key(&self) -> &Key {
+    pub(crate) fn max_key(&self) -> &InternalKey {
         let last = self.indexes.last().unwrap_or_else(|| unsafe {
             std::hint::unreachable_unchecked();
         });
@@ -72,7 +72,7 @@ impl IndexBlock {
     }
 
     /// Returns (offset, length)
-    fn binary_search(&self, key: &Key) -> Option<(u32, u32)> {
+    fn binary_search(&self, key: &InternalKey) -> Option<(u32, u32)> {
         match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
             Ok(i) | Err(i) => self.indexes.get(i).map(|e| (e.0, e.1)),
         }

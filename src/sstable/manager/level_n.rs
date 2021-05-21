@@ -9,7 +9,8 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_n::start_compact;
-use crate::db::{Key, Value, MAX_LEVEL};
+use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::{Value, MAX_LEVEL};
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
@@ -17,7 +18,8 @@ use crate::Result;
 /// Struct for adding and removing sstable files.
 pub struct LevelNManager {
     db_path: String,
-    level_tables: [std::sync::RwLock<BTreeMap<(Key, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
+    level_tables:
+        [std::sync::RwLock<BTreeMap<(InternalKey, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
@@ -163,12 +165,17 @@ impl LevelNManager {
     pub fn get_level_tables_lock(
         &self,
         level: NonZeroUsize,
-    ) -> &std::sync::RwLock<BTreeMap<(Key, u64), Arc<TableReadHandle>>> {
+    ) -> &std::sync::RwLock<BTreeMap<(InternalKey, u64), Arc<TableReadHandle>>> {
         let lock = self.level_tables.get(level.get() - 1).unwrap();
         lock
     }
 
-    pub fn range_query(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
+    pub fn range_query<UK: MemKey>(
+        &self,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+        kvs: &mut SkipMap<UK, Value>,
+    ) {
         for level in (1..=MAX_LEVEL).rev() {
             let tables_lock =
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
@@ -181,7 +188,7 @@ impl LevelNManager {
         }
     }
 
-    pub fn query(&self, key: &Key) -> Result<Option<Value>> {
+    pub fn query(&self, key: &InternalKey) -> Result<Option<Value>> {
         for level in 1..=MAX_LEVEL {
             let tables_lock =
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
@@ -285,8 +292,8 @@ impl LevelNManager {
     pub fn get_overlap_tables(
         &self,
         level: NonZeroUsize,
-        min_key: &Key,
-        max_key: &Key,
+        min_key: &InternalKey,
+        max_key: &InternalKey,
     ) -> VecDeque<Arc<TableReadHandle>> {
         let tables_lock = self.get_level_tables_lock(level);
         let tables_guard = tables_lock.read().unwrap();

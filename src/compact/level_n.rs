@@ -3,7 +3,8 @@ use std::collections::hash_map::VacantEntry;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use crate::db::{Key, Value};
+use crate::db::key_types::InternalKey;
+use crate::db::Value;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::TableReadHandle;
 
@@ -53,7 +54,7 @@ impl Compactor {
 
         let new_table_size = total / next_level_table_handles.len().max(2) + 1;
 
-        let mut temp_kvs: Vec<(Key, Value)> = vec![];
+        let mut temp_kvs: Vec<(InternalKey, Value)> = vec![];
         let mut table_to_compact_iter = self.handle_to_compact.iter();
 
         macro_rules! add_kv {
@@ -77,7 +78,7 @@ impl Compactor {
         } else {
             enum CurLevelState {
                 Start,
-                HasValue((Key, Value)),
+                HasValue((InternalKey, Value)),
                 End,
             }
 
@@ -186,7 +187,7 @@ impl Compactor {
             .may_compact(unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) });
     }
 
-    fn add_table_handle(&self, temp_kvs: Vec<(Key, Value)>) {
+    fn add_table_handle(&self, temp_kvs: Vec<(InternalKey, Value)>) {
         debug_assert!(!temp_kvs.is_empty());
         let mut new_table = self.leveln_manager.create_table_write_handle(
             unsafe { NonZeroUsize::new_unchecked(self.compact_level.get() + 1) },

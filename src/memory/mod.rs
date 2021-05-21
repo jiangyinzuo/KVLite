@@ -4,17 +4,20 @@ pub use btree_mem_table::BTreeMemTable;
 pub use skip_map_mem_table::SkipMapMemTable;
 
 use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::{DBCommand, Key, Value};
+use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::{DBCommand, Value};
 
 mod btree_mem_table;
 mod skip_map_mem_table;
 
 /// Table in Memory
-pub trait MemTable: DBCommand + KeyValue + Default + Send + Sync {
-    fn merge(&mut self, kvs: SkipMap<Key, Value>);
+pub trait MemTable<SK: MemKey, UK: MemKey>:
+    DBCommand<SK, UK> + Default + InternalKeyValueIterator + Send + Sync
+{
+    fn merge(&mut self, kvs: SkipMap<SK, Value>);
 }
 
-pub trait KeyValue {
+pub trait InternalKeyValueIterator {
     fn len(&self) -> usize;
 
     #[inline]
@@ -22,30 +25,19 @@ pub trait KeyValue {
         self.len() == 0
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&Key, &Key)> + '_>;
-
-    fn first_key(&self) -> Option<&Key>;
-
-    fn last_key(&self) -> Option<&Key>;
+    /// # Note: InternalKey should not be duplicated.
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_>;
 }
 
-impl KeyValue for SkipMap<Key, Value> {
+impl InternalKeyValueIterator for SkipMap<InternalKey, Value> {
     fn len(&self) -> usize {
         self.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&Key, &Value)>> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)>> {
         Box::new(
             self.iter_ptr()
                 .map(|node| unsafe { (&(*node).entry.key, &(*node).entry.value) }),
         )
-    }
-
-    fn first_key(&self) -> Option<&Key> {
-        self.first_key_value().map(|entry| &entry.key)
-    }
-
-    fn last_key(&self) -> Option<&Key> {
-        self.last_key_value().map(|entry| &entry.key)
     }
 }

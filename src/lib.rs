@@ -16,6 +16,6 @@ mod hash;
 mod ioutils;
 pub mod memory;
 pub mod sstable;
-mod wal;
+pub mod wal;
 
 pub type Result<T> = std::result::Result<T, error::KVLiteError>;

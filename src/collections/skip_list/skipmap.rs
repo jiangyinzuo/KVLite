@@ -70,7 +70,7 @@ unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
 ///
 /// SkipMap is not thread-safe.
 pub struct SkipMap<K: Ord + Default, V: Default> {
-    head: *const Node<K, V>,
+    dummy_head: *const Node<K, V>,
     tail: AtomicPtr<Node<K, V>>,
     cur_max_level: AtomicUsize,
     len: usize,
@@ -81,10 +81,10 @@ pub struct SkipMap<K: Ord + Default, V: Default> {
 unsafe impl<K: Ord + Default, V: Default> Send for SkipMap<K, V> {}
 unsafe impl<K: Ord + Default, V: Default> Sync for SkipMap<K, V> {}
 
-impl<K: Ord + Default, V: Default> SkipMap<K, V> {
-    pub fn new() -> SkipMap<K, V> {
+impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
+    pub fn new() -> SkipMap<SK, V> {
         SkipMap {
-            head: Node::head(),
+            dummy_head: Node::head(),
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
             len: 0,
@@ -105,14 +105,112 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
 
     /// # Safety
     /// node should be null or initialized
-    pub unsafe fn node_lt_key(node: *mut Node<K, V>, key: &K) -> bool {
+    pub unsafe fn node_lt_key(node: *mut Node<SK, V>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.lt(key)
     }
 
     /// # Safety
     /// node should be null or initialized
-    pub unsafe fn node_eq_key(node: *mut Node<K, V>, key: &K) -> bool {
+    pub unsafe fn node_eq_key(node: *mut Node<SK, V>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.eq(key)
+    }
+
+    /// # Safety
+    /// node s
+    /// hould be null or initialized
+    pub unsafe fn node_cmp(node: *mut Node<SK, V>, key: &SK) -> std::cmp::Ordering {
+        if node.is_null() {
+            return std::cmp::Ordering::Greater;
+        }
+        (*node).entry.key.cmp(key)
+    }
+
+    /// # Example
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
+    /// for i in 1..10 {
+    ///     skip_map.insert(i, i + 1);
+    /// }
+    /// let node = skip_map.find_first_ge(&3, None);
+    /// unsafe {
+    ///     let node = SkipMap::find_last_le_from_node(node, &9);
+    ///     assert_eq!((*node).entry.value, 10);
+    ///     let node2 = SkipMap::find_last_le_from_node(node, &-123);
+    ///     assert_eq!(node, node2);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    /// `node` should be a part of skip-map and should not be nullptr
+    pub unsafe fn find_last_le_from_node(mut node: *mut Node<SK, V>, key: &SK) -> *mut Node<SK, V> {
+        debug_assert!(!node.is_null());
+        if (*node).entry.key.eq(key) {
+            return node;
+        }
+        let mut level = (*node).level;
+        loop {
+            let next = (*node).get_next(level);
+            match Self::node_cmp(next, key) {
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        return node;
+                    }
+                    level -= 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    return next;
+                }
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+            }
+        }
+    }
+
+    /// # Example
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
+    /// for i in 1..10 {
+    ///     skip_map.insert(i, i + 1);
+    /// }
+    /// let node = skip_map.find_first_ge(&3, None);
+    /// unsafe {
+    ///     let node = SkipMap::find_first_ge_from_node(node, &7);
+    ///     assert_eq!((*node).entry.value, 8);
+    /// }
+    /// ```
+    /// # Safety
+    /// `node` should be a part of skip-map and should not be nullptr
+    pub unsafe fn find_first_ge_from_node(
+        mut node: *mut Node<SK, V>,
+        key: &SK,
+    ) -> *mut Node<SK, V> {
+        debug_assert!(!node.is_null());
+        if (*node).entry.key.eq(key) {
+            return node;
+        }
+        let mut level = (*node).level;
+        loop {
+            let next = (*node).get_next(level);
+            match Self::node_cmp(next, key) {
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        return next;
+                    }
+                    level -= 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    return next;
+                }
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+            }
+        }
     }
 
     /// Return the first node `N` whose key is greater or equal than given `key`.
@@ -129,11 +227,11 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     /// ```
     pub fn find_first_ge(
         &self,
-        key: &K,
-        mut prev_nodes: Option<&mut [*mut Node<K, V>; MAX_LEVEL + 1]>,
-    ) -> *mut Node<K, V> {
+        key: &SK,
+        mut prev_nodes: Option<&mut [*mut Node<SK, V>; MAX_LEVEL + 1]>,
+    ) -> *mut Node<SK, V> {
         let mut level = self.cur_max_level.load(Ordering::Acquire);
-        let mut node = self.head as *mut Node<K, V>;
+        let mut node = self.dummy_head as *mut Node<SK, V>;
         loop {
             unsafe {
                 let next = (*node).get_next(level);
@@ -153,7 +251,55 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
-    pub fn get_clone(&self, key: &K) -> Option<V>
+    /// Return the last node whose key is less than or equal to `key`,
+    /// if does not exist, return nullptr.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::SkipMap;
+    /// let mut skip_map = SkipMap::new();
+    /// assert!(skip_map.find_last_le(&1).is_null());
+    /// skip_map.insert(3, 3);
+    /// skip_map.insert(7, 7);
+    ///
+    /// let node = skip_map.find_last_le(&7);
+    /// unsafe {
+    ///     assert_eq!((*node).entry.key, 7);
+    /// }
+    ///
+    /// let node = skip_map.find_last_le(&6);
+    /// unsafe {
+    ///     assert_eq!((*node).entry.key, 3);
+    /// }
+    /// ```
+    pub fn find_last_le(&self, key: &SK) -> *mut Node<SK, V> {
+        let mut level = self.cur_max_level.load(Ordering::Acquire);
+        let mut node = self.dummy_head as *mut Node<SK, V>;
+
+        let result = loop {
+            let next = unsafe { (*node).get_next(level) };
+            match unsafe { Self::node_cmp(next, key) } {
+                std::cmp::Ordering::Equal => return next,
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        break node;
+                    }
+                    level -= 1;
+                }
+            }
+        };
+        if result == self.dummy_head as *mut _ {
+            std::ptr::null_mut()
+        } else {
+            result
+        }
+    }
+
+    pub fn get_clone(&self, key: &SK) -> Option<V>
     where
         V: Clone,
     {
@@ -167,15 +313,19 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
-    pub fn range_get(&self, key_start: &K, key_end: &K, kvs: &mut Self)
+    pub fn range_get<UK>(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, V>)
     where
-        K: Clone,
+        SK: Clone + Into<UK>,
+        UK: Ord + Default,
         V: Clone,
     {
         let mut node = self.find_first_ge(key_start, None);
         unsafe {
             while !node.is_null() && (*node).entry.key.le(key_end) {
-                kvs.insert((*node).entry.key.clone(), (*node).entry.value.clone());
+                kvs.insert(
+                    (*node).entry.key.clone().into(),
+                    (*node).entry.value.clone(),
+                );
                 node = (*node).get_next(0);
             }
         }
@@ -185,15 +335,15 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         // todo: optimize the time complexity
         for n in other.into_ptr_iter() {
             unsafe {
-                let kv: Entry<K, V> = std::mem::take(&mut (*n).entry);
+                let kv: Entry<SK, V> = std::mem::take(&mut (*n).entry);
                 self.insert(kv.key, kv.value);
             }
         }
     }
 
     /// return whether `key` has already exist.
-    pub fn insert(&mut self, key: K, value: V) -> bool {
-        let mut prev_nodes = [self.head as *mut _; MAX_LEVEL + 1];
+    pub fn insert(&mut self, key: SK, value: V) -> bool {
+        let mut prev_nodes = [self.dummy_head as *mut _; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
         if has_key {
@@ -207,12 +357,14 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     }
 
     /// Insert node with `key`, `value` after `prev_nodes`
-    fn insert_after(&mut self, prev_nodes: [*mut Node<K, V>; MAX_LEVEL + 1], key: K, value: V) {
+    fn insert_after(&mut self, prev_nodes: [*mut Node<SK, V>; MAX_LEVEL + 1], key: SK, value: V) {
         #[cfg(debug_assertions)]
         {
             for (level, prev) in prev_nodes.iter().enumerate() {
                 unsafe {
-                    debug_assert!((**prev).entry.key.le(&key));
+                    debug_assert!(
+                        (*prev) == self.dummy_head as *mut _ || (**prev).entry.key.le(&key)
+                    );
                     Self::node_lt_key((**prev).get_next(level), &key);
                 }
             }
@@ -240,8 +392,8 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     }
 
     /// Remove all the `key` in map, return whether `key` exists
-    pub fn remove(&mut self, key: K) -> bool {
-        let mut prev_nodes = [self.head as *mut _; MAX_LEVEL + 1];
+    pub fn remove(&mut self, key: SK) -> bool {
+        let mut prev_nodes = [self.dummy_head as *mut _; MAX_LEVEL + 1];
         let mut node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
         if has_key {
@@ -266,19 +418,19 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
-    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, K, V> {
+    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V> {
         unsafe {
             IterPtr {
-                node: (*self.head).get_next(0),
+                node: (*self.dummy_head).get_next(0),
                 _marker: PhantomData,
             }
         }
     }
 
-    pub fn iter<'a>(&self) -> Iter<'a, K, V> {
+    pub fn iter<'a>(&self) -> Iter<'a, SK, V> {
         unsafe {
             Iter {
-                node: (*self.head).get_next(0),
+                node: (*self.dummy_head).get_next(0),
                 _marker: PhantomData,
             }
         }
@@ -299,11 +451,11 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     /// assert_eq!(entry.key, "apple");
     /// assert_eq!(entry.value, 1);
     /// ```
-    pub fn first_key_value(&self) -> Option<&Entry<K, V>> {
+    pub fn first_key_value(&self) -> Option<&Entry<SK, V>> {
         if self.is_empty() {
             None
         } else {
-            unsafe { Some(&(*(*self.head).get_next(0)).entry) }
+            unsafe { Some(&(*(*self.dummy_head).get_next(0)).entry) }
         }
     }
 
@@ -322,7 +474,7 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
     /// assert_eq!(entry.key, "hello");
     /// assert_eq!(entry.value, 2);
     /// ```
-    pub fn last_key_value(&self) -> Option<&Entry<K, V>> {
+    pub fn last_key_value(&self) -> Option<&Entry<SK, V>> {
         if self.is_empty() {
             None
         } else {
@@ -330,9 +482,9 @@ impl<K: Ord + Default, V: Default> SkipMap<K, V> {
         }
     }
 
-    pub fn into_ptr_iter(self) -> IntoPtrIter<K, V> {
+    pub fn into_ptr_iter(self) -> IntoPtrIter<SK, V> {
         unsafe {
-            let node = (*self.head).get_next(0);
+            let node = (*self.dummy_head).get_next(0);
             IntoPtrIter { inner: self, node }
         }
     }
@@ -346,7 +498,7 @@ impl<K: Ord + Default, V: Default> Default for SkipMap<K, V> {
 
 impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
     fn drop(&mut self) {
-        let mut node = self.head;
+        let mut node = self.dummy_head;
 
         unsafe {
             while !node.is_null() {
@@ -484,7 +636,7 @@ impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
 
     fn into_iter(self) -> Self::IntoIter {
         unsafe {
-            let node = (*self.head).get_next(0);
+            let node = (*self.dummy_head).get_next(0);
             IntoIter { inner: self, node }
         }
     }
@@ -494,6 +646,7 @@ impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
 mod tests {
     use crate::collections::skip_list::skipmap::SkipMap;
     use crate::db::no_transaction_db::tests::create_random_map;
+    use rand::Rng;
 
     #[test]
     fn test_key() {
@@ -629,5 +782,26 @@ mod tests {
         assert_last_key!(14);
         skip_map.remove(14);
         assert_last_key!(13);
+    }
+
+    #[test]
+    fn test_find_last_le() {
+        let mut skip_map = SkipMap::new();
+        assert!(skip_map.find_last_le(&1).is_null());
+        for i in 1..=100 {
+            skip_map.insert(2 * i + 1, (2 * i + 1) * 2);
+        }
+        let mut r = rand::thread_rng();
+
+        for _ in 0..50 {
+            let key = r.gen_range(10..190);
+            unsafe {
+                if key % 2 == 1 {
+                    assert_eq!((*skip_map.find_last_le(&key)).entry.value, key * 2);
+                } else {
+                    assert_eq!((*skip_map.find_last_le(&key)).entry.value, (key - 1) * 2);
+                }
+            }
+        }
     }
 }

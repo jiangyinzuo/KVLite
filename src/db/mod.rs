@@ -1,8 +1,11 @@
 use crate::collections::skip_list::skipmap::SkipMap;
+use crate::db::key_types::MemKey;
 use crate::memory::MemTable;
 use crate::Result;
+use key_types::InternalKey;
 use std::path::Path;
 
+pub mod key_types;
 pub mod no_transaction_db;
 pub mod transaction;
 
@@ -23,20 +26,24 @@ pub(crate) const fn max_level_shift() -> usize {
     idx
 }
 
-pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
 
-pub trait DBCommand {
-    fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>);
-    fn get(&self, key: &Key) -> crate::Result<Option<Value>>;
-    fn set(&mut self, key: Key, value: Value) -> crate::Result<()>;
-    fn remove(&mut self, key: Key) -> crate::Result<()>;
+pub trait DBCommand<SK: MemKey, UK: MemKey> {
+    fn range_get(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, Value>)
+    where
+        SK: Into<UK>,
+        UK: From<SK>;
+    fn get(&self, key: &SK) -> crate::Result<Option<Value>>;
+    fn set(&mut self, key: SK, value: Value) -> crate::Result<()>;
+    fn remove(&mut self, key: SK) -> crate::Result<()>;
 }
 
-pub trait DB<M: MemTable>: Sized {
+pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
     fn open(db_path: impl AsRef<Path>) -> Result<Self>;
-    fn get(&self, key: &Key) -> Result<Option<Value>>;
-    fn set(&self, key: Key, value: Value) -> Result<()>;
-    fn remove(&self, key: Key) -> Result<()>;
-    fn range_get(&self, key_start: &Key, key_end: &Key) -> Result<SkipMap<Key, Value>>;
+    fn get(&self, key: &SK) -> Result<Option<Value>>;
+    fn set(&self, key: SK, value: Value) -> Result<()>;
+    fn remove(&self, key: SK) -> Result<()>;
+    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value>>
+    where
+        UK: From<SK>;
 }

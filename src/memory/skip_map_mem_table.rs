@@ -1,71 +1,169 @@
+use crate::collections::skip_list::skipmap::SkipMap;
+use crate::db::key_types::{InternalKey, LSNKey, MemKey};
+use crate::db::{DBCommand, Value};
+use crate::memory::{InternalKeyValueIterator, MemTable};
+use crate::Result;
 use std::sync::RwLock;
 
-use crate::collections::skip_list::skipmap::SkipMap;
-use crate::db::{DBCommand, Key, Value};
-use crate::memory::{KeyValue, MemTable};
-use crate::Result;
-
 #[derive(Default)]
-pub struct SkipMapMemTable {
+pub struct SkipMapMemTable<SK: MemKey> {
     rw_lock: RwLock<()>,
-    inner: SkipMap<Key, Value>,
+    inner_guarded: SkipMap<SK, Value>,
 }
 
-impl DBCommand for SkipMapMemTable {
-    fn range_get(&self, key_start: &Key, key_end: &Key, kvs: &mut SkipMap<Key, Value>) {
+impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
+    fn range_get(
+        &self,
+        key_start: &InternalKey,
+        key_end: &InternalKey,
+        kvs: &mut SkipMap<InternalKey, Value>,
+    ) {
         let _guard = self.rw_lock.read().unwrap();
-        self.inner.range_get(key_start, key_end, kvs);
+        self.inner_guarded.range_get(key_start, key_end, kvs);
     }
 
-    fn get(&self, key: &Key) -> Result<Option<Value>> {
+    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
         let _guard = self.rw_lock.read().unwrap();
-        Ok(self.inner.get_clone(key))
+        Ok(self.inner_guarded.get_clone(key))
     }
 
-    fn set(&mut self, key: Key, value: Value) -> Result<()> {
+    fn set(&mut self, key: InternalKey, value: Value) -> Result<()> {
         let _guard = self.rw_lock.write().unwrap();
-        self.inner.insert(key, value);
+        self.inner_guarded.insert(key, value);
         Ok(())
     }
 
-    fn remove(&mut self, key: Key) -> Result<()> {
+    fn remove(&mut self, key: InternalKey) -> Result<()> {
         let _guard = self.rw_lock.write().unwrap();
-        self.inner.insert(key, Key::new());
+        self.inner_guarded.insert(key, InternalKey::new());
         Ok(())
     }
 }
 
-impl KeyValue for SkipMapMemTable {
+impl InternalKeyValueIterator for SkipMapMemTable<InternalKey> {
     fn len(&self) -> usize {
-        self.inner.len()
+        self.inner_guarded.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&Key, &Key)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_> {
         Box::new(
-            self.inner
+            self.inner_guarded
                 .iter_ptr()
                 .map(|n| unsafe { (&(*n).entry.key, &(*n).entry.value) }),
         )
     }
+}
 
-    fn first_key(&self) -> Option<&Key> {
-        self.inner.first_key_value().map(|entry| &entry.key)
-    }
-
-    fn last_key(&self) -> Option<&Key> {
-        self.inner.last_key_value().map(|entry| &entry.key)
+impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
+    fn merge(&mut self, kvs: SkipMap<InternalKey, Value>) {
+        let _guard = self.rw_lock.write().unwrap();
+        self.inner_guarded.merge(kvs);
     }
 }
 
-impl MemTable for SkipMapMemTable {
-    fn merge(&mut self, kvs: SkipMap<Key, Value>) {
+impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
+    fn range_get(
+        &self,
+        key_start: &LSNKey<UK>,
+        key_end: &LSNKey<UK>,
+        kvs: &mut SkipMap<UK, Value>,
+    ) {
+        debug_assert!(key_start.le(key_end));
+        debug_assert_eq!(key_start.lsn(), key_end.lsn());
+
+        let _guard = self.rw_lock.read().unwrap();
+
+        let mut node = self.inner_guarded.find_last_le(key_start);
+        if node.is_null() {
+            return;
+        }
+        unsafe {
+            let user_key = (*node).entry.key.user_key();
+            if user_key.eq(key_start.user_key()) {
+                kvs.insert(user_key.clone(), (*node).entry.value.clone());
+            }
+        }
+
+        loop {
+            let lsn_max = unsafe { LSNKey::upper_bound(&(*node).entry.key) };
+            unsafe {
+                // get next user key
+                node = SkipMap::find_first_ge_from_node(node, &lsn_max);
+                if node.is_null() || (*node).entry.key.user_key().gt(key_end.user_key()) {
+                    return;
+                }
+
+                let lsn_key = LSNKey::new((*node).entry.key.user_key().clone(), key_end.lsn());
+                node = SkipMap::find_last_le_from_node(node, &lsn_key);
+                debug_assert!(!node.is_null());
+                if (*node).entry.key.user_key().eq(lsn_key.user_key()) {
+                    kvs.insert(lsn_key.user_key().clone(), (*node).entry.value.clone());
+                }
+            }
+        }
+    }
+
+    fn get(&self, key: &LSNKey<UK>) -> Result<Option<Value>> {
+        let _guard = self.rw_lock.read().unwrap();
+        let node = self.inner_guarded.find_last_le(key);
+        if node.is_null() {
+            return Ok(None);
+        }
+        unsafe {
+            if (*node).entry.key.user_key().eq(key.user_key()) {
+                Ok(Some((*node).entry.value.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    fn set(&mut self, key: LSNKey<UK>, value: Value) -> Result<()> {
         let _guard = self.rw_lock.write().unwrap();
-        self.inner.merge(kvs);
+        self.inner_guarded.insert(key, value);
+        Ok(())
+    }
+
+    fn remove(&mut self, key: LSNKey<UK>) -> Result<()> {
+        let _guard = self.rw_lock.write().unwrap();
+        self.inner_guarded.insert(key, Value::default());
+        Ok(())
+    }
+}
+
+impl<K: MemKey + 'static> InternalKeyValueIterator for SkipMapMemTable<LSNKey<K>> {
+    fn len(&self) -> usize {
+        self.inner_guarded.len()
+    }
+
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)>> {
+        Box::new(self.inner_guarded.iter_ptr().filter_map(|n| {
+            debug_assert!(!n.is_null());
+            unsafe {
+                let next = (*n).get_next(0);
+                let internal_key = (*n).entry.key.internal_key();
+                if next.is_null() {
+                    Some((internal_key, &(*n).entry.value))
+                } else {
+                    match internal_key.cmp((*next).entry.key.internal_key()) {
+                        std::cmp::Ordering::Equal => None,
+                        _ => Some((internal_key, &(*n).entry.value)),
+                    }
+                }
+            }
+        }))
+    }
+}
+
+impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
+    fn merge(&mut self, kvs: SkipMap<LSNKey<UK>, Value>) {
+        let _guard = self.rw_lock.write().unwrap();
+        self.inner_guarded.merge(kvs);
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod internal_key_tests {
     use crate::db::DBCommand;
     use crate::memory::SkipMapMemTable;
 
@@ -84,5 +182,40 @@ mod tests {
         );
         table.remove(one.clone()).unwrap();
         assert_eq!(table.get(&one).unwrap().unwrap(), vec![]);
+    }
+}
+
+#[cfg(test)]
+mod lsn_tests {
+    use crate::collections::skip_list::skipmap::SkipMap;
+    use crate::db::key_types::{I32UserKey, LSNKey};
+    use crate::db::{DBCommand, Value};
+    use crate::memory::SkipMapMemTable;
+
+    #[test]
+    fn test_range_get() {
+        let mut table = SkipMapMemTable::<LSNKey<I32UserKey>>::default();
+        for lsn in 1..8 {
+            for k in -100i32..100i32 {
+                table
+                    .set(
+                        LSNKey::new(I32UserKey::new(k), lsn),
+                        Value::from(k.to_be_bytes()),
+                    )
+                    .unwrap();
+            }
+        }
+
+        let mut kvs = SkipMap::new();
+        table.range_get(
+            &LSNKey::new(I32UserKey::new(-10i32), 5),
+            &LSNKey::new(I32UserKey::new(20i32), 5),
+            &mut kvs,
+        );
+        assert_eq!(kvs.len(), 31);
+        let option = table
+            .get(&LSNKey::new(I32UserKey::new(20i32), 100))
+            .unwrap();
+        assert_eq!(option, Some(Value::from(20i32.to_be_bytes())));
     }
 }

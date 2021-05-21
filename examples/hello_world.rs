@@ -1,11 +1,19 @@
+use kvlite::db::key_types::InternalKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::DB;
 use kvlite::memory::SkipMapMemTable;
+use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use tempfile::TempDir;
 
 fn main() {
     let temp_dir = TempDir::new().unwrap();
-    let db = NoTransactionDB::<SkipMapMemTable>::open(temp_dir.path()).unwrap();
+    let db = NoTransactionDB::<
+        InternalKey,
+        InternalKey,
+        SkipMapMemTable<InternalKey>,
+        SimpleWriteAheadLog,
+    >::open(temp_dir.path())
+    .unwrap();
 
     let hello = Vec::from("hello");
     let value = Vec::from("value1");
