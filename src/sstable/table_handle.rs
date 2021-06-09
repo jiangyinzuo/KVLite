@@ -272,7 +272,7 @@ impl TableReadHandle {
 
     fn calc_hash(key: u64) -> u32 {
         const SEED: u32 = 0x71f2e1a3;
-        murmur_hash(key.as_ne_bytes(), SEED)
+        murmur_hash(&key.to_le_bytes(), SEED)
     }
 
     /// Create [TableReadHandle] from table write handle and rename the file.

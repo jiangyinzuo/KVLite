@@ -1,7 +1,6 @@
 #![feature(backtrace)]
 #![feature(map_first_last)]
 #![feature(maybe_uninit_ref)]
-#![feature(num_as_ne_bytes)]
 
 #[macro_use]
 extern crate log;
