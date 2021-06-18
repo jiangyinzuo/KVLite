@@ -16,3 +16,13 @@ rayon = "1.5"
 [dev-dependencies]
 tempfile = "3.2.0"
 env_logger = "0.8.3"
+layout = {path = "./benches/layout"}
+
+[[bench]]
+name = "range_query"
+path = "benches/layout_bench/range_query.rs"
+
+[[bench]]
+name = "point_query"
+path = "benches/layout_bench/point_query.rs"
+

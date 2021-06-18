@@ -37,7 +37,7 @@ pub struct TableWriteHandle {
 }
 
 impl TableWriteHandle {
-    pub(crate) fn new(
+    pub fn new(
         db_path: &str,
         level: usize,
         table_id: u64,
@@ -567,9 +567,9 @@ pub(crate) mod tests {
 
     #[test]
     fn test_handle() {
-        let path = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(path.path().join("1")).unwrap();
-        let path = path.path().to_str().unwrap().to_string();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("1")).unwrap();
+        let path = temp_dir.path().to_str().unwrap().to_string();
 
         let read_handle = create_read_handle(&path, 1, 1, 0..100);
         assert_eq!(read_handle.table_key(), 9);

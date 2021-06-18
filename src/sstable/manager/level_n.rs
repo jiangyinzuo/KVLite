@@ -18,6 +18,7 @@ use crate::Result;
 /// Struct for adding and removing sstable files.
 pub struct LevelNManager {
     db_path: String,
+    /// map: <max key, tableID>
     level_tables:
         [std::sync::RwLock<BTreeMap<(InternalKey, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
     level_sizes: [AtomicU64; MAX_LEVEL],
