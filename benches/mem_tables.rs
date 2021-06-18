@@ -59,7 +59,7 @@ fn table_set(mem_table: &mut impl MemTable<InternalKey, InternalKey>) {
     }
 }
 
-fn table_get(mem_table: &mut impl MemTable<InternalKey>) {
+fn table_get(mem_table: &mut impl MemTable<InternalKey, InternalKey>) {
     for _ in 0..10 {
         for j in 0..SIZE + 10 {
             mem_table.get(&Vec::from(j.to_be_bytes())).unwrap();
