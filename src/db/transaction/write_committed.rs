@@ -1,6 +1,7 @@
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::{LSNKey, MemKey, LSN};
 use crate::db::no_transaction_db::NoTransactionDB;
+use crate::db::options::WriteOptions;
 use crate::db::{Value, DB};
 use crate::memory::MemTable;
 use crate::wal::TransactionWAL;
@@ -57,6 +58,7 @@ where
     db: Arc<WriteCommittedDB<UK, M, L>>,
     table: SkipMap<LSNKey<UK>, Value>,
     lsn: LSN,
+    write_options: WriteOptions,
 }
 
 impl<UK, M, L> WriteBatch<UK, M, L>
@@ -108,7 +110,7 @@ where
     fn drop(&mut self) {
         if !self.table.is_empty() {
             let table = std::mem::take(&mut self.table);
-            self.db.write_batch(table).unwrap();
+            self.db.write_batch(&self.write_options, table).unwrap();
         }
         self.db.num_lsn_acquired.fetch_sub(1, Ordering::Release);
     }
@@ -160,15 +162,15 @@ where
     }
 
     #[inline]
-    fn set(&self, key: LSNKey<UK>, value: Value) -> Result<()> {
-        let guard = self.inner.set_locked(key, value)?;
+    fn set(&self, write_options: &WriteOptions, key: LSNKey<UK>, value: Value) -> Result<()> {
+        let guard = self.inner.set_locked(write_options, key, value)?;
         self.may_freeze(guard);
         Ok(())
     }
 
     #[inline]
-    fn remove(&self, key: LSNKey<UK>) -> Result<()> {
-        let guard = self.inner.remove_locked(key)?;
+    fn remove(&self, write_options: &WriteOptions, key: LSNKey<UK>) -> Result<()> {
+        let guard = self.inner.remove_locked(&write_options, key)?;
         self.may_freeze(guard);
         Ok(())
     }
@@ -194,14 +196,19 @@ where
         self.get(&lsn_key)
     }
 
-    pub fn set_by_user_key(&self, key: UK, value: Value) -> Result<()> {
+    pub fn set_by_user_key(
+        &self,
+        write_options: &WriteOptions,
+        key: UK,
+        value: Value,
+    ) -> Result<()> {
         let lsn_key = LSNKey::new(key, self.next_lsn.fetch_add(1, Ordering::Release));
-        self.set(lsn_key, value)
+        self.set(write_options, lsn_key, value)
     }
 
-    pub fn remove_by_user_key(&self, key: UK) -> Result<()> {
+    pub fn remove_by_user_key(&self, write_options: &WriteOptions, key: UK) -> Result<()> {
         let lsn_key = LSNKey::new(key, self.next_lsn.fetch_add(1, Ordering::Release));
-        self.remove(lsn_key)
+        self.remove(write_options, lsn_key)
     }
 
     pub fn snapshot(db: &Arc<Self>) -> SnapShot<UK, M, L> {
@@ -211,19 +218,24 @@ where
         }
     }
 
-    pub fn start_transaction(db: &Arc<Self>) -> WriteBatch<UK, M, L> {
+    pub fn start_transaction(db: &Arc<Self>, write_options: WriteOptions) -> WriteBatch<UK, M, L> {
         WriteBatch {
             db: db.clone(),
             table: SkipMap::default(),
             lsn: db.next_lsn.fetch_add(1, Ordering::Release),
+            write_options,
         }
     }
 
-    pub fn write_batch(&self, batch: SkipMap<LSNKey<UK>, Value>) -> Result<()> {
+    pub fn write_batch(
+        &self,
+        write_options: &WriteOptions,
+        batch: SkipMap<LSNKey<UK>, Value>,
+    ) -> Result<()> {
         {
             let mut wal_guard = self.inner.wal.lock().unwrap();
             for (key, value) in batch.iter() {
-                wal_guard.append(&key, Some(value))?;
+                wal_guard.append(write_options, &key, Some(value))?;
             }
         }
 
@@ -246,6 +258,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::db::key_types::{I32UserKey, InternalKey, LSNKey, LSN};
+    use crate::db::options::WriteOptions;
     use crate::db::transaction::write_committed::WriteCommittedDB;
     use crate::db::DB;
     use crate::memory::SkipMapMemTable;
@@ -266,7 +279,7 @@ mod tests {
                 >::open(path)
                 .unwrap(),
             );
-        let mut txn1 = WriteCommittedDB::start_transaction(&db);
+        let mut txn1 = WriteCommittedDB::start_transaction(&db, WriteOptions { sync: false });
         for i in 1..=10i32 {
             txn1.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
                 .unwrap();
@@ -282,7 +295,7 @@ mod tests {
 
         let snapshot = WriteCommittedDB::snapshot(&db);
         {
-            let mut txn2 = WriteCommittedDB::start_transaction(&db);
+            let mut txn2 = WriteCommittedDB::start_transaction(&db, WriteOptions { sync: true });
             txn2.set(
                 Vec::from(10i32.to_be_bytes()),
                 Vec::from(1000i32.to_be_bytes()),
@@ -304,13 +317,19 @@ mod tests {
             SkipMapMemTable<LSNKey<I32UserKey>>,
             LSNWriteAheadLog,
         > = WriteCommittedDB::open(path).unwrap();
-        db.set_by_user_key(I32UserKey::new(4), Vec::from(4i32.to_le_bytes()))
-            .unwrap();
+        let write_options = WriteOptions { sync: true };
+        db.set_by_user_key(
+            &write_options,
+            I32UserKey::new(4),
+            Vec::from(4i32.to_le_bytes()),
+        )
+        .unwrap();
         let value = db.get_by_user_key(I32UserKey::new(4)).unwrap();
         assert_eq!(value, Some(Vec::from(4i32.to_le_bytes())));
         assert!(db.get_by_user_key(I32UserKey::new(0)).unwrap().is_none());
         for _ in 0..4 {
-            db.remove_by_user_key(I32UserKey::new(4)).unwrap();
+            db.remove_by_user_key(&write_options, I32UserKey::new(4))
+                .unwrap();
             assert!(db.get_by_user_key(I32UserKey::new(4)).unwrap().is_none());
         }
     }

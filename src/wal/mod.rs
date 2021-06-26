@@ -1,4 +1,5 @@
 use crate::db::key_types::MemKey;
+use crate::db::options::WriteOptions;
 use crate::db::Value;
 use crate::memory::MemTable;
 use crate::Result;
@@ -16,7 +17,12 @@ pub trait WAL<SK: MemKey, UK: MemKey>: Sized + Sync + Send {
     fn load_log(file: &File, mem_table: &mut impl MemTable<SK, UK>) -> Result<()>;
 
     /// Append a key-value pair to `mut_log`
-    fn append(&mut self, key: &SK, value: Option<&Value>) -> Result<()>;
+    fn append(
+        &mut self,
+        write_options: &WriteOptions,
+        key: &SK,
+        value: Option<&Value>,
+    ) -> Result<()>;
 
     fn clear_imm_log(&mut self) -> Result<()>;
 

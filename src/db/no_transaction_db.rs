@@ -1,6 +1,7 @@
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::MemKey;
+use crate::db::options::WriteOptions;
 use crate::db::{Value, ACTIVE_SIZE_THRESHOLD, DB};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
@@ -93,16 +94,16 @@ where
         }
     }
 
-    fn set(&self, key: SK, value: Value) -> Result<()> {
-        let mem_table_guard = self.set_locked(key, value)?;
+    fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()> {
+        let mem_table_guard = self.set_locked(write_options, key, value)?;
         if self.should_freeze(mem_table_guard.len()) {
             self.freeze(mem_table_guard);
         }
         Ok(())
     }
 
-    fn remove(&self, key: SK) -> Result<()> {
-        let mem_table_guard = self.remove_locked(key)?;
+    fn remove(&self, write_options: &WriteOptions, key: SK) -> Result<()> {
+        let mem_table_guard = self.remove_locked(write_options, key)?;
         if self.should_freeze(mem_table_guard.len()) {
             self.freeze(mem_table_guard);
         }
@@ -140,10 +141,15 @@ where
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK>,
 {
-    pub(crate) fn set_locked(&self, key: SK, value: Value) -> Result<RwLockWriteGuard<M>> {
+    pub(crate) fn set_locked(
+        &self,
+        write_options: &WriteOptions,
+        key: SK,
+        value: Value,
+    ) -> Result<RwLockWriteGuard<M>> {
         {
             let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.append(&key, Some(&value))?;
+            wal_guard.append(write_options, &key, Some(&value))?;
         }
 
         let mut mem_table_guard = self.mut_mem_table.write().unwrap();
@@ -153,9 +159,13 @@ where
         Ok(mem_table_guard)
     }
 
-    pub(crate) fn remove_locked(&self, key: SK) -> Result<RwLockWriteGuard<M>> {
+    pub(crate) fn remove_locked(
+        &self,
+        write_options: &WriteOptions,
+        key: SK,
+    ) -> Result<RwLockWriteGuard<M>> {
         let mut wal_writer_lock = self.wal.lock().unwrap();
-        wal_writer_lock.append(&key, None)?;
+        wal_writer_lock.append(write_options, &key, None)?;
 
         let mut mem_table_guard = self.mut_mem_table.write().unwrap();
         mem_table_guard.remove(key)?;
@@ -252,6 +262,7 @@ where
 pub(crate) mod tests {
     use crate::db::key_types::{I32UserKey, InternalKey, MemKey};
     use crate::db::no_transaction_db::NoTransactionDB;
+    use crate::db::options::WriteOptions;
     use crate::db::{ACTIVE_SIZE_THRESHOLD, DB, MAX_LEVEL};
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
@@ -340,26 +351,29 @@ pub(crate) mod tests {
         path: &Path,
         value_prefix: u32,
     ) {
+        let wo = WriteOptions { sync: false };
         let db = NoTransactionDB::<InternalKey, InternalKey, M, SimpleWriteAheadLog>::open(path)
             .unwrap();
         db.set(
+            &wo,
             "hello".into(),
             format!("world_{}", value_prefix).into_bytes(),
         )
         .unwrap();
-        db.remove("no_exist".into()).unwrap();
+        db.remove(&wo, "no_exist".into()).unwrap();
         let hello = Vec::from("hello");
         assert_eq!(
             format!("world_{}", value_prefix).into_bytes(),
             db.get(&hello).unwrap().unwrap()
         );
-        db.remove("hello".into()).unwrap();
+        db.remove(&wo, "hello".into()).unwrap();
 
         let v = db.get(&hello).unwrap();
         assert!(v.is_none(), "{:?}", v);
 
         for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
             db.set(
+                &wo,
                 format!("key{}", if i < ACTIVE_SIZE_THRESHOLD { 0 } else { i }).into_bytes(),
                 format!("value{}_{}", i, value_prefix).into_bytes(),
             )
@@ -367,6 +381,7 @@ pub(crate) mod tests {
         }
         for i in 0..ACTIVE_SIZE_THRESHOLD {
             db.set(
+                &wo,
                 format!("key{}", i).into_bytes(),
                 format!("value{}_{}", i, value_prefix).into_bytes(),
             )
@@ -420,6 +435,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_range_query() {
+        let wo = WriteOptions { sync: false };
         let temp_dir = tempfile::Builder::new()
             .prefix("range_query")
             .tempdir()
@@ -433,8 +449,12 @@ pub(crate) mod tests {
         >::open(path)
         .unwrap();
         for i in 1i32..(ACTIVE_SIZE_THRESHOLD * 5) as i32 {
-            db.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
-                .unwrap();
+            db.set(
+                &wo,
+                Vec::from(i.to_be_bytes()),
+                Vec::from((i + 1).to_be_bytes()),
+            )
+            .unwrap();
         }
 
         let skip_map = db
@@ -469,8 +489,10 @@ pub(crate) mod tests {
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
+        let wo = WriteOptions { sync: false };
         for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
             db.set(
+                &wo,
                 format!("{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
             )
@@ -494,6 +516,7 @@ pub(crate) mod tests {
         }
         for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
             db.set(
+                &wo,
                 format!("{}", i).into_bytes(),
                 format!("value{}", i).into_bytes(),
             )
@@ -573,7 +596,7 @@ pub(crate) mod tests {
             .tempdir()
             .unwrap();
         let path = temp_dir.path();
-
+        let write_option = WriteOptions { sync: false };
         let db = NoTransactionDB::<
             InternalKey,
             InternalKey,
@@ -584,8 +607,12 @@ pub(crate) mod tests {
 
         let map = create_random_map(20000);
         for (k, v) in map.iter() {
-            db.set(Vec::from(k.to_le_bytes()), Vec::from(v.to_le_bytes()))
-                .unwrap();
+            db.set(
+                &write_option,
+                Vec::from(k.to_le_bytes()),
+                Vec::from(v.to_le_bytes()),
+            )
+            .unwrap();
         }
         info!("start query");
         let mut not_found_map = HashMap::new();

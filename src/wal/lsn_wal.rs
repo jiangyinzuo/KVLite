@@ -36,6 +36,7 @@
 //! +-------------------+
 //! ```
 use crate::db::key_types::{InternalKey, LSNKey, MemKey, LSN};
+use crate::db::options::WriteOptions;
 use crate::db::Value;
 use crate::error::KVLiteError;
 use crate::ioutils::{read_bytes_exact, read_u64, BufReaderWithPos};
@@ -97,7 +98,12 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
         Ok(())
     }
 
-    fn append(&mut self, key: &LSNKey<UK>, value: Option<&Value>) -> Result<()> {
+    fn append(
+        &mut self,
+        write_options: &WriteOptions,
+        key: &LSNKey<UK>,
+        value: Option<&Value>,
+    ) -> Result<()> {
         let internal_key = key.internal_key();
         let key_length: [u8; 4] = (internal_key.len() as u32).to_le_bytes();
         self.inner.log1.write_all(&key_length)?;
@@ -114,7 +120,9 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
             }
         }
         self.inner.log1.flush()?;
-        self.inner.log1.sync_data()?;
+        if write_options.sync {
+            self.inner.log1.sync_data()?;
+        }
         Ok(())
     }
 

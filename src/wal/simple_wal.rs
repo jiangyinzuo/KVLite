@@ -1,4 +1,5 @@
 use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::options::WriteOptions;
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::memory::MemTable;
@@ -41,7 +42,12 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
         Ok(())
     }
 
-    fn append(&mut self, key: &InternalKey, value: Option<&Value>) -> Result<()> {
+    fn append(
+        &mut self,
+        write_options: &WriteOptions,
+        key: &InternalKey,
+        value: Option<&Value>,
+    ) -> Result<()> {
         let key_length: [u8; 4] = (key.len() as u32).to_le_bytes();
         self.inner.log1.write_all(&key_length)?;
         match value {
@@ -57,7 +63,9 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
             }
         }
         self.inner.log1.flush()?;
-        self.inner.log1.sync_data()?;
+        if write_options.sync {
+            self.inner.log1.sync_data()?;
+        }
         Ok(())
     }
 
@@ -73,6 +81,7 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
 #[cfg(test)]
 mod tests {
     use crate::db::key_types::InternalKey;
+    use crate::db::options::WriteOptions;
     use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
     use crate::wal::simple_wal::SimpleWriteAheadLog;
     use crate::wal::WAL;
@@ -88,12 +97,13 @@ mod tests {
         let mut wal: SimpleWriteAheadLog =
             SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());
-
+        let wo = WriteOptions { sync: false };
         for i in 1..4 {
             mut_mem = SkipMapMemTable::default();
             for j in 0..100 {
                 <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
                     &mut wal,
+                    &wo,
                     &format!("{}key{}", i, j).into_bytes(),
                     Some(&format!("{}value{}", i, j).into_bytes()),
                 )
@@ -101,6 +111,7 @@ mod tests {
                 if (j & 1) == 1 {
                     <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
                         &mut wal,
+                        &wo,
                         &format!("{}key{}", i, j).into_bytes(),
                         None,
                     )

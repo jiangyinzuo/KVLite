@@ -1,11 +1,13 @@
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::MemKey;
+use crate::db::options::WriteOptions;
 use crate::memory::MemTable;
 use crate::Result;
 use std::path::Path;
 
 pub mod key_types;
 pub mod no_transaction_db;
+pub mod options;
 pub mod transaction;
 
 #[cfg(debug_assertions)]
@@ -40,8 +42,8 @@ pub trait DBCommand<SK: MemKey, UK: MemKey> {
 pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
     fn open(db_path: impl AsRef<Path>) -> Result<Self>;
     fn get(&self, key: &SK) -> Result<Option<Value>>;
-    fn set(&self, key: SK, value: Value) -> Result<()>;
-    fn remove(&self, key: SK) -> Result<()>;
+    fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()>;
+    fn remove(&self, write_options: &WriteOptions, key: SK) -> Result<()>;
     fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value>>
     where
         UK: From<SK>;
