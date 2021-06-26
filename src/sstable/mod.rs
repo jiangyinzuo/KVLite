@@ -89,8 +89,8 @@ pub mod manager;
 mod table_cache;
 pub mod table_handle;
 
-pub const MAX_BLOCK_KV_PAIRS: u64 = 5;
-pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 2;
+pub const DATA_BLOCK_SIZE: usize = 4096;
+pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 4;
 
 fn get_min_key(reader: &mut BufReaderWithPos<File>) -> InternalKey {
     reader.seek(SeekFrom::Start(0)).unwrap();

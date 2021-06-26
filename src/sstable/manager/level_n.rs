@@ -10,7 +10,7 @@ use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_n::start_compact;
 use crate::db::key_types::{InternalKey, MemKey};
-use crate::db::{Value, MAX_LEVEL};
+use crate::db::{Value, MAX_LEVEL, WRITE_BUFFER_SIZE};
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::Result;
@@ -330,14 +330,7 @@ impl LevelNManager {
     /// If total size of `level` is larger than 10^i MB, it should be compacted.
     pub fn size_over(&self, level: NonZeroUsize) -> bool {
         let size = self.level_size(level.get());
-        #[cfg(debug_assertions)]
-        {
-            size > 10u64.pow(level.get() as u32) * 1024
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            size > 10u64.pow(level.get() as u32) * 1024 * 1024
-        }
+        size > 10u64.pow(level.get() as u32) * 1024 * 1024
     }
 
     pub(crate) fn get_handle_to_compact(

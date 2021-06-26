@@ -9,6 +9,7 @@ use std::sync::RwLock;
 pub struct SkipMapMemTable<SK: MemKey> {
     rw_lock: RwLock<()>,
     inner_guarded: SkipMap<SK, Value>,
+    mem_usage: u64,
 }
 
 impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
@@ -29,13 +30,17 @@ impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
 
     fn set(&mut self, key: InternalKey, value: Value) -> Result<()> {
         let _guard = self.rw_lock.write().unwrap();
+        let mem_usage = (key.len() + value.len()) * std::mem::size_of::<u8>();
         self.inner_guarded.insert(key, value);
+        self.mem_usage += mem_usage as u64;
         Ok(())
     }
 
     fn remove(&mut self, key: InternalKey) -> Result<()> {
         let _guard = self.rw_lock.write().unwrap();
+        let mem_usage = key.len() * std::mem::size_of::<u8>();
         self.inner_guarded.insert(key, InternalKey::new());
+        self.mem_usage += mem_usage as u64;
         Ok(())
     }
 }
@@ -58,6 +63,11 @@ impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
     fn merge(&mut self, kvs: SkipMap<InternalKey, Value>) {
         let _guard = self.rw_lock.write().unwrap();
         self.inner_guarded.merge(kvs);
+    }
+
+    fn approximate_memory_usage(&self) -> u64 {
+        let _guard = self.rw_lock.read().unwrap();
+        self.mem_usage
     }
 }
 
@@ -159,6 +169,11 @@ impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<U
     fn merge(&mut self, kvs: SkipMap<LSNKey<UK>, Value>) {
         let _guard = self.rw_lock.write().unwrap();
         self.inner_guarded.merge(kvs);
+    }
+
+    fn approximate_memory_usage(&self) -> u64 {
+        let _guard = self.rw_lock.read().unwrap();
+        self.mem_usage
     }
 }
 

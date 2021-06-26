@@ -1,8 +1,3 @@
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::ops::Deref;
-use std::sync::{Arc, RwLock};
-
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
@@ -17,7 +12,11 @@ use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::IndexBlock;
 use crate::sstable::table_cache::IndexCache;
-use crate::sstable::{get_min_key, MAX_BLOCK_KV_PAIRS};
+use crate::sstable::{get_min_key, DATA_BLOCK_SIZE};
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::ops::Deref;
+use std::sync::{Arc, RwLock};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum TableStatus {
@@ -65,7 +64,7 @@ impl TableWriteHandle {
         // write Data Blocks
         for (i, (k, v)) in table.kv_iter().enumerate() {
             self.writer.write_key_value(k, v);
-            if self.writer.count == MAX_BLOCK_KV_PAIRS || i == table.len() - 1 {
+            if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == table.len() - 1 {
                 self.writer.add_index(k.clone());
             }
         }
@@ -80,7 +79,7 @@ impl TableWriteHandle {
         // write Data Blocks
         for (i, (k, v)) in kvs.iter().enumerate() {
             self.writer.write_key_value(*k, *v);
-            if self.writer.count == MAX_BLOCK_KV_PAIRS || i == kvs.len() - 1 {
+            if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == kvs.len() - 1 {
                 self.writer.add_index((*k).clone());
             }
         }
@@ -93,7 +92,7 @@ impl TableWriteHandle {
         let length = kvs.len();
         for (i, (k, v)) in kvs.into_iter().enumerate() {
             self.writer.write_key_value(&k, &v);
-            if self.writer.count == MAX_BLOCK_KV_PAIRS || i == length - 1 {
+            if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == length - 1 {
                 self.writer.add_index(k);
             }
         }
@@ -137,7 +136,7 @@ pub(crate) struct TableWriter {
     #[cfg(debug_assertions)]
     kv_count: u32,
 
-    pub(crate) count: u64,
+    pub(crate) datablock_size: usize,
     pub(crate) last_pos: u64,
     pub(crate) index_block: IndexBlock,
     pub(crate) writer: BufWriterWithPos<File>,
@@ -150,7 +149,7 @@ impl TableWriter {
             kv_total,
             #[cfg(debug_assertions)]
             kv_count: 0,
-            count: 0,
+            datablock_size: 0,
             last_pos: 0,
             index_block: IndexBlock::default(),
             writer,
@@ -169,7 +168,7 @@ impl TableWriter {
         self.writer.write_all(k).unwrap();
         self.writer.write_all(v).unwrap();
 
-        self.count += 1;
+        self.datablock_size += (k_len + v_len + 8) as usize;
 
         #[cfg(debug_assertions)]
         {
@@ -187,7 +186,7 @@ impl TableWriter {
             max_key,
         );
         self.last_pos = self.writer.pos;
-        self.count = 0;
+        self.datablock_size = 0;
     }
 
     pub(crate) fn write_index_filter_footer(&mut self) {

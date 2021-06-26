@@ -4,7 +4,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 pub(super) fn write_filter_block(filter: &mut BloomFilter, writer: &mut (impl Write + Seek)) {
     debug_assert!(filter.len() >= 8);
     writer.write_all(&filter.0).unwrap();
-    writer.flush().unwrap();
 }
 
 pub(super) fn load_filter_block(

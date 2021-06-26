@@ -42,14 +42,17 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
 
 ## Performance
 
-Unbuntu20.04  
-Linux version 5.4.0-70-generic  
-Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
-
-|            |  insert | query |
-| ---------- |---------|-------|
-| 10^5       |  522ms  |  32ms |
-| 10^6       |  5.07s  | 4.38s |
+KVLite: version 0.1.0
+Date: 2021-06-26T15:50:44.833108382
+CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
+CPU Cache: 6144 KB
+Keys: 16 bytes each
+Values: 100 bytes each
+Entries: 1000000
+RawSize: 110.626220703125 MB (estimated)
+-------------------------------------------------
+fill_seq: 19.343180185323472 MB/s
+fill_random: 18.938593631742226 MB/s
 
 ## References
 

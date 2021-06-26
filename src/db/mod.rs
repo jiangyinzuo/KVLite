@@ -10,11 +10,7 @@ pub mod no_transaction_db;
 pub mod options;
 pub mod transaction;
 
-#[cfg(debug_assertions)]
-pub const ACTIVE_SIZE_THRESHOLD: usize = 300;
-#[cfg(not(debug_assertions))]
-pub const ACTIVE_SIZE_THRESHOLD: usize = 1000;
-
+pub const WRITE_BUFFER_SIZE: u64 = 4 * 1024 * 1024;
 pub const MAX_LEVEL: usize = 7;
 
 pub(crate) const fn max_level_shift() -> usize {

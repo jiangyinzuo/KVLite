@@ -15,6 +15,7 @@ pub trait MemTable<SK: MemKey, UK: MemKey>:
     DBCommand<SK, UK> + Default + InternalKeyValueIterator + Send + Sync
 {
     fn merge(&mut self, kvs: SkipMap<SK, Value>);
+    fn approximate_memory_usage(&self) -> u64;
 }
 
 pub trait InternalKeyValueIterator {

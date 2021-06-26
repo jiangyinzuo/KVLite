@@ -2,7 +2,7 @@ use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::MemKey;
 use crate::db::options::WriteOptions;
-use crate::db::{Value, ACTIVE_SIZE_THRESHOLD, DB};
+use crate::db::{Value, DB, WRITE_BUFFER_SIZE};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
@@ -12,7 +12,7 @@ use crossbeam_channel::Sender;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 pub struct NoTransactionDB<
@@ -23,8 +23,8 @@ pub struct NoTransactionDB<
 > {
     db_path: String,
     pub(crate) wal: Arc<Mutex<L>>,
-    pub(crate) mut_mem_table: RwLock<M>,
-    imm_mem_table: Arc<RwLock<M>>,
+    pub(crate) mut_mem_table: Mutex<M>,
+    imm_mem_table: Arc<Mutex<M>>,
 
     level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
     leveln_manager: Arc<LevelNManager>,
@@ -53,7 +53,7 @@ where
             L::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
         ));
 
-        let imm_mem_table = Arc::new(RwLock::new(M::default()));
+        let imm_mem_table = Arc::new(Mutex::new(M::default()));
         let channel = crossbeam_channel::unbounded();
 
         let background_task_write_to_level0_is_running = Arc::new(AtomicBool::default());
@@ -71,7 +71,7 @@ where
         Ok(NoTransactionDB {
             db_path,
             wal,
-            mut_mem_table: RwLock::new(mut_mem_table),
+            mut_mem_table: Mutex::new(mut_mem_table),
             imm_mem_table,
             leveln_manager,
             level0_manager,
@@ -96,7 +96,7 @@ where
 
     fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()> {
         let mem_table_guard = self.set_locked(write_options, key, value)?;
-        if self.should_freeze(mem_table_guard.len()) {
+        if self.should_freeze(mem_table_guard.approximate_memory_usage()) {
             self.freeze(mem_table_guard);
         }
         Ok(())
@@ -104,7 +104,7 @@ where
 
     fn remove(&self, write_options: &WriteOptions, key: SK) -> Result<()> {
         let mem_table_guard = self.remove_locked(write_options, key)?;
-        if self.should_freeze(mem_table_guard.len()) {
+        if self.should_freeze(mem_table_guard.approximate_memory_usage()) {
             self.freeze(mem_table_guard);
         }
         Ok(())
@@ -123,11 +123,11 @@ where
             &mut skip_map,
         );
         {
-            let imm_guard = self.imm_mem_table.read().unwrap();
+            let imm_guard = self.imm_mem_table.lock().unwrap();
             imm_guard.range_get(key_start, key_end, &mut skip_map);
         }
         {
-            let mem_table_guard = self.mut_mem_table.read().unwrap();
+            let mem_table_guard = self.mut_mem_table.lock().unwrap();
             mem_table_guard.range_get(key_start, key_end, &mut skip_map);
         }
         Ok(skip_map)
@@ -146,13 +146,13 @@ where
         write_options: &WriteOptions,
         key: SK,
         value: Value,
-    ) -> Result<RwLockWriteGuard<M>> {
+    ) -> Result<MutexGuard<M>> {
         {
             let mut wal_guard = self.wal.lock().unwrap();
             wal_guard.append(write_options, &key, Some(&value))?;
         }
 
-        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
+        let mut mem_table_guard = self.mut_mem_table.lock().unwrap();
 
         mem_table_guard.set(key, value)?;
 
@@ -163,23 +163,23 @@ where
         &self,
         write_options: &WriteOptions,
         key: SK,
-    ) -> Result<RwLockWriteGuard<M>> {
+    ) -> Result<MutexGuard<M>> {
         let mut wal_writer_lock = self.wal.lock().unwrap();
         wal_writer_lock.append(write_options, &key, None)?;
 
-        let mut mem_table_guard = self.mut_mem_table.write().unwrap();
+        let mut mem_table_guard = self.mut_mem_table.lock().unwrap();
         mem_table_guard.remove(key)?;
         Ok(mem_table_guard)
     }
 
-    pub(crate) fn should_freeze(&self, table_size: usize) -> bool {
-        table_size >= ACTIVE_SIZE_THRESHOLD
+    pub(crate) fn should_freeze(&self, table_size: u64) -> bool {
+        table_size >= WRITE_BUFFER_SIZE
             && !self
                 .background_task_write_to_level0_is_running
                 .load(Ordering::Acquire)
     }
 
-    pub(crate) fn freeze(&self, mut mem_guard: RwLockWriteGuard<M>) {
+    pub(crate) fn freeze(&self, mut mem_guard: MutexGuard<M>) {
         self.background_task_write_to_level0_is_running
             .store(true, Ordering::Release);
         {
@@ -190,7 +190,7 @@ where
 
         let mut imm_guard = self
             .imm_mem_table
-            .write()
+            .lock()
             .expect("error in RwLock on imm_tables");
 
         let imm_table = std::mem::take(mem_guard.deref_mut());
@@ -206,7 +206,7 @@ where
     fn query(&self, key: &SK) -> Result<Option<Value>> {
         // query mutable memory table
         {
-            let mem_table_guard = self.mut_mem_table.read().unwrap();
+            let mem_table_guard = self.mut_mem_table.lock().unwrap();
             let option = mem_table_guard.get(key)?;
             if option.is_some() {
                 return Ok(option);
@@ -217,7 +217,7 @@ where
         {
             let imm_guard = self
                 .imm_mem_table
-                .read()
+                .lock()
                 .expect("error in RwLock on imm_tables");
             let option = imm_guard.get(key)?;
             if option.is_some() {
@@ -260,10 +260,10 @@ where
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::db::key_types::{I32UserKey, InternalKey, MemKey};
+    use crate::db::key_types::InternalKey;
     use crate::db::no_transaction_db::NoTransactionDB;
     use crate::db::options::WriteOptions;
-    use crate::db::{ACTIVE_SIZE_THRESHOLD, DB, MAX_LEVEL};
+    use crate::db::{DB, MAX_LEVEL};
     use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
@@ -276,7 +276,7 @@ pub(crate) mod tests {
     use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
-    const TEST_CMD_TIMES: usize = 40;
+    const NUM_KEYS: u64 = 100000;
 
     #[test]
     fn test_command() {
@@ -312,7 +312,7 @@ pub(crate) mod tests {
         value_prefix: u32,
     ) {
         let mut not_found_key = vec![];
-        for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
+        for i in 0..NUM_KEYS {
             let v = db1.get(&format!("key{}", i).into_bytes());
             let value = v.unwrap();
             if let Some(value) = value {
@@ -371,15 +371,16 @@ pub(crate) mod tests {
         let v = db.get(&hello).unwrap();
         assert!(v.is_none(), "{:?}", v);
 
-        for i in 0..ACTIVE_SIZE_THRESHOLD * TEST_CMD_TIMES {
+        let num_keys_zero = NUM_KEYS / 10;
+        for i in 0..NUM_KEYS {
             db.set(
                 &wo,
-                format!("key{}", if i < ACTIVE_SIZE_THRESHOLD { 0 } else { i }).into_bytes(),
+                format!("key{}", if i < num_keys_zero { 0 } else { i }).into_bytes(),
                 format!("value{}_{}", i, value_prefix).into_bytes(),
             )
             .unwrap();
         }
-        for i in 0..ACTIVE_SIZE_THRESHOLD {
+        for i in 0..num_keys_zero {
             db.set(
                 &wo,
                 format!("key{}", i).into_bytes(),
@@ -448,7 +449,7 @@ pub(crate) mod tests {
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
-        for i in 1i32..(ACTIVE_SIZE_THRESHOLD * 5) as i32 {
+        for i in 1i32..NUM_KEYS as i32 {
             db.set(
                 &wo,
                 Vec::from(i.to_be_bytes()),
@@ -490,7 +491,7 @@ pub(crate) mod tests {
         >::open(path)
         .unwrap();
         let wo = WriteOptions { sync: false };
-        for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
+        for i in 0..NUM_KEYS - 1 {
             db.set(
                 &wo,
                 format!("{}", i).into_bytes(),
@@ -508,13 +509,13 @@ pub(crate) mod tests {
         >::open(path)
         .unwrap();
 
-        for i in 0..ACTIVE_SIZE_THRESHOLD - 1 {
+        for i in 0..NUM_KEYS - 1 {
             assert_eq!(
                 Some(format!("value{}", i).into_bytes()),
                 db.get(&format!("{}", i).into_bytes()).unwrap()
             );
         }
-        for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
+        for i in NUM_KEYS..NUM_KEYS + 30 {
             db.set(
                 &wo,
                 format!("{}", i).into_bytes(),
@@ -565,7 +566,7 @@ pub(crate) mod tests {
         db: Arc<NoTransactionDB<InternalKey, InternalKey, M, SimpleWriteAheadLog>>,
     ) {
         for _ in 0..3 {
-            for i in ACTIVE_SIZE_THRESHOLD..ACTIVE_SIZE_THRESHOLD + 30 {
+            for i in NUM_KEYS..NUM_KEYS + 30 {
                 assert_eq!(
                     Some(format!("value{}", i).into_bytes()),
                     db.get(&format!("{}", i).into_bytes())

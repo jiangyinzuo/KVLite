@@ -8,7 +8,7 @@ use crate::wal::TransactionWAL;
 use crate::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLockWriteGuard};
+use std::sync::{Arc, MutexGuard};
 
 pub struct SnapShot<UK, M, L>
 where
@@ -170,7 +170,7 @@ where
 
     #[inline]
     fn remove(&self, write_options: &WriteOptions, key: LSNKey<UK>) -> Result<()> {
-        let guard = self.inner.remove_locked(&write_options, key)?;
+        let guard = self.inner.remove_locked(write_options, key)?;
         self.may_freeze(guard);
         Ok(())
     }
@@ -235,20 +235,22 @@ where
         {
             let mut wal_guard = self.inner.wal.lock().unwrap();
             for (key, value) in batch.iter() {
-                wal_guard.append(write_options, &key, Some(value))?;
+                wal_guard.append(write_options, key, Some(value))?;
             }
         }
 
-        let mut mem_table_guard = self.inner.mut_mem_table.write().unwrap();
+        let mut mem_table_guard = self.inner.mut_mem_table.lock().unwrap();
         mem_table_guard.merge(batch);
 
         self.may_freeze(mem_table_guard);
         Ok(())
     }
 
-    fn may_freeze(&self, mem_table_guard: RwLockWriteGuard<M>) {
+    fn may_freeze(&self, mem_table_guard: MutexGuard<M>) {
         if self.num_lsn_acquired.load(Ordering::Acquire) == 0
-            && self.inner.should_freeze(mem_table_guard.len())
+            && self
+                .inner
+                .should_freeze(mem_table_guard.approximate_memory_usage())
         {
             self.inner.freeze(mem_table_guard);
         }

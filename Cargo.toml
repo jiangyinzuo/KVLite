@@ -8,20 +8,26 @@ edition = "2018"
 
 [dependencies]
 crossbeam-channel = "0.5"
+chrono = "0.4.19"
 thiserror = "1.0.24"
 log = "0.4.14"
 memmap = "0.7.0"
 rand = "0.8.3"
 rayon = "1.5"
+tempfile = "3.2.0"
+procfs = "0.9.1"
 
 [dev-dependencies]
-tempfile = "3.2.0"
 env_logger = "0.8.3"
 layout = {path = "./benches/layout"}
 
 [features]
 default = []
 mmap = []
+
+[[bin]]
+name = "db_bench"
+path = "bin/db_bench.rs"
 
 [[bench]]
 name = "range_query"
@@ -30,4 +36,3 @@ path = "benches/layout_bench/range_query.rs"
 [[bench]]
 name = "point_query"
 path = "benches/layout_bench/point_query.rs"
-

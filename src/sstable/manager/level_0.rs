@@ -2,7 +2,7 @@ use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::db::key_types::{InternalKey, MemKey};
-use crate::db::{Value, ACTIVE_SIZE_THRESHOLD};
+use crate::db::{Value, WRITE_BUFFER_SIZE};
 use crate::memory::MemTable;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_cache::IndexCache;
@@ -109,7 +109,7 @@ where
         db_path: String,
         leveln_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<L>>,
-        imm_mem_table: Arc<RwLock<M>>,
+        imm_mem_table: Arc<Mutex<M>>,
         index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
         recv: Receiver<()>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
@@ -132,7 +132,7 @@ where
                     debug_assert!(manager2
                         .background_task_write_to_level0_is_running
                         .load(Ordering::Acquire));
-                    let imm_guard = imm_mem_table.read().unwrap();
+                    let imm_guard = imm_mem_table.lock().unwrap();
                     if let Err(e) = manager2.write_to_table(imm_guard.deref()) {
                         let bt = std::backtrace::Backtrace::capture();
                         error!(
@@ -171,7 +171,7 @@ where
 
     pub fn may_compact(&self) {
         let table_count = self.file_count();
-        if table_count > LEVEL0_FILES_THRESHOLD || self.size_over() {
+        if table_count > LEVEL0_FILES_THRESHOLD {
             if let Err(e) = self.sender.send(true) {
                 warn!("{:#?}", e);
             }
@@ -294,18 +294,6 @@ where
             .erase(&table_handle.table_key(), table_handle.hash());
     }
 
-    /// Get total size of sstables in level 0
-    #[inline]
-    pub(crate) fn level_size(&self) -> u64 {
-        self.file_size.load(Ordering::Acquire)
-    }
-
-    /// If total size of level 0 is larger than 1 MB, it should be compacted.
-    fn size_over(&self) -> bool {
-        let size = self.level_size();
-        size > ACTIVE_SIZE_THRESHOLD as u64 * LEVEL0_FILES_THRESHOLD as u64 * 10
-    }
-
     pub fn random_handle(&self) -> Arc<TableReadHandle> {
         let guard = self.level0_tables.read().unwrap();
         let mut rng = rand::thread_rng();
@@ -355,20 +343,19 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex, RwLock};
-    use std::time::Duration;
-
-    use tempfile::TempDir;
-
     use crate::db::key_types::InternalKey;
     use crate::db::DBCommand;
-    use crate::db::ACTIVE_SIZE_THRESHOLD;
     use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
     use crate::wal::WAL;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    const NUM_KEYS: u64 = 10000;
 
     #[test]
     fn test() {
@@ -393,7 +380,7 @@ mod tests {
 
         assert!(mut_mem.is_empty());
 
-        let imm_mem = Arc::new(RwLock::new(SkipMapMemTable::default()));
+        let imm_mem = Arc::new(Mutex::new(SkipMapMemTable::default()));
 
         let background = Arc::new(AtomicBool::default());
         let (manager, handle) = Level0Manager::start_task_write_level0(
@@ -407,9 +394,8 @@ mod tests {
         );
 
         if insert_value {
-            assert_eq!(manager.level_size(), 0);
-            let mut imm_mem_guard = imm_mem.write().unwrap();
-            for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
+            let mut imm_mem_guard = imm_mem.lock().unwrap();
+            for i in 0..NUM_KEYS {
                 imm_mem_guard
                     .set(
                         format!("key{}", i).into_bytes(),
@@ -426,9 +412,7 @@ mod tests {
         // wait for writing data
         std::thread::sleep(Duration::from_secs(1));
 
-        assert!(manager.level_size() > 0);
-
-        for i in 0..ACTIVE_SIZE_THRESHOLD * 4 {
+        for i in 0..NUM_KEYS {
             let key = format!("key{}", i).into_bytes();
             let v = manager
                 .query(&key)

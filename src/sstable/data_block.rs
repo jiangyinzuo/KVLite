@@ -4,6 +4,7 @@ use crate::ioutils::{read_bytes_exact, read_u32};
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom};
 
+/// TODO: modify the format of datablock, change this function
 pub(super) fn get_value_from_data_block(
     reader: &mut (impl Read + Seek),
     key: &InternalKey,
