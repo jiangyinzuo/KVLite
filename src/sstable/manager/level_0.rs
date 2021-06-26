@@ -1,15 +1,3 @@
-use std::collections::BTreeMap;
-use std::marker::PhantomData;
-use std::num::NonZeroUsize;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
-use std::thread::JoinHandle;
-
-use crossbeam_channel::Receiver;
-use rand::Rng;
-
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
@@ -20,9 +8,18 @@ use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_cache::IndexCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
-use crate::wal::simple_wal::SimpleWriteAheadLog;
 use crate::wal::WAL;
 use crate::Result;
+use crossbeam_channel::Receiver;
+use rand::Rng;
+use std::collections::BTreeMap;
+use std::marker::PhantomData;
+use std::num::NonZeroUsize;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::thread::JoinHandle;
 
 /// Struct for read and write level0 sstable.
 pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {

@@ -1,3 +1,4 @@
+use crate::env::file_system::SequentialReadableFile;
 use crate::Result;
 use std::fs::File;
 use std::io;
@@ -28,11 +29,6 @@ impl<R: Read + Seek> BufReaderWithPos<R> {
         })
     }
 
-    #[inline]
-    pub fn position(&self) -> u64 {
-        self.pos
-    }
-
     pub fn into_inner(self) -> R {
         self.reader.into_inner()
     }
@@ -57,6 +53,11 @@ impl<R: Read + Seek> Seek for BufReaderWithPos<R> {
     }
 }
 
+impl<R: Read + Seek> SequentialReadableFile for BufReaderWithPos<R> {
+    fn position(&self) -> usize {
+        self.pos as usize
+    }
+}
 pub struct BufWriterWithPos<W: Write + Seek> {
     writer: BufWriter<W>,
     pub pos: u64,
@@ -98,13 +99,13 @@ impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
     }
 }
 
-pub fn read_u32<R: Read + Seek>(reader: &mut BufReaderWithPos<R>) -> Result<u32> {
+pub fn read_u32<R: Read + Seek>(reader: &mut R) -> Result<u32> {
     let mut nums = [0u8; 4];
     reader.read_exact(&mut nums)?;
     Ok(u32::from_le_bytes(nums))
 }
 
-pub fn read_u64<R: Read + Seek>(reader: &mut BufReaderWithPos<R>) -> Result<u64> {
+pub fn read_u64<R: Read + Seek>(reader: &mut R) -> Result<u64> {
     let mut nums = [0u8; 8];
     reader.read_exact(&mut nums)?;
     Ok(u64::from_le_bytes(nums))

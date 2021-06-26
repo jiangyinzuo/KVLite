@@ -4,7 +4,7 @@ use kvlite::db::DB;
 use kvlite::memory::SkipMapMemTable;
 use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 
-const NUM_KVS: i32 = 1000000;
+const NUM_KVS: i32 = 100000;
 
 fn main() {
     let path = tempfile::tempdir().unwrap();

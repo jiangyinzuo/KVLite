@@ -2,8 +2,7 @@ use crate::db::key_types::InternalKey;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
 use crate::sstable::footer::Footer;
 use crate::Result;
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
 pub struct IndexBlock {
@@ -27,7 +26,7 @@ impl IndexBlock {
         Ok(())
     }
 
-    pub(crate) fn load_index(reader: &mut BufReaderWithPos<File>, footer: &Footer) -> IndexBlock {
+    pub(crate) fn load_index<R: Read + Seek>(reader: &mut R, footer: &Footer) -> IndexBlock {
         reader
             .seek(SeekFrom::Start(footer.index_block_offset as u64))
             .unwrap();

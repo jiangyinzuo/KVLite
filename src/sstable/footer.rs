@@ -2,7 +2,7 @@ use crate::error::KVLiteError;
 use crate::ioutils::{read_u32, BufReaderWithPos, BufWriterWithPos};
 use crate::Result;
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const FOOTER_MAGIC_NUMBER: u32 = 0xdb991122;
 pub const FOOTER_BYTE_SIZE: i64 = 20;
@@ -38,7 +38,7 @@ impl Footer {
         Ok(())
     }
 
-    pub(crate) fn load_footer(reader: &mut BufReaderWithPos<File>) -> Result<Footer> {
+    pub(crate) fn load_footer(reader: &mut (impl Read + Seek)) -> Result<Footer> {
         reader.seek(SeekFrom::End(-FOOTER_BYTE_SIZE))?;
 
         let index_block_offset = read_u32(reader)?;

@@ -10,6 +10,7 @@ edition = "2018"
 crossbeam-channel = "0.5"
 thiserror = "1.0.24"
 log = "0.4.14"
+memmap = "0.7.0"
 rand = "0.8.3"
 rayon = "1.5"
 
@@ -17,6 +18,10 @@ rayon = "1.5"
 tempfile = "3.2.0"
 env_logger = "0.8.3"
 layout = {path = "./benches/layout"}
+
+[features]
+default = []
+mmap = []
 
 [[bench]]
 name = "range_query"

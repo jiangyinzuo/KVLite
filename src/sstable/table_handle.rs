@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
@@ -8,6 +8,7 @@ use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{max_level_shift, Value};
+use crate::env::file_system::{FileSystem, SequentialReadableFile};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::InternalKeyValueIterator;
@@ -37,12 +38,7 @@ pub struct TableWriteHandle {
 }
 
 impl TableWriteHandle {
-    pub fn new(
-        db_path: &str,
-        level: usize,
-        table_id: u64,
-        kv_total: u32,
-    ) -> TableWriteHandle {
+    pub fn new(db_path: &str, level: usize, table_id: u64, kv_total: u32) -> TableWriteHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
         let writer = {
             let mut file = OpenOptions::new()
@@ -314,11 +310,8 @@ impl TableReadHandle {
     }
 
     /// Used for read sstable
-    pub fn create_buf_reader_with_pos(&self) -> BufReaderWithPos<File> {
-        let mut file = File::open(&self.file_path)
-            .unwrap_or_else(|e| panic!("{:#?}\n\n file_path: {}", e, &self.file_path));
-        file.seek(SeekFrom::Start(0)).unwrap();
-        BufReaderWithPos::new(file).unwrap()
+    pub fn create_buf_reader_with_pos(&self) -> impl SequentialReadableFile {
+        FileSystem::create_seq_readable_file((&self.file_path).as_ref()).unwrap()
     }
 
     #[inline]
@@ -411,7 +404,7 @@ impl TableReadHandle {
             let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
             if let Some(offset) = index_block.find_first_ge(key_start) {
                 buf_reader.seek(SeekFrom::Start(offset as u64)).unwrap();
-                while buf_reader.position() < footer.index_block_offset as u64 {
+                while buf_reader.position() < footer.index_block_offset as usize {
                     let (k, v) = get_next_key_value(&mut buf_reader);
                     if k.le(key_end) {
                         kvs.insert(k.into(), v);
@@ -491,14 +484,14 @@ pub(crate) fn temp_file_name(file_name: &str) -> String {
 }
 
 pub struct Iter<'table> {
-    reader: BufReaderWithPos<File>,
+    reader: Box<dyn SequentialReadableFile>,
     max_key: &'table InternalKey,
     end: bool,
 }
 
 impl<'table> Iter<'table> {
     fn new(handle: &'table TableReadHandle) -> Iter<'table> {
-        let reader = handle.create_buf_reader_with_pos();
+        let reader = Box::new(handle.create_buf_reader_with_pos());
         Iter {
             reader,
             max_key: &handle.max_key,
