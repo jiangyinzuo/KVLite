@@ -458,19 +458,21 @@ pub(crate) mod tests {
             .unwrap();
         }
 
-        let skip_map = db
-            .range_get(
-                &Vec::from(1i32.to_be_bytes()),
-                &Vec::from(100i32.to_be_bytes()),
-            )
-            .unwrap();
-        assert_eq!(100, skip_map.len());
-        for node in skip_map.iter_ptr() {
-            unsafe {
-                assert_eq!(
-                    i32::from_be_bytes((*node).entry.key.clone().try_into().unwrap()) + 1,
-                    i32::from_be_bytes((*node).entry.value.clone().try_into().unwrap())
-                );
+        for start in [32, 2203, 1234, 123, 1234, 121, 9982] {
+            let skip_map = db
+                .range_get(
+                    &Vec::from((start + 1i32).to_be_bytes()),
+                    &Vec::from((start + 100i32).to_be_bytes()),
+                )
+                .unwrap();
+            assert_eq!(100, skip_map.len());
+            for node in skip_map.iter_ptr() {
+                unsafe {
+                    assert_eq!(
+                        i32::from_be_bytes((*node).entry.key.clone().try_into().unwrap()) + 1,
+                        i32::from_be_bytes((*node).entry.value.clone().try_into().unwrap())
+                    );
+                }
             }
         }
     }

@@ -569,6 +569,9 @@ impl<'table> Iterator for Iter<'table> {
 pub(crate) mod tests {
     use std::ops::Range;
 
+    use crate::sstable::data_block::DataBlock;
+    use crate::sstable::footer::Footer;
+    use crate::sstable::index_block::IndexBlock;
     use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 
     pub(crate) fn create_write_handle(
@@ -583,8 +586,8 @@ pub(crate) mod tests {
         let mut kvs = vec![];
         for i in range {
             kvs.push((
-                format!("key{}", i).into_bytes(),
-                format!("value{}_{}", i, level).into_bytes(),
+                format!("key{:02}", i).into_bytes(),
+                format!("value{:02}_{}", i, level).into_bytes(),
             ));
         }
         write_handle.write_sstable_from_vec(kvs).unwrap();
@@ -610,16 +613,45 @@ pub(crate) mod tests {
 
         let read_handle = create_read_handle(&path, 1, 1, 0..100);
         assert_eq!(read_handle.table_key(), 9);
-        assert_eq!(read_handle.min_key(), "key0".as_bytes());
+        assert_eq!(read_handle.min_key(), "key00".as_bytes());
         assert_eq!(read_handle.max_key(), "key99".as_bytes());
         for (i, kv) in read_handle.iter().enumerate() {
             assert_eq!(
                 kv,
                 (
-                    format!("key{}", i).into_bytes(),
-                    format!("value{}_1", i).into_bytes()
+                    format!("key{:02}", i).into_bytes(),
+                    format!("value{:02}_1", i).into_bytes()
                 )
             );
+        }
+
+        // test data_block
+        let mut reader = read_handle.create_buf_reader_with_pos();
+        let footer = Footer::load_footer(&mut reader).unwrap();
+        let index_block = IndexBlock::load_index(&mut reader, &footer);
+        assert_eq!(index_block.indexes.len(), 1);
+        for index in index_block.indexes {
+            let mut data_block = DataBlock::from_reader(&mut reader, index.0, index.1, index.2);
+            let length = (index.0 + index.1 - index.2) as usize / std::mem::size_of::<u32>();
+            for i in 0..100 {
+                assert_eq!(length, data_block.len());
+                let res = data_block.get_value(&Vec::from(format!("key{:02}", i)));
+                assert_eq!(
+                    Some(Vec::from(format!("value{:02}_1", i))),
+                    res,
+                    "error: {}",
+                    i
+                );
+            }
+            for s in ["key1", "key", "key100", "key-1"] {
+                let res = data_block.get_value(&Vec::from(s));
+                assert!(res.is_none());
+            }
+
+            for (i, (k, v)) in data_block.into_iter().enumerate() {
+                assert_eq!(format!("key{:02}", i), String::from_utf8(k).unwrap());
+                assert_eq!(format!("value{:02}_1", i), String::from_utf8(v).unwrap());
+            }
         }
     }
 }
