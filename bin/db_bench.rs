@@ -165,8 +165,8 @@ impl BenchMark {
         let end = std::time::Instant::now();
         let elapsed = (end - start).as_secs_f64();
         println!(
-            "read_random: {:?} MB/s ({} of {} found)",
-            RAW_SIZE / elapsed,
+            "read_random: {:?} reads per second ({} of {} found)",
+            NUM_KVS as f64 / elapsed,
             NUM_KVS - not_found,
             NUM_KVS
         );
@@ -179,9 +179,8 @@ fn main() {
     println!("-------------------------------------------------");
     let mut benchmark = BenchMark::new();
     benchmark.fill_seq();
-    benchmark.fill_random_sync();
-    benchmark.fill_random();
     benchmark.read_seq();
+    benchmark.fill_random_sync();
     benchmark.fill_random();
     benchmark.read_random();
 }
