@@ -43,18 +43,23 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
 
 ## Performance
 
-KVLite: version 0.1.0  
-Date: 2021-06-27T06:57:24.256792406  
-CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz  
-CPU Cache: 6144 KB  
-Keys: 16 bytes each  
-Values: 100 bytes each  
-Entries: 1000000  
-RawSize: 110.626220703125 MB (estimated)  
--------------------------------------------------
-fill_seq: 20.24293226973868 MB/s  
-fill_random: 19.444630014292265 MB/s  
-read_seq: 20.09639743417003 MB/s (632347 of 1000000 found)  
+### Setup
+
+    KVLite: version 0.1.0  
+    Date: 2021-06-27T06:57:24.256792406  
+    CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz  
+    CPU Cache: 6144 KB  
+    Keys: 16 bytes each  
+    Values: 100 bytes each  
+    Entries: 1000000  
+    RawSize: 110.626220703125 MB (estimated)
+
+### Performance
+
+    fill_seq: 20.449749898635243 MB/s
+    fill_random_sync: 0.100139876092273 MB/s) (10000 ops)
+    fill_random: 19.997378658308623 MB/s
+    read_seq: 19.812293545262236 MB/s (632106 of 1000000 found)
 
 ## References
 
