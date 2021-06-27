@@ -33,7 +33,7 @@ impl DataBlock {
         }
     }
 
-    pub(super) fn get_value(&mut self, key: &InternalKey) -> Option<Value> {
+    pub(super) fn get_value(&self, key: &InternalKey) -> Option<Value> {
         let mut left = 0;
         let mut right = self.num_records;
         while left <= right {
@@ -69,7 +69,7 @@ impl DataBlock {
 
     /// Return whether the data block remains keys.
     pub(super) fn get_all_record_le<UK: MemKey>(
-        &mut self,
+        &self,
         key: &InternalKey,
         kvs: &mut SkipMap<UK, Value>,
     ) -> bool {

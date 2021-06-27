@@ -238,6 +238,11 @@ impl<K: Eq, V> LRUEntry<K, V> {
     pub fn value(&self) -> &V {
         unsafe { self.value.assume_init_ref() }
     }
+
+    #[inline]
+    pub fn value_mut(&mut self) -> &mut V {
+        unsafe { self.value.assume_init_mut() }
+    }
 }
 
 unsafe impl<K: Eq, V> Send for LRUEntry<K, V> {}

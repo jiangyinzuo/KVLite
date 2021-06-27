@@ -54,12 +54,16 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
     Entries: 1000000  
     RawSize: 110.626220703125 MB (estimated)
 
-### Performance
+### Write Performance
 
-    fill_seq: 20.449749898635243 MB/s
-    fill_random_sync: 0.100139876092273 MB/s) (10000 ops)
-    fill_random: 19.997378658308623 MB/s
-    read_seq: 19.812293545262236 MB/s (632106 of 1000000 found)
+    fill_seq: 20.86908059215787 MB/s
+    fill_random_sync: 0.10358260552646938 MB/s) (10000 ops)
+    fill_random: 20.007082771526633 MB/s
+
+### Read Performance
+
+    read_seq: 42.72525711818498 MB/s (631608 of 1000000 found)
+    read_random: 22.622912331989816 MB/s (632193 of 1000000 found)
 
 ## References
 

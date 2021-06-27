@@ -12,7 +12,7 @@ use crate::sstable::data_block::{DataBlock, DataBlockIter};
 use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::IndexBlock;
-use crate::sstable::table_cache::IndexCache;
+use crate::sstable::table_cache::TableCache;
 use crate::sstable::{get_min_key, DATA_BLOCK_SIZE};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -370,14 +370,24 @@ impl TableReadHandle {
     }
 
     /// Query value by `key` with `cache`
-    pub fn query_sstable_with_cache(&self, key: &InternalKey, cache: &IndexCache) -> Option<Value> {
+    pub fn query_sstable_with_cache(
+        &self,
+        key: &InternalKey,
+        cache: &mut TableCache,
+    ) -> Option<Value> {
         if cache.filter.may_contain(key) {
             if let Some((offset, length, index_offset)) = cache.index.may_contain_key(key) {
-                let mut buf_reader = self.create_buf_reader_with_pos();
-                let mut data_block =
-                    DataBlock::from_reader(&mut buf_reader, offset, length, index_offset);
-                let option = data_block.get_value(key);
-                return option;
+                return match cache.start_data_block_map.get(&offset) {
+                    Some(data_block) => data_block.get_value(key),
+                    None => {
+                        let mut buf_reader = self.create_buf_reader_with_pos();
+                        let data_block =
+                            DataBlock::from_reader(&mut buf_reader, offset, length, index_offset);
+                        let option = data_block.get_value(key);
+                        cache.start_data_block_map.insert(offset, data_block);
+                        option
+                    }
+                };
             }
         }
         None
@@ -387,7 +397,7 @@ impl TableReadHandle {
     pub fn query_sstable(
         &self,
         key: &InternalKey,
-        lru_cache: &Arc<ShardLRUCache<u64, IndexCache>>,
+        lru_cache: &Arc<ShardLRUCache<u64, TableCache>>,
     ) -> Option<Value> {
         let mut buf_reader = self.create_buf_reader_with_pos();
         let footer = Footer::load_footer(&mut buf_reader).unwrap();
@@ -400,19 +410,22 @@ impl TableReadHandle {
         if bloom_filter.may_contain(key) {
             let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
             let may_contain_key = index_block.may_contain_key(key);
-            let cache = IndexCache {
-                filter: bloom_filter,
-                index: index_block,
-            };
-            lru_cache.insert_no_exists(self.table_key, cache, self.hash);
-            if let Some((offset, length, index_offset)) = may_contain_key {
+            let mut cache = TableCache::new(bloom_filter, index_block);
+
+            let option = if let Some((offset, length, index_offset)) = may_contain_key {
                 let mut data_block =
                     DataBlock::from_reader(&mut buf_reader, offset, length, index_offset);
                 let option = data_block.get_value(key);
-                return option;
-            }
+                cache.start_data_block_map.insert(offset, data_block);
+                option
+            } else {
+                None
+            };
+            lru_cache.insert_no_exists(self.table_key, cache, self.hash);
+            option
+        } else {
+            None
         }
-        None
     }
 
     /// Query all the key-value pairs in [`key_start`, `key_end`] and insert them into `kvs`

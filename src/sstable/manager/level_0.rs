@@ -1,11 +1,11 @@
-use crate::cache::ShardLRUCache;
+use crate::cache::{LRUEntry, ShardLRUCache};
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::db::key_types::{InternalKey, MemKey};
-use crate::db::{Value, WRITE_BUFFER_SIZE};
+use crate::db::Value;
 use crate::memory::MemTable;
 use crate::sstable::manager::level_n::LevelNManager;
-use crate::sstable::table_cache::IndexCache;
+use crate::sstable::table_cache::TableCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
 use crate::wal::WAL;
@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -35,7 +35,7 @@ pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK,
     wal: Arc<Mutex<L>>,
 
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-    index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
+    table_cache: Arc<ShardLRUCache<u64, TableCache>>,
 
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
     _phantom_key: PhantomData<SK>,
@@ -52,7 +52,7 @@ where
         db_path: String,
         table_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<L>>,
-        index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
+        index_cache: Arc<ShardLRUCache<u64, TableCache>>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> Result<Arc<Level0Manager<SK, UK, M, L>>> {
         std::fs::create_dir_all(format!("{}/0", db_path)).unwrap();
@@ -89,7 +89,7 @@ where
             sender,
             wal,
             handle: Arc::new(Mutex::new(None)),
-            index_cache,
+            table_cache: index_cache,
             background_task_write_to_level0_is_running,
             _phantom_table: PhantomData,
             _phantom_uk: PhantomData,
@@ -110,7 +110,7 @@ where
         leveln_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<L>>,
         imm_mem_table: Arc<Mutex<M>>,
-        index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
+        index_cache: Arc<ShardLRUCache<u64, TableCache>>,
         recv: Receiver<()>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> (Arc<Level0Manager<SK, UK, M, L>>, JoinHandle<()>) {
@@ -236,12 +236,13 @@ where
         // query the latest table first
         for table in tables_guard.values().rev() {
             // get cache
-            let entry_tracker = self.index_cache.look_up(&table.table_key(), table.hash());
+            let entry_tracker = self.table_cache.look_up(&table.table_key(), table.hash());
             let option = if !entry_tracker.0.is_null() {
-                let index_cache = unsafe { (*entry_tracker.0).value() };
-                table.query_sstable_with_cache(key, &index_cache)
+                let mut table_cache =
+                    unsafe { (*(entry_tracker.0 as *mut LRUEntry<u64, TableCache>)).value_mut() };
+                table.query_sstable_with_cache(key, &mut table_cache)
             } else {
-                table.query_sstable(key, &self.index_cache)
+                table.query_sstable(key, &self.table_cache)
             };
 
             if option.is_some() {
@@ -290,7 +291,7 @@ where
             .fetch_sub(table_handle.file_size(), Ordering::Release);
 
         table_handle.ready_to_delete();
-        self.index_cache
+        self.table_cache
             .erase(&table_handle.table_key(), table_handle.hash());
     }
 

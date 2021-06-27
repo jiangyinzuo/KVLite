@@ -110,19 +110,16 @@ impl BenchMark {
 
     fn do_write(&mut self, sync: bool, num_kvs: i128) -> f64 {
         self.reopen_db();
-        let mut random = rand::thread_rng();
+        let mut random = rand::thread_rng().sample_iter(Uniform::new_inclusive(0, num_kvs));
         let write_options = WriteOptions { sync };
         let start = std::time::Instant::now();
 
-        for i in 0i128..num_kvs {
+        for _ in 0i128..num_kvs {
+            let i = random.next().unwrap();
             self.db
                 .set(
                     &write_options,
-                    Vec::from(
-                        random
-                            .sample(Uniform::new_inclusive(0, num_kvs))
-                            .to_le_bytes(),
-                    ),
+                    Vec::from(i.to_le_bytes()),
                     Vec::from([i as u8; VALUE_SIZE]),
                 )
                 .unwrap();
@@ -149,6 +146,31 @@ impl BenchMark {
             NUM_KVS
         );
     }
+
+    fn read_random(&self) {
+        let mut random = rand::thread_rng().sample_iter(Uniform::new_inclusive(0, NUM_KVS));
+        let mut not_found = 0;
+        let start = std::time::Instant::now();
+        for _ in 0..NUM_KVS {
+            if self
+                .db
+                .get(&Vec::from(random.next().unwrap().to_le_bytes()))
+                .unwrap()
+                .is_none()
+            {
+                not_found += 1;
+            }
+        }
+
+        let end = std::time::Instant::now();
+        let elapsed = (end - start).as_secs_f64();
+        println!(
+            "read_random: {:?} MB/s ({} of {} found)",
+            RAW_SIZE / elapsed,
+            NUM_KVS - not_found,
+            NUM_KVS
+        );
+    }
 }
 
 fn main() {
@@ -160,4 +182,6 @@ fn main() {
     benchmark.fill_random_sync();
     benchmark.fill_random();
     benchmark.read_seq();
+    benchmark.fill_random();
+    benchmark.read_random();
 }

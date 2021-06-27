@@ -1,19 +1,17 @@
+use crate::cache::{LRUEntry, ShardLRUCache};
+use crate::collections::skip_list::skipmap::SkipMap;
+use crate::compact::level_n::start_compact;
+use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::{Value, MAX_LEVEL};
+use crate::sstable::table_cache::TableCache;
+use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
+use crate::Result;
+use crossbeam_channel::{Receiver, Sender};
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
-
-use crossbeam_channel::{Receiver, Sender};
-
-use crate::cache::ShardLRUCache;
-use crate::collections::skip_list::skipmap::SkipMap;
-use crate::compact::level_n::start_compact;
-use crate::db::key_types::{InternalKey, MemKey};
-use crate::db::{Value, MAX_LEVEL, WRITE_BUFFER_SIZE};
-use crate::sstable::table_cache::IndexCache;
-use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
-use crate::Result;
 
 /// Struct for adding and removing sstable files.
 pub struct LevelNManager {
@@ -24,7 +22,7 @@ pub struct LevelNManager {
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
-    pub(crate) index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
+    pub(crate) index_cache: Arc<ShardLRUCache<u64, TableCache>>,
     senders: Vec<Sender<bool>>,
     handles: RwLock<Vec<JoinHandle<()>>>,
     next_to_compact: AtomicUsize,
@@ -37,7 +35,7 @@ impl LevelNManager {
     /// Open all the sstables at `db_path` when initializing DB.
     pub fn open_tables(
         db_path: String,
-        index_cache: Arc<ShardLRUCache<u64, IndexCache>>,
+        index_cache: Arc<ShardLRUCache<u64, TableCache>>,
     ) -> Arc<LevelNManager> {
         for i in 1..=MAX_LEVEL {
             std::fs::create_dir_all(format!("{}/{}", db_path, i)).unwrap();
@@ -205,8 +203,10 @@ impl LevelNManager {
                 let option = if entry_tracker.0.is_null() {
                     table_read_handle.query_sstable(key, &self.index_cache)
                 } else {
-                    let index_cache = unsafe { (*entry_tracker.0).value() };
-                    table_read_handle.query_sstable_with_cache(key, &index_cache)
+                    let mut table_cache = unsafe {
+                        (*(entry_tracker.0 as *mut LRUEntry<u64, TableCache>)).value_mut()
+                    };
+                    table_read_handle.query_sstable_with_cache(key, &mut table_cache)
                 };
                 if option.is_some() {
                     return Ok(option);
