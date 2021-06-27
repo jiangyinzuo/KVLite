@@ -5,6 +5,7 @@
 extern crate log;
 
 mod bloom;
+pub mod byteutils;
 pub mod cache;
 pub mod collections;
 mod compact;

@@ -1,5 +1,5 @@
 use crate::error::KVLiteError;
-use crate::ioutils::{read_u32, BufReaderWithPos, BufWriterWithPos};
+use crate::ioutils::BufWriterWithPos;
 use crate::Result;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -41,21 +41,30 @@ impl Footer {
     pub(crate) fn load_footer(reader: &mut (impl Read + Seek)) -> Result<Footer> {
         reader.seek(SeekFrom::End(-FOOTER_BYTE_SIZE))?;
 
-        let index_block_offset = read_u32(reader)?;
-        let index_block_length = read_u32(reader)?;
-        let filter_length = read_u32(reader)?;
-        let kv_total = read_u32(reader)?;
+        let mut buffer = [0u8; 20];
+        reader.read_exact(&mut buffer).unwrap();
+
+        let mut index_block_offset = [0u8; 4];
+        index_block_offset.clone_from_slice(&buffer[0..4]);
+
+        let mut index_block_length = [0u8; 4];
+        index_block_length.clone_from_slice(&buffer[4..8]);
+
+        let mut filter_length = [0u8; 4];
+        filter_length.clone_from_slice(&buffer[8..12]);
+
+        let mut kv_total = [0u8; 4];
+        kv_total.clone_from_slice(&buffer[12..16]);
 
         let footer = Footer {
-            index_block_offset,
-            index_block_length,
-            filter_length,
-            kv_total,
+            index_block_offset: u32::from_le_bytes(index_block_offset),
+            index_block_length: u32::from_le_bytes(index_block_length),
+            filter_length: u32::from_le_bytes(filter_length),
+            kv_total: u32::from_le_bytes(kv_total),
         };
 
         // validate magic number
-        let magic_number = read_u32(reader)?;
-        if magic_number != FOOTER_MAGIC_NUMBER {
+        if buffer[16..20] != FOOTER_MAGIC_NUMBER.to_le_bytes() {
             return Err(KVLiteError::Custom("invalid footer magic number".into()));
         }
 

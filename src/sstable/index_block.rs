@@ -6,14 +6,22 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
 pub struct IndexBlock {
-    /// offset, length, max key length, max key
-    indexes: Vec<(u32, u32, u32, InternalKey)>,
+    /// offset, length, index_offset, max key length, max key
+    pub(crate) indexes: Vec<(u32, u32, u32, u32, InternalKey)>,
 }
 
 impl IndexBlock {
-    pub(crate) fn add_index(&mut self, offset: u32, length: u32, max_key: InternalKey) {
+    pub(crate) fn add_index(
+        &mut self,
+        offset: u32,
+        length: u32,
+        index_offset: u32,
+        max_key: InternalKey,
+    ) {
+        debug_assert!(offset < index_offset);
+        debug_assert!(index_offset < offset + length);
         self.indexes
-            .push((offset, length, max_key.len() as u32, max_key));
+            .push((offset, length, index_offset, max_key.len() as u32, max_key));
     }
 
     pub(crate) fn write_to_file(&mut self, writer: &mut (impl Write + Seek)) -> Result<()> {
@@ -21,7 +29,8 @@ impl IndexBlock {
             writer.write_all(&index.0.to_le_bytes())?;
             writer.write_all(&index.1.to_le_bytes())?;
             writer.write_all(&index.2.to_le_bytes())?;
-            writer.write_all(&index.3)?;
+            writer.write_all(&index.3.to_le_bytes())?;
+            writer.write_all(&index.4)?;
         }
         Ok(())
     }
@@ -32,34 +41,34 @@ impl IndexBlock {
             .unwrap();
 
         let mut index_block = IndexBlock::default();
-        let mut index_offset = 0;
+        let mut offset = 0;
 
-        debug_assert!(index_offset < footer.index_block_length);
-        while index_offset < footer.index_block_length {
+        debug_assert!(offset < footer.index_block_length);
+        while offset < footer.index_block_length {
             let block_offset = read_u32(reader).unwrap();
             let block_length = read_u32(reader).unwrap();
+            let index_offset = read_u32(reader).unwrap();
+            debug_assert!(block_offset < index_offset);
+            debug_assert!(index_offset < block_offset + block_length);
             let max_key_length = read_u32(reader).unwrap();
 
             let max_key = read_bytes_exact(reader, max_key_length as u64).unwrap();
-            index_block
-                .indexes
-                .push((block_offset, block_length, max_key_length, max_key));
+            index_block.indexes.push((
+                block_offset,
+                block_length,
+                index_offset,
+                max_key_length,
+                max_key,
+            ));
 
-            index_offset += 12 + max_key_length;
+            offset += 16 + max_key_length;
         }
         index_block
     }
 
     /// Returns (offset, length)
-    pub(crate) fn may_contain_key(&self, key: &InternalKey) -> Option<(u32, u32)> {
+    pub(crate) fn may_contain_key(&self, key: &InternalKey) -> Option<(u32, u32, u32)> {
         self.binary_search(key)
-    }
-
-    /// Returns first Data Block's start offset whose max key is greater or equal to `key`
-    pub fn find_first_ge(&self, key: &InternalKey) -> Option<u32> {
-        match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
-            Ok(i) | Err(i) => self.indexes.get(i).map(|e| e.0),
-        }
     }
 
     /// Get maximum key from [SSTableIndex]
@@ -67,13 +76,21 @@ impl IndexBlock {
         let last = self.indexes.last().unwrap_or_else(|| unsafe {
             std::hint::unreachable_unchecked();
         });
-        &last.3
+        &last.4
     }
 
-    /// Returns (offset, length)
-    fn binary_search(&self, key: &InternalKey) -> Option<(u32, u32)> {
-        match self.indexes.binary_search_by(|probe| probe.3.cmp(key)) {
-            Ok(i) | Err(i) => self.indexes.get(i).map(|e| (e.0, e.1)),
+    /// Find the first data block whose max key is greater or equal to `key`
+    /// Returns (offset, length, index_offset)
+    pub(crate) fn binary_search(&self, key: &InternalKey) -> Option<(u32, u32, u32)> {
+        match self.indexes.binary_search_by(|probe| probe.4.cmp(key)) {
+            Ok(i) | Err(i) => self.indexes.get(i).map(|e| (e.0, e.1, e.2)),
+        }
+    }
+
+    /// Find all the first data block whose max key is greater or equal to `key`
+    pub(crate) fn find_all_ge(&self, key: &InternalKey) -> &[(u32, u32, u32, u32, InternalKey)] {
+        match self.indexes.binary_search_by(|probe| probe.4.cmp(key)) {
+            Ok(i) | Err(i) => &self.indexes[i..],
         }
     }
 }
@@ -81,7 +98,9 @@ impl IndexBlock {
 #[test]
 fn test_may_contain_key() {
     let mut index = IndexBlock::default();
-    index.indexes.push((1, 1, 1, "key298".into()));
+    index.indexes.push((1, 1, 1, 1, "key298".into()));
     let option = index.may_contain_key(&Vec::from("key299"));
     assert!(option.is_none());
+    let option = index.may_contain_key(&Vec::from("key298"));
+    assert!(option.is_some());
 }

@@ -1,4 +1,5 @@
 use crate::bloom::BloomFilter;
+use crate::byteutils::u32_from_le_bytes;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
@@ -7,7 +8,7 @@ use crate::env::file_system::{FileSystem, SequentialReadableFile};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::InternalKeyValueIterator;
-use crate::sstable::data_block::{get_next_key_value, get_value_from_data_block};
+use crate::sstable::data_block::{DataBlock, DataBlockIter};
 use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::IndexBlock;
@@ -65,7 +66,7 @@ impl TableWriteHandle {
         for (i, (k, v)) in table.kv_iter().enumerate() {
             self.writer.write_key_value(k, v);
             if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == table.len() - 1 {
-                self.writer.add_index(k.clone());
+                self.writer.write_offsets_and_add_index(k.clone());
             }
         }
         self.writer.write_index_filter_footer();
@@ -80,7 +81,7 @@ impl TableWriteHandle {
         for (i, (k, v)) in kvs.iter().enumerate() {
             self.writer.write_key_value(*k, *v);
             if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == kvs.len() - 1 {
-                self.writer.add_index((*k).clone());
+                self.writer.write_offsets_and_add_index((*k).clone());
             }
         }
         self.writer.write_index_filter_footer();
@@ -93,7 +94,7 @@ impl TableWriteHandle {
         for (i, (k, v)) in kvs.into_iter().enumerate() {
             self.writer.write_key_value(&k, &v);
             if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == length - 1 {
-                self.writer.add_index(k);
+                self.writer.write_offsets_and_add_index(k);
             }
         }
         self.writer.write_index_filter_footer();
@@ -140,6 +141,7 @@ pub(crate) struct TableWriter {
     pub(crate) last_pos: u64,
     pub(crate) index_block: IndexBlock,
     pub(crate) writer: BufWriterWithPos<File>,
+    record_offsets: Vec<u32>,
     filter: BloomFilter,
 }
 
@@ -153,14 +155,16 @@ impl TableWriter {
             last_pos: 0,
             index_block: IndexBlock::default(),
             writer,
+            record_offsets: Vec::with_capacity(kv_total as usize),
             filter: BloomFilter::create_filter(kv_total as usize),
         }
     }
 
-    pub(crate) fn write_key_value(&mut self, k: &InternalKey, v: &InternalKey) {
+    fn write_key_value(&mut self, k: &InternalKey, v: &InternalKey) {
         debug_assert!(!k.is_empty(), "attempt to write empty key");
 
         let (k_len, v_len) = (k.len() as u32, v.len() as u32);
+        self.record_offsets.push(self.datablock_size as u32);
 
         // length of key | length of value | key | value
         self.writer.write_all(&k_len.to_le_bytes()).unwrap();
@@ -179,17 +183,34 @@ impl TableWriter {
         debug_assert!(self.filter.may_contain(k));
     }
 
-    pub(crate) fn add_index(&mut self, max_key: InternalKey) {
+    fn write_offsets_and_add_index(&mut self, max_key: InternalKey) {
+        let index_offset = self.writer.pos as u32;
+        let slice_u8: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                self.record_offsets.as_ptr() as *const u8,
+                self.record_offsets.len() * std::mem::size_of::<u32>(),
+            )
+        };
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(0, self.record_offsets[0]);
+            let num = u32_from_le_bytes(&slice_u8[4..8]);
+            debug_assert_eq!(num, self.record_offsets[1]);
+        }
+        self.writer.write_all(slice_u8).unwrap();
+        self.record_offsets.clear();
+
         self.index_block.add_index(
             self.last_pos as u32,
             (self.writer.pos - self.last_pos) as u32,
+            index_offset,
             max_key,
         );
         self.last_pos = self.writer.pos;
         self.datablock_size = 0;
     }
 
-    pub(crate) fn write_index_filter_footer(&mut self) {
+    fn write_index_filter_footer(&mut self) {
         let index_block_offset = self.last_pos as u32;
         self.index_block.write_to_file(&mut self.writer).unwrap();
         let index_block_length = self.writer.pos as u32 - index_block_offset;
@@ -342,6 +363,7 @@ impl TableReadHandle {
     pub fn hash(&self) -> u32 {
         self.hash
     }
+
     pub fn status(&self) -> TableStatus {
         let guard = self.status.read().unwrap();
         *guard.deref()
@@ -350,9 +372,11 @@ impl TableReadHandle {
     /// Query value by `key` with `cache`
     pub fn query_sstable_with_cache(&self, key: &InternalKey, cache: &IndexCache) -> Option<Value> {
         if cache.filter.may_contain(key) {
-            if let Some((offset, length)) = cache.index.may_contain_key(key) {
+            if let Some((offset, length, index_offset)) = cache.index.may_contain_key(key) {
                 let mut buf_reader = self.create_buf_reader_with_pos();
-                let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
+                let mut data_block =
+                    DataBlock::from_reader(&mut buf_reader, offset, length, index_offset);
+                let option = data_block.get_value(key);
                 return option;
             }
         }
@@ -381,8 +405,10 @@ impl TableReadHandle {
                 index: index_block,
             };
             lru_cache.insert_no_exists(self.table_key, cache, self.hash);
-            if let Some((offset, length)) = may_contain_key {
-                let option = get_value_from_data_block(&mut buf_reader, key, offset, length);
+            if let Some((offset, length, index_offset)) = may_contain_key {
+                let mut data_block =
+                    DataBlock::from_reader(&mut buf_reader, offset, length, index_offset);
+                let option = data_block.get_value(key);
                 return option;
             }
         }
@@ -401,18 +427,17 @@ impl TableReadHandle {
             let mut buf_reader = self.create_buf_reader_with_pos();
             let footer = Footer::load_footer(&mut buf_reader).unwrap();
             let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
-            if let Some(offset) = index_block.find_first_ge(key_start) {
-                buf_reader.seek(SeekFrom::Start(offset as u64)).unwrap();
-                while buf_reader.position() < footer.index_block_offset as usize {
-                    let (k, v) = get_next_key_value(&mut buf_reader);
-                    if k.le(key_end) {
-                        kvs.insert(k.into(), v);
-                    } else {
-                        return true;
-                    }
+            let data_blocks = index_block.find_all_ge(key_start);
+            let mut remain = false;
+            for (offset, length, index_offset, _key_length, max_key) in data_blocks {
+                if max_key > key_end {
+                    break;
                 }
+                let mut data_block =
+                    DataBlock::from_reader(&mut buf_reader, *offset, *length, *index_offset);
+                remain |= data_block.get_all_record_le(key_end, kvs);
             }
-            return true;
+            return remain;
         }
         false
     }
@@ -485,22 +510,32 @@ pub(crate) fn temp_file_name(file_name: &str) -> String {
 pub struct Iter<'table> {
     reader: Box<dyn SequentialReadableFile>,
     max_key: &'table InternalKey,
-    end: bool,
+    index_block: IndexBlock,
+    data_block: DataBlockIter,
+    cur_data_block_idx: usize,
 }
 
 impl<'table> Iter<'table> {
     fn new(handle: &'table TableReadHandle) -> Iter<'table> {
-        let reader = Box::new(handle.create_buf_reader_with_pos());
+        let mut reader = Box::new(handle.create_buf_reader_with_pos());
+        let footer = Footer::load_footer(&mut reader).unwrap();
+        let index_block = IndexBlock::load_index(&mut reader, &footer);
+
+        let index = &index_block.indexes[0];
+        let data_block = DataBlock::from_reader(&mut reader, index.0, index.1, index.2);
+
         Iter {
             reader,
             max_key: &handle.max_key,
-            end: false,
+            index_block,
+            data_block: data_block.into_iter(),
+            cur_data_block_idx: 0,
         }
     }
 
     #[inline]
     pub fn end(&self) -> bool {
-        self.end
+        self.cur_data_block_idx == self.index_block.indexes.len()
     }
 }
 
@@ -508,14 +543,24 @@ impl<'table> Iterator for Iter<'table> {
     type Item = (InternalKey, Value);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.end {
+        if self.end() {
             None
         } else {
-            let (k, v) = get_next_key_value(&mut self.reader);
-            if k.eq(self.max_key) {
-                self.end = true;
+            match self.data_block.next() {
+                Some(item) => Some(item),
+                None => {
+                    self.cur_data_block_idx += 1;
+                    if self.end() {
+                        None
+                    } else {
+                        let index = &self.index_block.indexes[self.cur_data_block_idx];
+                        let data_block =
+                            DataBlock::from_reader(&mut self.reader, index.0, index.1, index.2);
+                        self.data_block = data_block.into_iter();
+                        self.next()
+                    }
+                }
             }
-            Some((k, v))
         }
     }
 }
