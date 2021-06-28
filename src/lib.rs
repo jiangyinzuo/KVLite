@@ -1,5 +1,6 @@
 #![feature(backtrace)]
 #![feature(map_first_last)]
+#![feature(core_intrinsics)]
 
 #[macro_use]
 extern crate log;

@@ -1,9 +1,8 @@
 use crate::bloom::BloomFilter;
-use crate::byteutils::u32_from_le_bytes;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
-use crate::db::{max_level_shift, Value};
+use crate::db::{max_level_shift, Value, WRITE_BUFFER_SIZE};
 use crate::env::file_system::{FileSystem, SequentialReadableFile};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
@@ -13,7 +12,7 @@ use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::IndexBlock;
 use crate::sstable::table_cache::TableCache;
-use crate::sstable::{get_min_key, DATA_BLOCK_SIZE};
+use crate::sstable::DATA_BLOCK_SIZE;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::Deref;
@@ -64,24 +63,9 @@ impl TableWriteHandle {
     pub fn write_sstable(&mut self, table: &impl InternalKeyValueIterator) -> crate::Result<()> {
         // write Data Blocks
         for (i, (k, v)) in table.kv_iter().enumerate() {
-            self.writer.write_key_value(k, v);
-            if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == table.len() - 1 {
-                self.writer.write_offsets_and_add_index(k.clone());
-            }
-        }
-        self.writer.write_index_filter_footer();
-        Ok(())
-    }
-
-    pub fn write_sstable_from_vec_ref(
-        &mut self,
-        kvs: Vec<(&InternalKey, &Value)>,
-    ) -> crate::Result<()> {
-        // write Data Blocks
-        for (i, (k, v)) in kvs.iter().enumerate() {
-            self.writer.write_key_value(*k, *v);
-            if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == kvs.len() - 1 {
-                self.writer.write_offsets_and_add_index((*k).clone());
+            self.writer.add_key_value(k.clone(), v.clone());
+            if self.writer.data.len() >= DATA_BLOCK_SIZE || i == table.len() - 1 {
+                self.writer.flush_data(k.clone());
             }
         }
         self.writer.write_index_filter_footer();
@@ -92,9 +76,9 @@ impl TableWriteHandle {
         // write Data Blocks
         let length = kvs.len();
         for (i, (k, v)) in kvs.into_iter().enumerate() {
-            self.writer.write_key_value(&k, &v);
-            if self.writer.datablock_size >= DATA_BLOCK_SIZE || i == length - 1 {
-                self.writer.write_offsets_and_add_index(k);
+            self.writer.add_key_value(k.clone(), v);
+            if self.writer.data.len() >= DATA_BLOCK_SIZE || i == length - 1 {
+                self.writer.flush_data(k);
             }
         }
         self.writer.write_index_filter_footer();
@@ -127,6 +111,12 @@ impl TableWriteHandle {
     }
 
     #[inline]
+    pub fn take_min_key(&mut self) -> InternalKey {
+        debug_assert_ne!(self.writer.index_block.min_key.len(), 0);
+        std::mem::take(&mut self.writer.index_block.min_key)
+    }
+
+    #[inline]
     pub fn max_key(&self) -> &InternalKey {
         self.writer.max_key()
     }
@@ -136,13 +126,13 @@ pub(crate) struct TableWriter {
     pub(crate) kv_total: u32,
     #[cfg(debug_assertions)]
     kv_count: u32,
-
-    pub(crate) datablock_size: usize,
-    pub(crate) last_pos: u64,
+    data: Vec<u8>,
     pub(crate) index_block: IndexBlock,
     pub(crate) writer: BufWriterWithPos<File>,
-    record_offsets: Vec<u32>,
+    record_offsets: Vec<u8>,
     filter: BloomFilter,
+    #[cfg(feature = "snappy_compression")]
+    snappy_encoder: snap::raw::Encoder,
 }
 
 impl TableWriter {
@@ -151,67 +141,72 @@ impl TableWriter {
             kv_total,
             #[cfg(debug_assertions)]
             kv_count: 0,
-            datablock_size: 0,
-            last_pos: 0,
+            data: Vec::with_capacity(WRITE_BUFFER_SIZE as usize + 500),
             index_block: IndexBlock::default(),
             writer,
             record_offsets: Vec::with_capacity(kv_total as usize),
             filter: BloomFilter::create_filter(kv_total as usize),
+            #[cfg(feature = "snappy_compression")]
+            snappy_encoder: snap::raw::Encoder::new(),
         }
     }
 
-    fn write_key_value(&mut self, k: &InternalKey, v: &InternalKey) {
+    fn add_key_value(&mut self, mut k: InternalKey, mut v: Value) {
         debug_assert!(!k.is_empty(), "attempt to write empty key");
+        self.filter.add(&k);
+        debug_assert!(self.filter.may_contain(&k));
 
-        let (k_len, v_len) = (k.len() as u32, v.len() as u32);
-        self.record_offsets.push(self.datablock_size as u32);
+        #[cfg(debug_assertions)]
+        let excepted_data_len = self.data.len() + 8 + k.len() + v.len();
 
-        // length of key | length of value | key | value
-        self.writer.write_all(&k_len.to_le_bytes()).unwrap();
-        self.writer.write_all(&v_len.to_le_bytes()).unwrap();
-        self.writer.write_all(k).unwrap();
-        self.writer.write_all(v).unwrap();
+        if unsafe { std::intrinsics::unlikely(self.index_block.min_key.is_empty()) } {
+            self.index_block.min_key = k.clone();
+        }
 
-        self.datablock_size += (k_len + v_len + 8) as usize;
+        let record_offset = (self.data.len() as u32).to_le_bytes();
+        self.record_offsets.append(&mut Vec::from(record_offset));
 
+        self.data
+            .append(&mut Vec::from((k.len() as u32).to_le_bytes()));
+        self.data
+            .append(&mut Vec::from((v.len() as u32).to_le_bytes()));
+        self.data.append(&mut k);
+        self.data.append(&mut v);
         #[cfg(debug_assertions)]
         {
             self.kv_count += 1;
+            assert_eq!(excepted_data_len, self.data.len());
         }
-
-        self.filter.add(k);
-        debug_assert!(self.filter.may_contain(k));
     }
 
-    fn write_offsets_and_add_index(&mut self, max_key: InternalKey) {
-        let index_offset = self.writer.pos as u32;
-        let slice_u8: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                self.record_offsets.as_ptr() as *const u8,
-                self.record_offsets.len() * std::mem::size_of::<u32>(),
-            )
-        };
-        #[cfg(debug_assertions)]
-        {
-            debug_assert_eq!(0, self.record_offsets[0]);
-            let num = u32_from_le_bytes(&slice_u8[4..8]);
-            debug_assert_eq!(num, self.record_offsets[1]);
-        }
-        self.writer.write_all(slice_u8).unwrap();
-        self.record_offsets.clear();
+    fn flush_data(&mut self, max_key: InternalKey) {
+        let index_offset_uncompressed = self.writer.pos as u32 + self.data.len() as u32;
+        self.data.append(&mut self.record_offsets);
 
+        #[cfg(feature = "snappy_compression")]
+        {
+            #[cfg(debug_assertions)]
+            let before_length = self.data.len();
+            self.data = self.snappy_encoder.compress_vec(&self.data).unwrap();
+            #[cfg(debug_assertions)]
+            debug!(
+                "snappy before: {}, after: {}",
+                before_length,
+                self.data.len()
+            );
+        }
         self.index_block.add_index(
-            self.last_pos as u32,
-            (self.writer.pos - self.last_pos) as u32,
-            index_offset,
+            self.writer.pos as u32,
+            self.data.len() as u32,
+            index_offset_uncompressed,
             max_key,
         );
-        self.last_pos = self.writer.pos;
-        self.datablock_size = 0;
+        self.writer.write_all(&self.data).unwrap();
+        self.data.clear();
     }
 
     fn write_index_filter_footer(&mut self) {
-        let index_block_offset = self.last_pos as u32;
+        let index_block_offset = self.writer.pos as u32;
         self.index_block.write_to_file(&mut self.writer).unwrap();
         let index_block_length = self.writer.pos as u32 - index_block_offset;
         write_filter_block(&mut self.filter, &mut self.writer);
@@ -258,12 +253,13 @@ impl TableReadHandle {
 
         let file = File::open(&file_path).unwrap();
         let file_size = file.metadata().unwrap().len();
+
         let mut buf_reader = BufReaderWithPos::new(file).unwrap();
 
         let footer = Footer::load_footer(&mut buf_reader).unwrap();
-        let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
+        let mut index_block = IndexBlock::load_index(&mut buf_reader, &footer);
 
-        let min_key = get_min_key(&mut buf_reader);
+        let min_key = std::mem::take(&mut index_block.min_key);
         let max_key = index_block.max_key().clone();
 
         let table_key = Self::calc_table_key(table_id, level);
@@ -296,7 +292,7 @@ impl TableReadHandle {
     /// # Notice
     ///
     /// position of `table_write_handle` should be at the end.
-    pub fn from_table_write_handle(table_write_handle: TableWriteHandle) -> Self {
+    pub fn from_table_write_handle(mut table_write_handle: TableWriteHandle) -> Self {
         let file_size = table_write_handle.writer.writer.pos;
         debug_assert!(file_size > 0);
 
@@ -306,10 +302,8 @@ impl TableReadHandle {
         }
 
         table_write_handle.rename();
-        let file = File::open(&table_write_handle.file_path).unwrap();
 
-        let mut buf_reader = BufReaderWithPos::new(file).unwrap();
-        let min_key = get_min_key(&mut buf_reader);
+        let min_key = table_write_handle.take_min_key();
         let max_key: InternalKey = table_write_handle.max_key().clone();
 
         let table_id = table_write_handle.table_id;
@@ -644,10 +638,8 @@ pub(crate) mod tests {
         let index_block = IndexBlock::load_index(&mut reader, &footer);
         assert_eq!(index_block.indexes.len(), 1);
         for index in index_block.indexes {
-            let mut data_block = DataBlock::from_reader(&mut reader, index.0, index.1, index.2);
-            let length = (index.0 + index.1 - index.2) as usize / std::mem::size_of::<u32>();
+            let data_block = DataBlock::from_reader(&mut reader, index.0, index.1, index.2);
             for i in 0..100 {
-                assert_eq!(length, data_block.len());
                 let res = data_block.get_value(&Vec::from(format!("key{:02}", i)));
                 assert_eq!(
                     Some(Vec::from(format!("value{:02}_1", i))),

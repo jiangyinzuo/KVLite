@@ -402,7 +402,7 @@ pub(crate) mod tests {
         assert_eq!(read_handle.kv_total(), 100);
         let manager = create_manager(db_path);
         debug_assert!(
-            manager.level_size(1) > 2000,
+            manager.level_size(1) > 1000,
             "actual: {}",
             manager.level_size(1)
         );

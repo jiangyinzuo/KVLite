@@ -6,7 +6,7 @@ use kvlite::memory::SkipMapMemTable;
 use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use procfs::CpuInfo;
 use rand::distributions::Uniform;
-use rand::Rng;
+use rand::{Rng, RngCore};
 use tempfile::TempDir;
 
 const NUM_KVS: i128 = 1000000;
@@ -77,51 +77,63 @@ impl BenchMark {
 
     fn fill_seq(&self) {
         let write_options = WriteOptions { sync: false };
-        let start = std::time::Instant::now();
 
+        let mut random = rand::thread_rng();
+        let start = std::time::Instant::now();
         for i in 0i128..NUM_KVS {
+            let mut value = Vec::from([0u8; VALUE_SIZE]);
+            random.fill_bytes(&mut value);
             self.db
-                .set(
-                    &write_options,
-                    Vec::from(i.to_le_bytes()),
-                    Vec::from([i as u8; VALUE_SIZE]),
-                )
+                .set(&write_options, Vec::from(i.to_le_bytes()), value)
                 .unwrap();
         }
         let end = std::time::Instant::now();
         let elapsed = (end - start).as_secs_f64();
-        println!("fill_seq: {:?} MB/s", RAW_SIZE / elapsed);
+        let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
+        println!(
+            "fill_seq: {:?} MB/s | file size: {}",
+            RAW_SIZE / elapsed,
+            file_size
+        );
     }
 
     fn fill_random(&mut self) {
         let elapsed = self.do_write(false, NUM_KVS);
-        println!("fill_random: {:?} MB/s", RAW_SIZE / elapsed);
+        let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
+        println!(
+            "fill_random: {:?} MB/s | file size: {}",
+            RAW_SIZE / elapsed,
+            file_size
+        );
     }
 
     fn fill_random_sync(&mut self) {
         let num_kvs = NUM_KVS / 100;
         let elapsed = self.do_write(true, num_kvs);
+        let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
         println!(
-            "fill_random_sync: {:?} MB/s) ({} ops) ",
+            "fill_random_sync: {:?} MB/s) ({} ops) | file size: {} ",
             RAW_SIZE / 100f64 / elapsed,
-            num_kvs
+            num_kvs,
+            file_size
         );
     }
 
     fn do_write(&mut self, sync: bool, num_kvs: i128) -> f64 {
         self.reopen_db();
-        let mut random = rand::thread_rng().sample_iter(Uniform::new_inclusive(0, num_kvs));
+        let random = rand::thread_rng();
+        let mut random_iter = random.sample_iter(Uniform::new_inclusive(0, num_kvs));
+        let mut random = rand::thread_rng();
+
         let write_options = WriteOptions { sync };
         let start = std::time::Instant::now();
 
         for _ in 0i128..num_kvs {
-            let i = random.next().unwrap();
+            let i = random_iter.next().unwrap();
+            let mut value = Vec::from([0u8; VALUE_SIZE]);
+            random.fill_bytes(&mut value);
             self.db
-                .set(
-                    &write_options,
-                    Vec::from(i.to_le_bytes()),
-                    Vec::from([i as u8; VALUE_SIZE]),
-                )
+                .set(&write_options, Vec::from(i.to_le_bytes()), value)
                 .unwrap();
         }
         let end = std::time::Instant::now();
@@ -176,6 +188,9 @@ impl BenchMark {
 fn main() {
     print_environment();
     print_arguments();
+    #[cfg(feature = "snappy_compression")]
+    println!("Use snappy compression algorithm");
+
     println!("-------------------------------------------------");
     let mut benchmark = BenchMark::new();
     benchmark.fill_seq();

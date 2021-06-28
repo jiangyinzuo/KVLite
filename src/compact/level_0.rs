@@ -1,10 +1,4 @@
-use std::cmp::Ordering;
-use std::collections::VecDeque;
-use std::marker::PhantomData;
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-
-use crate::collections::skip_list::skipmap::{IntoPtrIter, SkipMap};
+use crate::collections::skip_list::skipmap::{IntoIter, IntoPtrIter, SkipMap};
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use crate::memory::MemTable;
@@ -12,6 +6,11 @@ use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_handle::TableReadHandle;
 use crate::wal::WAL;
+use std::cmp::Ordering;
+use std::collections::VecDeque;
+use std::marker::PhantomData;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 pub const LEVEL0_FILES_THRESHOLD: usize = 4;
 
@@ -77,30 +76,29 @@ where
     fn run(&mut self) {
         debug_assert!(!self.level0_table_handles.is_empty());
 
-        let level0_skip_map = self.merge_level0_tables();
+        let level0_skip_map: SkipMap<InternalKey, Value> = self.merge_level0_tables();
         let mut kv_total = level0_skip_map.len();
 
         if self.level1_table_handles.is_empty() {
             let level1_table_size = (kv_total + 1) / self.level0_table_handles.len();
             debug_assert!(level1_table_size >= LEVEL0_FILES_THRESHOLD);
 
-            let mut temp_kvs = vec![];
-            for kv in level0_skip_map.iter_ptr() {
-                unsafe {
-                    temp_kvs.push((&(*kv).entry.key, &(*kv).entry.value));
-                }
+            let mut temp_kvs: Vec<(InternalKey, Value)> = vec![];
+            let iter: IntoIter<InternalKey, Value> = level0_skip_map.into_iter();
+            for (k, v) in iter {
+                temp_kvs.push((k, v));
                 #[cfg(debug_assertions)]
                 {
                     self.kv_count += 1;
                 }
 
                 if temp_kvs.len() >= level1_table_size {
-                    self.add_table_handle_from_vec_ref(temp_kvs);
+                    self.add_table_handle_from_vec(temp_kvs);
                     temp_kvs = vec![];
                 }
             }
             if !temp_kvs.is_empty() {
-                self.add_table_handle_from_vec_ref(temp_kvs);
+                self.add_table_handle_from_vec(temp_kvs);
             }
         } else {
             for table in &self.level1_table_handles {
@@ -227,15 +225,5 @@ where
             new_table.write_sstable_from_vec(temp_kvs).unwrap();
             self.leveln_manager.upsert_table_handle(new_table);
         }
-    }
-
-    fn add_table_handle_from_vec_ref(&self, temp_kvs: Vec<(&InternalKey, &Value)>) {
-        debug_assert!(!temp_kvs.is_empty());
-        let mut new_table = self.leveln_manager.create_table_write_handle(
-            unsafe { NonZeroUsize::new_unchecked(1) },
-            temp_kvs.len() as u32,
-        );
-        new_table.write_sstable_from_vec_ref(temp_kvs).unwrap();
-        self.leveln_manager.upsert_table_handle(new_table);
     }
 }

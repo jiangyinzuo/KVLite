@@ -43,4 +43,5 @@ pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
     fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value>>
     where
         UK: From<SK>;
+    fn db_path(&self) -> &String;
 }

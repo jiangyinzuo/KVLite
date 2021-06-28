@@ -132,6 +132,10 @@ where
         }
         Ok(skip_map)
     }
+
+    fn db_path(&self) -> &String {
+        &self.db_path
+    }
 }
 
 impl<SK, UK, M, L: 'static> NoTransactionDB<SK, UK, M, L>
@@ -234,10 +238,6 @@ where
         // query sstables
         let option = self.leveln_manager.query(key.internal_key()).unwrap();
         Ok(option)
-    }
-
-    pub fn db_path(&self) -> &String {
-        &self.db_path
     }
 }
 

@@ -6,7 +6,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
 pub struct IndexBlock {
-    /// offset, length, index_offset, max key length, max key
+    pub(crate) min_key: InternalKey,
+    /// offset, length, index_offset_uncompressed, max key length, max key
     pub(crate) indexes: Vec<(u32, u32, u32, u32, InternalKey)>,
 }
 
@@ -15,16 +16,24 @@ impl IndexBlock {
         &mut self,
         offset: u32,
         length: u32,
-        index_offset: u32,
+        index_offset_uncompressed: u32,
         max_key: InternalKey,
     ) {
-        debug_assert!(offset < index_offset);
-        debug_assert!(index_offset < offset + length);
-        self.indexes
-            .push((offset, length, index_offset, max_key.len() as u32, max_key));
+        debug_assert!(offset < index_offset_uncompressed);
+        self.indexes.push((
+            offset,
+            length,
+            index_offset_uncompressed,
+            max_key.len() as u32,
+            max_key,
+        ));
     }
 
     pub(crate) fn write_to_file(&mut self, writer: &mut (impl Write + Seek)) -> Result<()> {
+        let min_key_len = self.min_key.len() as u32;
+        debug_assert_ne!(min_key_len, 0);
+        writer.write_all(&min_key_len.to_le_bytes()).unwrap();
+        writer.write_all(&self.min_key).unwrap();
         for index in &self.indexes {
             writer.write_all(&index.0.to_le_bytes())?;
             writer.write_all(&index.1.to_le_bytes())?;
@@ -41,22 +50,24 @@ impl IndexBlock {
             .unwrap();
 
         let mut index_block = IndexBlock::default();
-        let mut offset = 0;
 
+        let min_key_length = read_u32(reader).unwrap();
+        let min_key = read_bytes_exact(reader, min_key_length as u64).unwrap();
+        let mut offset: u32 = (std::mem::size_of::<u32>() + min_key.len()) as u32;
+        index_block.min_key = min_key;
         debug_assert!(offset < footer.index_block_length);
         while offset < footer.index_block_length {
             let block_offset = read_u32(reader).unwrap();
             let block_length = read_u32(reader).unwrap();
-            let index_offset = read_u32(reader).unwrap();
-            debug_assert!(block_offset < index_offset);
-            debug_assert!(index_offset < block_offset + block_length);
+            let index_offset_uncompressed = read_u32(reader).unwrap();
+            debug_assert!(block_offset < index_offset_uncompressed);
             let max_key_length = read_u32(reader).unwrap();
 
             let max_key = read_bytes_exact(reader, max_key_length as u64).unwrap();
             index_block.indexes.push((
                 block_offset,
                 block_length,
-                index_offset,
+                index_offset_uncompressed,
                 max_key_length,
                 max_key,
             ));

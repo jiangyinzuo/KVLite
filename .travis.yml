@@ -12,9 +12,10 @@ matrix:
 
 script:
   - rustup component add llvm-tools-preview
+  - cargo test --verbose
+  - cargo clean
   - export RUST_LOG=debug
   - export RUSTFLAGS="-Zinstrument-coverage"
-  - cargo build --verbose
-  - LLVM_PROFILE_FILE="your_name-%p-%m.profraw" cargo test --verbose
+  - LLVM_PROFILE_FILE="your_name-%p-%m.profraw" cargo test --verbose --feautures "snappy_compression"
   - ./grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
   - bash <(curl -s https://codecov.io/bash) -f lcov.info

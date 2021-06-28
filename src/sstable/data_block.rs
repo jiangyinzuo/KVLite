@@ -16,20 +16,29 @@ impl DataBlock {
         reader: &mut (impl Read + Seek),
         start: u32,
         length: u32,
-        index_offset: u32,
+        index_offset_uncompressed: u32,
     ) -> DataBlock {
-        debug_assert!(index_offset < start + length);
+        debug_assert!(start < index_offset_uncompressed);
         reader.seek(SeekFrom::Start(start as u64)).unwrap();
         let mut data_block = vec![0u8; length as usize];
         reader.read_exact(data_block.as_mut_slice()).unwrap();
+        #[cfg(feature = "snappy_compression")]
+        {
+            let mut decoder = snap::raw::Decoder::new();
+            data_block = decoder.decompress_vec(&data_block).unwrap();
+        }
+
         debug_assert_eq!(
-            (start + length - index_offset) as usize % std::mem::size_of::<u32>(),
+            (start as usize + data_block.len() - index_offset_uncompressed as usize)
+                % std::mem::size_of::<u32>(),
             0
         );
+        let data_block_length = data_block.len() as u32;
         DataBlock {
             data: data_block,
-            num_records: (start + length - index_offset) as i64 / std::mem::size_of::<u32>() as i64,
-            data_idx_offset: (index_offset - start) as usize,
+            num_records: (start + data_block_length - index_offset_uncompressed) as i64
+                / std::mem::size_of::<u32>() as i64,
+            data_idx_offset: (index_offset_uncompressed - start) as usize,
         }
     }
 

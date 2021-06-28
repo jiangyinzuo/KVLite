@@ -15,20 +15,6 @@ pub(crate) struct Footer {
 }
 
 impl Footer {
-    pub(crate) fn new(
-        index_block_offset: u32,
-        index_block_length: u32,
-        filter_length: u32,
-        kv_total: u32,
-    ) -> Footer {
-        Footer {
-            index_block_offset,
-            index_block_length,
-            filter_length,
-            kv_total,
-        }
-    }
-
     pub(crate) fn write_to_file(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
         writer.write_all(&self.index_block_offset.to_le_bytes())?;
         writer.write_all(&self.index_block_length.to_le_bytes())?;
@@ -72,7 +58,6 @@ impl Footer {
     }
 }
 
-#[inline]
 pub(super) fn write_footer(
     index_block_offset: u32,
     index_block_length: u32,

@@ -183,6 +183,10 @@ where
     ) -> Result<SkipMap<UK, Value>> {
         self.inner.range_get(key_start, key_end)
     }
+
+    fn db_path(&self) -> &String {
+        self.inner.db_path()
+    }
 }
 
 impl<UK, M, L> WriteCommittedDB<UK, M, L>
