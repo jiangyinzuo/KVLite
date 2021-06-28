@@ -16,6 +16,6 @@ script:
   - cargo clean
   - export RUST_LOG=debug
   - export RUSTFLAGS="-Zinstrument-coverage"
-  - LLVM_PROFILE_FILE="your_name-%p-%m.profraw" cargo test --verbose --feautures "snappy_compression"
+  - LLVM_PROFILE_FILE="kvlite-%p-%m.profraw" cargo test --verbose --features "snappy_compression"
   - ./grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
   - bash <(curl -s https://codecov.io/bash) -f lcov.info
