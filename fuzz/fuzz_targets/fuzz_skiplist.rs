@@ -20,14 +20,14 @@ enum SkipMapMethod {
 }
 
 fuzz_target!(|methods: Vec<SkipMapMethod>| {
-    let mut skip_map = SkipMap::<Vec<u8>, Vec<u8>>::default();
+    let mut skip_map = SkipMap::<Vec<u8>, Vec<u8>, false>::default();
 
     use SkipMapMethod::*;
     for method in methods {
         match method {
             Insert { key, value } => {
                 let old_len = skip_map.len();
-                if skip_map.insert(key.clone(), value.clone()) {
+                if skip_map.insert(key.clone(), value.clone()).is_some() {
                     assert_eq!(old_len, skip_map.len());
                 } else {
                     assert_eq!(old_len + 1, skip_map.len());
@@ -46,7 +46,7 @@ fuzz_target!(|methods: Vec<SkipMapMethod>| {
                 if key_start > key_end {
                     std::mem::swap(&mut key_start, &mut key_end);
                 }
-                let mut res = SkipMap::<Vec<u8>, Vec<u8>>::default();
+                let mut res = SkipMap::<Vec<u8>, Vec<u8>, false>::default();
                 skip_map.range_get(&key_start, &key_end, &mut res);
                 for kv in res {
                     assert!(key_start <= kv.0);
