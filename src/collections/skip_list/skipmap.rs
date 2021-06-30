@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 #[repr(C)]
-pub struct Node<K: Ord + Default, V: Default> {
+pub struct Node<K: Ord + Default, V: Default, const MULTI_READER: bool> {
     pub entry: Entry<K, V>,
     /// ranges [0, `MAX_LEVEL`]
     level: usize,
@@ -13,12 +13,12 @@ pub struct Node<K: Ord + Default, V: Default> {
     next: [*mut Self; 0],
 }
 
-impl<K: Ord + Default, V: Default> Node<K, V> {
-    fn head() -> *mut Node<K, V> {
+impl<K: Ord + Default, V: Default, const MULTI_READER: bool> Node<K, V, MULTI_READER> {
+    fn head() -> *mut Node<K, V, MULTI_READER> {
         Self::new_with_level(K::default(), V::default(), MAX_LEVEL)
     }
 
-    fn new_with_level(key: K, value: V, level: usize) -> *mut Node<K, V> {
+    fn new_with_level(key: K, value: V, level: usize) -> *mut Node<K, V, MULTI_READER> {
         let pointers_size = (level + 1) * std::mem::size_of::<*mut Self>();
         let layout = Layout::from_size_align(
             std::mem::size_of::<Self>() + pointers_size,
@@ -47,20 +47,34 @@ impl<K: Ord + Default, V: Default> Node<K, V> {
 
     #[inline]
     pub fn get_next(&self, level: usize) -> *mut Self {
-        unsafe { *self.next.get_unchecked(level) }
+        unsafe {
+            let p = self.next.get_unchecked(level);
+            if MULTI_READER {
+                std::intrinsics::atomic_load_acq(p)
+            } else {
+                *p
+            }
+        }
     }
 
     #[inline]
     fn set_next(&mut self, level: usize, node: *mut Self) {
         unsafe {
-            *self.next.get_unchecked_mut(level) = node;
+            let p = self.next.get_unchecked_mut(level);
+            if MULTI_READER {
+                std::intrinsics::atomic_store_rel(p, node);
+            } else {
+                *p = node;
+            }
         }
     }
 }
 
-unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
+unsafe fn drop_node<K: Ord + Default, V: Default, const MULTI_READ: bool>(
+    node: *mut Node<K, V, MULTI_READ>,
+) {
     let layout = (*node).get_layout();
-    std::ptr::drop_in_place(node as *mut Node<K, V>);
+    std::ptr::drop_in_place(node as *mut Node<K, V, MULTI_READ>);
     std::alloc::dealloc(node as *mut u8, layout);
 }
 
@@ -69,25 +83,31 @@ unsafe fn drop_node<K: Ord + Default, V: Default>(node: *mut Node<K, V>) {
 /// # NOTICE:
 ///
 /// SkipMap is not thread-safe.
-pub struct SkipMap<K: Ord + Default, V: Default> {
-    dummy_head: *const Node<K, V>,
-    tail: AtomicPtr<Node<K, V>>,
+pub struct SkipMap<K: Ord + Default, V: Default, const MULTI_READ: bool> {
+    dummy_head: *const Node<K, V, MULTI_READ>,
+    tail: AtomicPtr<Node<K, V, MULTI_READ>>,
     cur_max_level: AtomicUsize,
-    len: usize,
+    len: AtomicUsize,
     _key: PhantomData<K>,
     _value: PhantomData<V>,
 }
 
-unsafe impl<K: Ord + Default, V: Default> Send for SkipMap<K, V> {}
-unsafe impl<K: Ord + Default, V: Default> Sync for SkipMap<K, V> {}
+unsafe impl<K: Ord + Default, V: Default, const MULTI_READ: bool> Send
+    for SkipMap<K, V, MULTI_READ>
+{
+}
+unsafe impl<K: Ord + Default, V: Default, const MULTI_READ: bool> Sync
+    for SkipMap<K, V, MULTI_READ>
+{
+}
 
-impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
-    pub fn new() -> SkipMap<SK, V> {
+impl<SK: Ord + Default, V: Default, const MULTI_READ: bool> SkipMap<SK, V, MULTI_READ> {
+    pub fn new() -> SkipMap<SK, V, MULTI_READ> {
         SkipMap {
             dummy_head: Node::head(),
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
-            len: 0,
+            len: AtomicUsize::default(),
             _key: PhantomData,
             _value: PhantomData,
         }
@@ -95,7 +115,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.len
+        self.len.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -105,20 +125,20 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
 
     /// # Safety
     /// node should be null or initialized
-    pub unsafe fn node_lt_key(node: *mut Node<SK, V>, key: &SK) -> bool {
+    pub unsafe fn node_lt_key(node: *mut Node<SK, V, MULTI_READ>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.lt(key)
     }
 
     /// # Safety
     /// node should be null or initialized
-    pub unsafe fn node_eq_key(node: *mut Node<SK, V>, key: &SK) -> bool {
+    pub unsafe fn node_eq_key(node: *mut Node<SK, V, MULTI_READ>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.eq(key)
     }
 
     /// # Safety
     /// node s
     /// hould be null or initialized
-    pub unsafe fn node_cmp(node: *mut Node<SK, V>, key: &SK) -> std::cmp::Ordering {
+    pub unsafe fn node_cmp(node: *mut Node<SK, V, MULTI_READ>, key: &SK) -> std::cmp::Ordering {
         if node.is_null() {
             return std::cmp::Ordering::Greater;
         }
@@ -129,7 +149,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// ```rust
     /// use kvlite::collections::skip_list::skipmap::SkipMap;
-    /// let mut skip_map = SkipMap::new();
+    /// let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
     /// for i in 1..10 {
     ///     skip_map.insert(i, i + 1);
     /// }
@@ -144,7 +164,10 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// # Safety
     /// `node` should be a part of skip-map and should not be nullptr
-    pub unsafe fn find_last_le_from_node(mut node: *mut Node<SK, V>, key: &SK) -> *mut Node<SK, V> {
+    pub unsafe fn find_last_le_from_node(
+        mut node: *mut Node<SK, V, MULTI_READ>,
+        key: &SK,
+    ) -> *mut Node<SK, V, MULTI_READ> {
         debug_assert!(!node.is_null());
         if (*node).entry.key.eq(key) {
             return node;
@@ -173,7 +196,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// ```rust
     /// use kvlite::collections::skip_list::skipmap::SkipMap;
-    /// let mut skip_map = SkipMap::new();
+    /// let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
     /// for i in 1..10 {
     ///     skip_map.insert(i, i + 1);
     /// }
@@ -186,9 +209,9 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     /// # Safety
     /// `node` should be a part of skip-map and should not be nullptr
     pub unsafe fn find_first_ge_from_node(
-        mut node: *mut Node<SK, V>,
+        mut node: *mut Node<SK, V, MULTI_READ>,
         key: &SK,
-    ) -> *mut Node<SK, V> {
+    ) -> *mut Node<SK, V, MULTI_READ> {
         debug_assert!(!node.is_null());
         if (*node).entry.key.eq(key) {
             return node;
@@ -220,7 +243,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// ```rust
     /// use kvlite::collections::skip_list::skipmap::SkipMap;
-    /// let mut skip_map = SkipMap::new();
+    /// let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
     /// assert!(skip_map.find_first_ge(&1, None).is_null());
     /// skip_map.insert(3, 3);
     /// assert!(skip_map.find_first_ge(&5, None).is_null());
@@ -228,10 +251,10 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     pub fn find_first_ge(
         &self,
         key: &SK,
-        mut prev_nodes: Option<&mut [*mut Node<SK, V>; MAX_LEVEL + 1]>,
-    ) -> *mut Node<SK, V> {
+        mut prev_nodes: Option<&mut [*mut Node<SK, V, MULTI_READ>; MAX_LEVEL + 1]>,
+    ) -> *mut Node<SK, V, MULTI_READ> {
         let mut level = self.cur_max_level.load(Ordering::Acquire);
-        let mut node = self.dummy_head as *mut Node<SK, V>;
+        let mut node = self.dummy_head as *mut Node<SK, V, MULTI_READ>;
         loop {
             unsafe {
                 let next = (*node).get_next(level);
@@ -258,7 +281,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// ```rust
     /// use kvlite::collections::skip_list::skipmap::SkipMap;
-    /// let mut skip_map = SkipMap::new();
+    /// let mut skip_map: SkipMap<i32, i32, true> = SkipMap::new();
     /// assert!(skip_map.find_last_le(&1).is_null());
     /// skip_map.insert(3, 3);
     /// skip_map.insert(7, 7);
@@ -273,9 +296,9 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///     assert_eq!((*node).entry.key, 3);
     /// }
     /// ```
-    pub fn find_last_le(&self, key: &SK) -> *mut Node<SK, V> {
+    pub fn find_last_le(&self, key: &SK) -> *mut Node<SK, V, MULTI_READ> {
         let mut level = self.cur_max_level.load(Ordering::Acquire);
-        let mut node = self.dummy_head as *mut Node<SK, V>;
+        let mut node = self.dummy_head as *mut Node<SK, V, MULTI_READ>;
 
         let result = loop {
             let next = unsafe { (*node).get_next(level) };
@@ -313,7 +336,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
         }
     }
 
-    pub fn range_get<UK>(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, V>)
+    pub fn range_get<UK>(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, V, false>)
     where
         SK: Clone + Into<UK>,
         UK: Ord + Default,
@@ -331,7 +354,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
         }
     }
 
-    pub fn merge(&mut self, other: Self) {
+    pub fn merge(&self, other: SkipMap<SK, V, false>) {
         // todo: optimize the time complexity
         for n in other.into_ptr_iter() {
             unsafe {
@@ -342,22 +365,29 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     }
 
     /// return whether `key` has already exist.
-    pub fn insert(&mut self, key: SK, value: V) -> bool {
+    pub fn insert(&self, key: SK, mut value: V) -> Option<V> {
         let mut prev_nodes = [self.dummy_head as *mut _; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
         let has_key = unsafe { Self::node_eq_key(node, &key) };
         if has_key {
             unsafe {
-                (*node).entry.value = value;
+                std::mem::swap(&mut (*node).entry.value, &mut value);
+                // (*node).entry.value = value;
             }
+            Some(value)
         } else {
             self.insert_after(prev_nodes, key, value);
+            None
         }
-        has_key
     }
 
     /// Insert node with `key`, `value` after `prev_nodes`
-    fn insert_after(&mut self, prev_nodes: [*mut Node<SK, V>; MAX_LEVEL + 1], key: SK, value: V) {
+    fn insert_after(
+        &self,
+        prev_nodes: [*mut Node<SK, V, MULTI_READ>; MAX_LEVEL + 1],
+        key: SK,
+        value: V,
+    ) {
         #[cfg(debug_assertions)]
         {
             for (level, prev) in prev_nodes.iter().enumerate() {
@@ -388,7 +418,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
             }
         }
 
-        self.len += 1;
+        self.len.fetch_add(1, Ordering::Release);
     }
 
     /// Remove all the `key` in map, return whether `key` exists
@@ -403,7 +433,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
                     for i in 0..=(*node).level {
                         (*prev_nodes[i]).set_next(i, (*node).get_next(i))
                     }
-                    self.len -= 1;
+                    self.len.fetch_sub(1, Ordering::Release);
                     if next_node.is_null() {
                         self.tail
                             .store(*prev_nodes.get_unchecked(0) as *mut _, Ordering::SeqCst);
@@ -418,7 +448,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
         }
     }
 
-    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V> {
+    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V, MULTI_READ> {
         unsafe {
             IterPtr {
                 node: (*self.dummy_head).get_next(0),
@@ -427,7 +457,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
         }
     }
 
-    pub fn iter<'a>(&self) -> Iter<'a, SK, V> {
+    pub fn iter<'a>(&self) -> Iter<'a, SK, V, MULTI_READ> {
         unsafe {
             Iter {
                 node: (*self.dummy_head).get_next(0),
@@ -442,7 +472,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// ```rust
     /// use kvlite::collections::skip_list::skipmap::SkipMap;
-    /// let mut skip_map = SkipMap::new();
+    /// let mut skip_map: SkipMap<&str, i32, true> = SkipMap::new();
     /// assert!(skip_map.first_key_value().is_none());
     ///
     /// skip_map.insert("hello", 2);
@@ -465,7 +495,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     ///
     /// ```rust
     /// use kvlite::collections::skip_list::skipmap::SkipMap;
-    /// let mut skip_map = SkipMap::new();
+    /// let mut skip_map: SkipMap<&str, i32, false> = SkipMap::new();
     /// assert!(skip_map.last_key_value().is_none());
     ///
     /// skip_map.insert("hello", 2);
@@ -482,7 +512,7 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
         }
     }
 
-    pub fn into_ptr_iter(self) -> IntoPtrIter<SK, V> {
+    pub fn into_ptr_iter(self) -> IntoPtrIter<SK, V, MULTI_READ> {
         unsafe {
             let node = (*self.dummy_head).get_next(0);
             IntoPtrIter { inner: self, node }
@@ -490,32 +520,34 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V> {
     }
 }
 
-impl<K: Ord + Default, V: Default> Default for SkipMap<K, V> {
+impl<K: Ord + Default, V: Default, const MULTI_READ: bool> Default for SkipMap<K, V, MULTI_READ> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Ord + Default, V: Default> Drop for SkipMap<K, V> {
+impl<K: Ord + Default, V: Default, const MULTI_READ: bool> Drop for SkipMap<K, V, MULTI_READ> {
     fn drop(&mut self) {
         let mut node = self.dummy_head;
 
         unsafe {
             while !node.is_null() {
                 let next_node = (*node).get_next(0);
-                drop_node(node as *mut Node<K, V>);
+                drop_node(node as *mut Node<K, V, MULTI_READ>);
                 node = next_node;
             }
         }
     }
 }
 
-pub struct Iter<'a, K: Ord + Default, V: Default> {
-    node: *const Node<K, V>,
-    _marker: PhantomData<&'a Node<K, V>>,
+pub struct Iter<'a, K: Ord + Default, V: Default, const MULTI_READ: bool> {
+    node: *const Node<K, V, MULTI_READ>,
+    _marker: PhantomData<&'a Node<K, V, MULTI_READ>>,
 }
 
-impl<'a, K: Ord + Default, V: Default> Iterator for Iter<'a, K, V> {
+impl<'a, K: Ord + Default, V: Default, const MULTI_READ: bool> Iterator
+    for Iter<'a, K, V, MULTI_READ>
+{
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -532,20 +564,20 @@ impl<'a, K: Ord + Default, V: Default> Iterator for Iter<'a, K, V> {
 }
 
 /// Iteration over the contents of a SkipMap
-pub struct IterPtr<'a, K: Ord + Default, V: Default> {
-    node: *const Node<K, V>,
-    _marker: PhantomData<&'a Node<K, V>>,
+pub struct IterPtr<'a, K: Ord + Default, V: Default, const MULTI_READ: bool> {
+    node: *const Node<K, V, MULTI_READ>,
+    _marker: PhantomData<&'a Node<K, V, MULTI_READ>>,
 }
 
-impl<'a, K: Ord + Default, V: Default> IterPtr<'a, K, V> {
-    pub fn current_no_consume(&self) -> *const Node<K, V> {
+impl<'a, K: Ord + Default, V: Default, const MULTI_READ: bool> IterPtr<'a, K, V, MULTI_READ> {
+    pub fn current_no_consume(&self) -> *const Node<K, V, MULTI_READ> {
         self.node
     }
 
     /// # Notice
     ///
     /// Make sure `self.node` is not null.
-    pub fn next_node(&mut self) -> *const Node<K, V> {
+    pub fn next_node(&mut self) -> *const Node<K, V, MULTI_READ> {
         debug_assert!(!self.node.is_null());
         unsafe {
             self.node = (*self.node).get_next(0);
@@ -554,8 +586,10 @@ impl<'a, K: Ord + Default, V: Default> IterPtr<'a, K, V> {
     }
 }
 
-impl<'a, K: Ord + Default, V: Default> Iterator for IterPtr<'a, K, V> {
-    type Item = *const Node<K, V>;
+impl<'a, K: Ord + Default, V: Default, const MULTI_READ: bool> Iterator
+    for IterPtr<'a, K, V, MULTI_READ>
+{
+    type Item = *const Node<K, V, MULTI_READ>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.node.is_null() {
@@ -570,20 +604,20 @@ impl<'a, K: Ord + Default, V: Default> Iterator for IterPtr<'a, K, V> {
     }
 }
 
-pub struct IntoPtrIter<K: Ord + Default, V: Default> {
-    inner: SkipMap<K, V>,
-    node: *mut Node<K, V>,
+pub struct IntoPtrIter<K: Ord + Default, V: Default, const MULTI_READ: bool> {
+    inner: SkipMap<K, V, MULTI_READ>,
+    node: *mut Node<K, V, MULTI_READ>,
 }
 
-impl<K: Ord + Default, V: Default> IntoPtrIter<K, V> {
-    pub fn current_mut_no_consume(&self) -> *mut Node<K, V> {
+impl<K: Ord + Default, V: Default, const MULTI_READ: bool> IntoPtrIter<K, V, MULTI_READ> {
+    pub fn current_mut_no_consume(&self) -> *mut Node<K, V, MULTI_READ> {
         self.node as *mut _
     }
 
     /// # Notice
     ///
     /// Make sure `self.node` is not null.
-    pub fn next_node(&mut self) -> *mut Node<K, V> {
+    pub fn next_node(&mut self) -> *mut Node<K, V, MULTI_READ> {
         debug_assert!(!self.node.is_null());
         unsafe {
             self.node = (*self.node).get_next(0);
@@ -592,8 +626,10 @@ impl<K: Ord + Default, V: Default> IntoPtrIter<K, V> {
     }
 }
 
-impl<K: Ord + Default, V: Default> Iterator for IntoPtrIter<K, V> {
-    type Item = *mut Node<K, V>;
+impl<K: Ord + Default, V: Default, const MULTI_READ: bool> Iterator
+    for IntoPtrIter<K, V, MULTI_READ>
+{
+    type Item = *mut Node<K, V, MULTI_READ>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.node.is_null() {
@@ -608,12 +644,12 @@ impl<K: Ord + Default, V: Default> Iterator for IntoPtrIter<K, V> {
     }
 }
 
-pub struct IntoIter<K: Ord + Default, V: Default> {
-    inner: SkipMap<K, V>,
-    node: *mut Node<K, V>,
+pub struct IntoIter<K: Ord + Default, V: Default, const MULTI_READ: bool> {
+    inner: SkipMap<K, V, MULTI_READ>,
+    node: *mut Node<K, V, MULTI_READ>,
 }
 
-impl<K: Ord + Default, V: Default> Iterator for IntoIter<K, V> {
+impl<K: Ord + Default, V: Default, const MULTI_READ: bool> Iterator for IntoIter<K, V, MULTI_READ> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -630,9 +666,11 @@ impl<K: Ord + Default, V: Default> Iterator for IntoIter<K, V> {
     }
 }
 
-impl<K: Ord + Default, V: Default> IntoIterator for SkipMap<K, V> {
+impl<K: Ord + Default, V: Default, const MULTI_READ: bool> IntoIterator
+    for SkipMap<K, V, MULTI_READ>
+{
     type Item = (K, V);
-    type IntoIter = IntoIter<K, V>;
+    type IntoIter = IntoIter<K, V, MULTI_READ>;
 
     fn into_iter(self) -> Self::IntoIter {
         unsafe {
@@ -650,7 +688,7 @@ mod tests {
 
     #[test]
     fn test_key() {
-        let mut skip_map = SkipMap::new();
+        let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
         skip_map.insert(1, 1);
         skip_map.insert(1, 2);
         assert_eq!(skip_map.len(), 1);
@@ -662,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut skip_map: SkipMap<i32, String> = SkipMap::new();
+        let mut skip_map: SkipMap<i32, String, false> = SkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
             assert_eq!(skip_map.last_key_value().unwrap().key, i);
@@ -700,8 +738,8 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let mut map1 = SkipMap::new();
-        let mut map2 = SkipMap::new();
+        let mut map1: SkipMap<String, String, false> = SkipMap::new();
+        let mut map2: SkipMap<String, String, false> = SkipMap::new();
         map1.insert("hello".to_string(), "world".to_string());
         map2.insert("hello".to_string(), "world3".to_string());
         map2.insert("a".to_string(), "b".to_string());
@@ -716,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let mut skip_map: SkipMap<i32, String> = SkipMap::new();
+        let mut skip_map: SkipMap<i32, String, false> = SkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
         }
@@ -742,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_first_key_value() {
-        let mut skip_map = SkipMap::new();
+        let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
         macro_rules! assert_first_key {
             ($k:literal) => {
                 assert_eq!(skip_map.first_key_value().unwrap().key, $k);
@@ -763,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_last_key_value() {
-        let mut skip_map = SkipMap::new();
+        let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
 
         macro_rules! assert_last_key {
             ($k:literal) => {
@@ -786,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_find_last_le() {
-        let mut skip_map = SkipMap::new();
+        let mut skip_map: SkipMap<i32, i32, false> = SkipMap::new();
         assert!(skip_map.find_last_le(&1).is_null());
         for i in 1..=100 {
             skip_map.insert(2 * i + 1, (2 * i + 1) * 2);

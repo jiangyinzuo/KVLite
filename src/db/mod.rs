@@ -26,13 +26,13 @@ pub(crate) const fn max_level_shift() -> usize {
 pub type Value = Vec<u8>;
 
 pub trait DBCommand<SK: MemKey, UK: MemKey> {
-    fn range_get(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, Value>)
+    fn range_get(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, Value, false>)
     where
         SK: Into<UK>,
         UK: From<SK>;
     fn get(&self, key: &SK) -> crate::Result<Option<Value>>;
-    fn set(&mut self, key: SK, value: Value) -> crate::Result<()>;
-    fn remove(&mut self, key: SK) -> crate::Result<()>;
+    fn set(&self, key: SK, value: Value) -> crate::Result<()>;
+    fn remove(&self, key: SK) -> crate::Result<()>;
 }
 
 pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
@@ -40,7 +40,7 @@ pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
     fn get(&self, key: &SK) -> Result<Option<Value>>;
     fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()>;
     fn remove(&self, write_options: &WriteOptions, key: SK) -> Result<()>;
-    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value>>
+    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value, false>>
     where
         UK: From<SK>;
     fn db_path(&self) -> &String;

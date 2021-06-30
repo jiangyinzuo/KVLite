@@ -220,7 +220,7 @@ where
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<UK, Value>,
+        kvs: &mut SkipMap<UK, Value, false>,
     ) {
         let tables_guard = self.level0_tables.read().unwrap();
 

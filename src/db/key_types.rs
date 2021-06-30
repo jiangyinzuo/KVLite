@@ -9,6 +9,7 @@ pub trait MemKey:
     Ord + Send + Clone + Sync + Default + Into<InternalKey> + From<InternalKey>
 {
     fn internal_key(&self) -> &InternalKey;
+    fn mem_size(&self) -> usize;
 }
 
 /// Raw user key stored in disk
@@ -17,6 +18,10 @@ pub type InternalKey = Vec<u8>;
 impl MemKey for InternalKey {
     fn internal_key(&self) -> &InternalKey {
         &self
+    }
+
+    fn mem_size(&self) -> usize {
+        self.len() * std::mem::size_of::<u8>()
     }
 }
 
@@ -68,6 +73,10 @@ impl From<InternalKey> for I32UserKey {
 impl MemKey for I32UserKey {
     fn internal_key(&self) -> &InternalKey {
         &self.1
+    }
+
+    fn mem_size(&self) -> usize {
+        4 + 4
     }
 }
 
@@ -130,5 +139,9 @@ impl<K: MemKey> From<InternalKey> for LSNKey<K> {
 impl<K: MemKey> MemKey for LSNKey<K> {
     fn internal_key(&self) -> &InternalKey {
         self.user_key.internal_key()
+    }
+
+    fn mem_size(&self) -> usize {
+        self.user_key.mem_size() + std::mem::size_of::<LSN>()
     }
 }

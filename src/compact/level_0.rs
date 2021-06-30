@@ -76,7 +76,7 @@ where
     fn run(&mut self) {
         debug_assert!(!self.level0_table_handles.is_empty());
 
-        let level0_skip_map: SkipMap<InternalKey, Value> = self.merge_level0_tables();
+        let level0_skip_map: SkipMap<InternalKey, Value, false> = self.merge_level0_tables();
         let mut kv_total = level0_skip_map.len();
 
         if self.level1_table_handles.is_empty() {
@@ -84,7 +84,7 @@ where
             debug_assert!(level1_table_size >= LEVEL0_FILES_THRESHOLD);
 
             let mut temp_kvs: Vec<(InternalKey, Value)> = vec![];
-            let iter: IntoIter<InternalKey, Value> = level0_skip_map.into_iter();
+            let iter: IntoIter<InternalKey, Value, false> = level0_skip_map.into_iter();
             for (k, v) in iter {
                 temp_kvs.push((k, v));
                 #[cfg(debug_assertions)]
@@ -126,7 +126,8 @@ where
                 };
             }
 
-            let mut level0_iter: IntoPtrIter<InternalKey, Value> = level0_skip_map.into_ptr_iter();
+            let mut level0_iter: IntoPtrIter<InternalKey, Value, false> =
+                level0_skip_map.into_ptr_iter();
             let mut kv = level0_iter.current_mut_no_consume();
 
             for level1_table_handle in self.level1_table_handles.iter() {
@@ -206,7 +207,7 @@ where
             .may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
     }
 
-    fn merge_level0_tables(&self) -> SkipMap<InternalKey, Value> {
+    fn merge_level0_tables(&self) -> SkipMap<InternalKey, Value, false> {
         let mut skip_map = SkipMap::new();
         for table in &self.level0_table_handles {
             for (key, value) in table.iter() {

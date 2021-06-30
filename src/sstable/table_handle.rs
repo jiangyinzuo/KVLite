@@ -428,7 +428,7 @@ impl TableReadHandle {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<UK, Value>,
+        kvs: &mut SkipMap<UK, Value, false>,
     ) -> bool {
         if self.is_overlapping(key_start, key_end) {
             let mut buf_reader = self.create_buf_reader_with_pos();

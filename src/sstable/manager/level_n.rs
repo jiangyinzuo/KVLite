@@ -173,7 +173,7 @@ impl LevelNManager {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<UK, Value>,
+        kvs: &mut SkipMap<UK, Value, false>,
     ) {
         for level in (1..=MAX_LEVEL).rev() {
             let tables_lock =

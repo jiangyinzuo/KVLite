@@ -80,7 +80,7 @@ impl DataBlock {
     pub(super) fn get_all_record_le<UK: MemKey>(
         &self,
         key: &InternalKey,
-        kvs: &mut SkipMap<UK, Value>,
+        kvs: &mut SkipMap<UK, Value, false>,
     ) -> bool {
         let mut left = 0;
         let mut right = self.num_records;

@@ -1,4 +1,3 @@
-pub mod mrsw_skipmap;
 pub mod skipmap;
 
 use rand::Rng;

@@ -7,7 +7,7 @@ use crate::memory::MemTable;
 use crate::wal::TransactionWAL;
 use crate::Result;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, MutexGuard};
 
 pub struct SnapShot<UK, M, L>
@@ -26,7 +26,7 @@ where
     M: MemTable<LSNKey<UK>, UK> + 'static,
     L: TransactionWAL<LSNKey<UK>, UK> + 'static,
 {
-    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value> {
+    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value, false> {
         let key_start = LSNKey::new(key_start, self.lsn);
         let key_end = LSNKey::new(key_end, self.lsn);
         self.db.range_get(&key_start, &key_end).unwrap()
@@ -56,9 +56,10 @@ where
     L: TransactionWAL<LSNKey<UK>, UK> + 'static,
 {
     db: Arc<WriteCommittedDB<UK, M, L>>,
-    table: SkipMap<LSNKey<UK>, Value>,
+    table: SkipMap<LSNKey<UK>, Value, false>,
     lsn: LSN,
     write_options: WriteOptions,
+    mem_usage: AtomicI64,
 }
 
 impl<UK, M, L> WriteBatch<UK, M, L>
@@ -67,7 +68,7 @@ where
     M: MemTable<LSNKey<UK>, UK> + 'static,
     L: TransactionWAL<LSNKey<UK>, UK>,
 {
-    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value> {
+    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value, false> {
         let key_start = LSNKey::new(key_start, self.lsn);
         let key_end = LSNKey::new(key_end, self.lsn);
         let mut kvs = self.db.range_get(&key_start, &key_end).unwrap();
@@ -85,13 +86,26 @@ where
 
     pub fn set(&mut self, key: UK, value: Value) -> Result<()> {
         let key = LSNKey::new(key, self.lsn);
-        self.table.insert(key, value);
+
+        let key_len = key.mem_size() as i64;
+        let value_len = value.len() as i64;
+        let mem_add = match self.table.insert(key, value) {
+            Some(v) => value_len - (v.len() as i64),
+            None => (key_len + value_len),
+        } * std::mem::size_of::<u8>() as i64;
+        self.mem_usage.fetch_add(mem_add, Ordering::Release);
         Ok(())
     }
 
     pub fn remove(&mut self, key: UK) -> Result<()> {
         let key = LSNKey::new(key, self.lsn);
-        self.table.insert(key, Value::default());
+
+        let key_mem_size = key.mem_size();
+        let mem_add = match self.table.insert(key, Value::default()) {
+            Some(v) => -((v.len() * std::mem::size_of::<u8>()) as i64),
+            None => key_mem_size as i64,
+        };
+        self.mem_usage.fetch_add(mem_add, Ordering::Release);
         Ok(())
     }
 
@@ -110,7 +124,11 @@ where
     fn drop(&mut self) {
         if !self.table.is_empty() {
             let table = std::mem::take(&mut self.table);
-            self.db.write_batch(&self.write_options, table).unwrap();
+            let mem_usage = self.mem_usage.load(Ordering::Acquire);
+            debug_assert!(mem_usage >= 0);
+            self.db
+                .write_batch(&self.write_options, table, mem_usage as u64)
+                .unwrap();
         }
         self.db.num_lsn_acquired.fetch_sub(1, Ordering::Release);
     }
@@ -180,7 +198,7 @@ where
         &self,
         key_start: &LSNKey<UK>,
         key_end: &LSNKey<UK>,
-    ) -> Result<SkipMap<UK, Value>> {
+    ) -> Result<SkipMap<UK, Value, false>> {
         self.inner.range_get(key_start, key_end)
     }
 
@@ -227,6 +245,7 @@ where
             db: db.clone(),
             table: SkipMap::default(),
             lsn: db.next_lsn.fetch_add(1, Ordering::Release),
+            mem_usage: AtomicI64::default(),
             write_options,
         }
     }
@@ -234,7 +253,8 @@ where
     pub fn write_batch(
         &self,
         write_options: &WriteOptions,
-        batch: SkipMap<LSNKey<UK>, Value>,
+        batch: SkipMap<LSNKey<UK>, Value, false>,
+        mem_usage: u64,
     ) -> Result<()> {
         {
             let mut wal_guard = self.inner.wal.lock().unwrap();
@@ -243,8 +263,8 @@ where
             }
         }
 
-        let mut mem_table_guard = self.inner.mut_mem_table.lock().unwrap();
-        mem_table_guard.merge(batch);
+        let mem_table_guard = self.inner.mut_mem_table.lock().unwrap();
+        mem_table_guard.merge(batch, mem_usage);
 
         self.may_freeze(mem_table_guard);
         Ok(())

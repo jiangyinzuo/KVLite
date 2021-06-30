@@ -2,7 +2,7 @@ use kvlite::db::key_types::InternalKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
-use kvlite::memory::SkipMapMemTable;
+use kvlite::memory::MrswSkipMapMemTable;
 use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use procfs::CpuInfo;
 use rand::distributions::Uniform;
@@ -36,26 +36,22 @@ fn print_arguments() {
     println!("RawSize: {} MB (estimated)", RAW_SIZE);
 }
 
+type DataBase = NoTransactionDB<
+    InternalKey,
+    InternalKey,
+    MrswSkipMapMemTable<InternalKey>,
+    SimpleWriteAheadLog,
+>;
+
 struct BenchMark {
     _temp_dir: TempDir,
-    db: NoTransactionDB<
-        InternalKey,
-        InternalKey,
-        SkipMapMemTable<InternalKey>,
-        SimpleWriteAheadLog,
-    >,
+    db: DataBase,
 }
 
 impl BenchMark {
     fn new() -> BenchMark {
         let temp_dir = tempfile::tempdir().unwrap();
-        let db = NoTransactionDB::<
-            InternalKey,
-            InternalKey,
-            SkipMapMemTable<InternalKey>,
-            SimpleWriteAheadLog,
-        >::open(temp_dir.path())
-        .unwrap();
+        let db = DataBase::open(temp_dir.path()).unwrap();
         BenchMark {
             _temp_dir: temp_dir,
             db,
@@ -64,13 +60,7 @@ impl BenchMark {
 
     fn reopen_db(&mut self) {
         let temp_dir = tempfile::tempdir().unwrap();
-        let db = NoTransactionDB::<
-            InternalKey,
-            InternalKey,
-            SkipMapMemTable<InternalKey>,
-            SimpleWriteAheadLog,
-        >::open(temp_dir.path())
-        .unwrap();
+        let db = DataBase::open(temp_dir.path()).unwrap();
         self.db = db;
         self._temp_dir = temp_dir;
     }

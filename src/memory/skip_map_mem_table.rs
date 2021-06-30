@@ -3,13 +3,14 @@ use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Mutex, RwLock};
 
 #[derive(Default)]
 pub struct SkipMapMemTable<SK: MemKey> {
-    rw_lock: RwLock<()>,
-    inner_guarded: SkipMap<SK, Value>,
-    mem_usage: u64,
+    lock: Mutex<()>,
+    inner_guarded: SkipMap<SK, Value, false>,
+    mem_usage: AtomicI64,
 }
 
 impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
@@ -17,30 +18,38 @@ impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<InternalKey, Value>,
+        kvs: &mut SkipMap<InternalKey, Value, false>,
     ) {
-        let _guard = self.rw_lock.read().unwrap();
+        let _guard = self.lock.lock().unwrap();
         self.inner_guarded.range_get(key_start, key_end, kvs);
     }
 
     fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
-        let _guard = self.rw_lock.read().unwrap();
+        let _guard = self.lock.lock().unwrap();
         Ok(self.inner_guarded.get_clone(key))
     }
 
-    fn set(&mut self, key: InternalKey, value: Value) -> Result<()> {
-        let _guard = self.rw_lock.write().unwrap();
-        let mem_usage = (key.len() + value.len()) * std::mem::size_of::<u8>();
-        self.inner_guarded.insert(key, value);
-        self.mem_usage += mem_usage as u64;
+    fn set(&self, key: InternalKey, value: Value) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
+        let key_len = key.len();
+        let value_len = value.len();
+        let mem_add = match self.inner_guarded.insert(key, value) {
+            Some(v) => ((key_len + value_len - v.len()) * std::mem::size_of::<u8>()) as i64,
+            None => ((key_len + value_len) * std::mem::size_of::<u8>()) as i64,
+        };
+        self.mem_usage.fetch_add(mem_add, Ordering::Release);
         Ok(())
     }
 
-    fn remove(&mut self, key: InternalKey) -> Result<()> {
-        let _guard = self.rw_lock.write().unwrap();
-        let mem_usage = key.len() * std::mem::size_of::<u8>();
-        self.inner_guarded.insert(key, InternalKey::new());
-        self.mem_usage += mem_usage as u64;
+    fn remove(&self, key: InternalKey) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
+
+        let key_len = key.len();
+        let mem_add = match self.inner_guarded.insert(key, Value::default()) {
+            Some(v) => -((v.len() * std::mem::size_of::<u8>()) as i64),
+            None => (key_len * std::mem::size_of::<u8>()) as i64,
+        };
+        self.mem_usage.fetch_add(mem_add, Ordering::Release);
         Ok(())
     }
 }
@@ -60,14 +69,69 @@ impl InternalKeyValueIterator for SkipMapMemTable<InternalKey> {
 }
 
 impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
-    fn merge(&mut self, kvs: SkipMap<InternalKey, Value>) {
-        let _guard = self.rw_lock.write().unwrap();
+    fn merge(&self, kvs: SkipMap<InternalKey, Value, false>, mem_size: u64) {
+        let _guard = self.lock.lock().unwrap();
+        self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
         self.inner_guarded.merge(kvs);
     }
 
     fn approximate_memory_usage(&self) -> u64 {
-        let _guard = self.rw_lock.read().unwrap();
-        self.mem_usage
+        let mem_usage = self.mem_usage.load(Ordering::Acquire);
+        debug_assert!(mem_usage > 0);
+        mem_usage as u64
+    }
+}
+
+pub(super) fn range_get_by_lsn_key<UK: MemKey, const MULTI_READ: bool>(
+    skip_map: &SkipMap<LSNKey<UK>, Value, MULTI_READ>,
+    key_start: &LSNKey<UK>,
+    key_end: &LSNKey<UK>,
+    kvs: &mut SkipMap<UK, Value, false>,
+) {
+    let mut node = skip_map.find_last_le(key_start);
+    if node.is_null() {
+        return;
+    }
+    unsafe {
+        let user_key = (*node).entry.key.user_key();
+        if user_key.eq(key_start.user_key()) {
+            kvs.insert(user_key.clone(), (*node).entry.value.clone());
+        }
+    }
+
+    loop {
+        let lsn_max = unsafe { LSNKey::upper_bound(&(*node).entry.key) };
+        unsafe {
+            // get next user key
+            node = SkipMap::find_first_ge_from_node(node, &lsn_max);
+            if node.is_null() || (*node).entry.key.user_key().gt(key_end.user_key()) {
+                return;
+            }
+
+            let lsn_key = LSNKey::new((*node).entry.key.user_key().clone(), key_end.lsn());
+            node = SkipMap::find_last_le_from_node(node, &lsn_key);
+            debug_assert!(!node.is_null());
+            if (*node).entry.key.user_key().eq(lsn_key.user_key()) {
+                kvs.insert(lsn_key.user_key().clone(), (*node).entry.value.clone());
+            }
+        }
+    }
+}
+
+pub(super) fn get_by_lsn_key<UK: MemKey, const MULTI_READ: bool>(
+    skip_map: &SkipMap<LSNKey<UK>, Value, MULTI_READ>,
+    key: &LSNKey<UK>,
+) -> Result<Option<Value>> {
+    let node = skip_map.find_last_le(key);
+    if node.is_null() {
+        return Ok(None);
+    }
+    unsafe {
+        if (*node).entry.key.user_key().eq(key.user_key()) {
+            Ok(Some((*node).entry.value.clone()))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -76,67 +140,42 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
         &self,
         key_start: &LSNKey<UK>,
         key_end: &LSNKey<UK>,
-        kvs: &mut SkipMap<UK, Value>,
+        kvs: &mut SkipMap<UK, Value, false>,
     ) {
         debug_assert!(key_start.le(key_end));
         debug_assert_eq!(key_start.lsn(), key_end.lsn());
 
-        let _guard = self.rw_lock.read().unwrap();
-
-        let mut node = self.inner_guarded.find_last_le(key_start);
-        if node.is_null() {
-            return;
-        }
-        unsafe {
-            let user_key = (*node).entry.key.user_key();
-            if user_key.eq(key_start.user_key()) {
-                kvs.insert(user_key.clone(), (*node).entry.value.clone());
-            }
-        }
-
-        loop {
-            let lsn_max = unsafe { LSNKey::upper_bound(&(*node).entry.key) };
-            unsafe {
-                // get next user key
-                node = SkipMap::find_first_ge_from_node(node, &lsn_max);
-                if node.is_null() || (*node).entry.key.user_key().gt(key_end.user_key()) {
-                    return;
-                }
-
-                let lsn_key = LSNKey::new((*node).entry.key.user_key().clone(), key_end.lsn());
-                node = SkipMap::find_last_le_from_node(node, &lsn_key);
-                debug_assert!(!node.is_null());
-                if (*node).entry.key.user_key().eq(lsn_key.user_key()) {
-                    kvs.insert(lsn_key.user_key().clone(), (*node).entry.value.clone());
-                }
-            }
-        }
+        let _guard = self.lock.lock().unwrap();
+        range_get_by_lsn_key(&self.inner_guarded, key_start, key_end, kvs)
     }
 
     fn get(&self, key: &LSNKey<UK>) -> Result<Option<Value>> {
-        let _guard = self.rw_lock.read().unwrap();
-        let node = self.inner_guarded.find_last_le(key);
-        if node.is_null() {
-            return Ok(None);
-        }
-        unsafe {
-            if (*node).entry.key.user_key().eq(key.user_key()) {
-                Ok(Some((*node).entry.value.clone()))
-            } else {
-                Ok(None)
-            }
-        }
+        let _guard = self.lock.lock().unwrap();
+        get_by_lsn_key(&self.inner_guarded, key)
     }
 
-    fn set(&mut self, key: LSNKey<UK>, value: Value) -> Result<()> {
-        let _guard = self.rw_lock.write().unwrap();
-        self.inner_guarded.insert(key, value);
+    fn set(&self, key: LSNKey<UK>, value: Value) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
+
+        let key_mem_size = key.mem_size() as i64;
+        let value_len = value.len() as i64;
+        let mem_add = match self.inner_guarded.insert(key, value) {
+            Some(v) => (value_len as i64 - v.len() as i64),
+            None => (key_mem_size + value_len),
+        } * std::mem::size_of::<u8>() as i64;
+        self.mem_usage.fetch_add(mem_add, Ordering::Release);
         Ok(())
     }
 
-    fn remove(&mut self, key: LSNKey<UK>) -> Result<()> {
-        let _guard = self.rw_lock.write().unwrap();
-        self.inner_guarded.insert(key, Value::default());
+    fn remove(&self, key: LSNKey<UK>) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
+        let key_mem_size = key.mem_size();
+
+        let mem_add = match self.inner_guarded.insert(key, Value::default()) {
+            Some(v) => -((v.len() * std::mem::size_of::<u8>()) as i64),
+            None => (key_mem_size * std::mem::size_of::<u8>()) as i64,
+        };
+        self.mem_usage.fetch_add(mem_add, Ordering::Release);
         Ok(())
     }
 }
@@ -166,14 +205,16 @@ impl<K: MemKey + 'static> InternalKeyValueIterator for SkipMapMemTable<LSNKey<K>
 }
 
 impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
-    fn merge(&mut self, kvs: SkipMap<LSNKey<UK>, Value>) {
-        let _guard = self.rw_lock.write().unwrap();
+    fn merge(&self, kvs: SkipMap<LSNKey<UK>, Value, false>, mem_size: u64) {
+        let _guard = self.lock.lock().unwrap();
+        self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
         self.inner_guarded.merge(kvs);
     }
 
     fn approximate_memory_usage(&self) -> u64 {
-        let _guard = self.rw_lock.read().unwrap();
-        self.mem_usage
+        let mem_usage = self.mem_usage.load(Ordering::Acquire);
+        debug_assert!(mem_usage >= 0, "mem_usage: {}", mem_usage);
+        mem_usage as u64
     }
 }
 
@@ -184,7 +225,7 @@ mod internal_key_tests {
 
     #[test]
     fn test_insert() {
-        let mut table = SkipMapMemTable::default();
+        let table = SkipMapMemTable::default();
 
         let one = Vec::from(1i32.to_le_bytes());
         for i in 0..10i32 {
@@ -209,7 +250,7 @@ mod lsn_tests {
 
     #[test]
     fn test_range_get() {
-        let mut table = SkipMapMemTable::<LSNKey<I32UserKey>>::default();
+        let table = SkipMapMemTable::<LSNKey<I32UserKey>>::default();
         for lsn in 1..8 {
             for k in -100i32..100i32 {
                 table

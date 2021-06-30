@@ -110,8 +110,8 @@ where
         Ok(())
     }
 
-    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value>> {
-        let mut skip_map: SkipMap<UK, Value> = SkipMap::new();
+    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value, false>> {
+        let mut skip_map: SkipMap<UK, Value, false> = SkipMap::new();
         self.leveln_manager.range_query(
             key_start.internal_key(),
             key_end.internal_key(),
@@ -156,8 +156,7 @@ where
             wal_guard.append(write_options, &key, Some(&value))?;
         }
 
-        let mut mem_table_guard = self.mut_mem_table.lock().unwrap();
-
+        let mem_table_guard = self.mut_mem_table.lock().unwrap();
         mem_table_guard.set(key, value)?;
 
         Ok(mem_table_guard)
@@ -171,7 +170,7 @@ where
         let mut wal_writer_lock = self.wal.lock().unwrap();
         wal_writer_lock.append(write_options, &key, None)?;
 
-        let mut mem_table_guard = self.mut_mem_table.lock().unwrap();
+        let mem_table_guard = self.mut_mem_table.lock().unwrap();
         mem_table_guard.remove(key)?;
         Ok(mem_table_guard)
     }
@@ -264,7 +263,7 @@ pub(crate) mod tests {
     use crate::db::no_transaction_db::NoTransactionDB;
     use crate::db::options::WriteOptions;
     use crate::db::{DB, MAX_LEVEL};
-    use crate::memory::{BTreeMemTable, MemTable, SkipMapMemTable};
+    use crate::memory::{BTreeMemTable, MemTable, MrswSkipMapMemTable, SkipMapMemTable};
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
     use log::info;
@@ -295,6 +294,8 @@ pub(crate) mod tests {
                 _test_command::<BTreeMemTable<InternalKey>>(path, i);
                 check(path);
                 _test_command::<SkipMapMemTable<InternalKey>>(path, i);
+                check(path);
+                _test_command::<MrswSkipMapMemTable<InternalKey>>(path, i);
                 check(path);
             }
         }
