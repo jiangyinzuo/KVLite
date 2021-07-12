@@ -1,4 +1,4 @@
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::MemKey;
 use crate::db::options::WriteOptions;
 use crate::memory::MemTable;
@@ -26,7 +26,7 @@ pub(crate) const fn max_level_shift() -> usize {
 pub type Value = Vec<u8>;
 
 pub trait DBCommand<SK: MemKey, UK: MemKey> {
-    fn range_get(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, Value, false>)
+    fn range_get(&self, key_start: &SK, key_end: &SK, kvs: &mut SrSwSkipMap<UK, Value>)
     where
         SK: Into<UK>,
         UK: From<SK>;
@@ -40,7 +40,7 @@ pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
     fn get(&self, key: &SK) -> Result<Option<Value>>;
     fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()>;
     fn remove(&self, write_options: &WriteOptions, key: SK) -> Result<()>;
-    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value, false>>
+    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SrSwSkipMap<UK, Value>>
     where
         UK: From<SK>;
     fn db_path(&self) -> &String;

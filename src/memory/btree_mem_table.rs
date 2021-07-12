@@ -1,4 +1,4 @@
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::{InternalKeyValueIterator, MemTable};
@@ -22,7 +22,7 @@ impl DBCommand<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<InternalKey, Value, false>,
+        kvs: &mut SrSwSkipMap<InternalKey, Value>,
     ) {
         let _guard = self.rw_lock.read().unwrap();
         let inner_ptr = self.inner.get();
@@ -91,7 +91,7 @@ impl InternalKeyValueIterator for BTreeMemTable<InternalKey> {
 }
 
 impl MemTable<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
-    fn merge(&self, kvs: SkipMap<InternalKey, Value, false>, memory_size: u64) {
+    fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, memory_size: u64) {
         let mut _lock_guard = self.rw_lock.write().unwrap();
         unsafe {
             (*self.inner.get()).extend(kvs.into_iter());

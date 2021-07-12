@@ -1,4 +1,4 @@
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{ReadWriteMode, SrSwSkipMap};
 use crate::db::key_types::{LSNKey, MemKey, LSN};
 use crate::db::no_transaction_db::NoTransactionDB;
 use crate::db::options::WriteOptions;
@@ -26,7 +26,7 @@ where
     M: MemTable<LSNKey<UK>, UK> + 'static,
     L: TransactionWAL<LSNKey<UK>, UK> + 'static,
 {
-    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value, false> {
+    pub fn range_get(&self, key_start: UK, key_end: UK) -> SrSwSkipMap<UK, Value> {
         let key_start = LSNKey::new(key_start, self.lsn);
         let key_end = LSNKey::new(key_end, self.lsn);
         self.db.range_get(&key_start, &key_end).unwrap()
@@ -56,7 +56,7 @@ where
     L: TransactionWAL<LSNKey<UK>, UK> + 'static,
 {
     db: Arc<WriteCommittedDB<UK, M, L>>,
-    table: SkipMap<LSNKey<UK>, Value, false>,
+    table: SrSwSkipMap<LSNKey<UK>, Value>,
     lsn: LSN,
     write_options: WriteOptions,
     mem_usage: AtomicI64,
@@ -68,7 +68,7 @@ where
     M: MemTable<LSNKey<UK>, UK> + 'static,
     L: TransactionWAL<LSNKey<UK>, UK>,
 {
-    pub fn range_get(&self, key_start: UK, key_end: UK) -> SkipMap<UK, Value, false> {
+    pub fn range_get(&self, key_start: UK, key_end: UK) -> SrSwSkipMap<UK, Value> {
         let key_start = LSNKey::new(key_start, self.lsn);
         let key_end = LSNKey::new(key_end, self.lsn);
         let mut kvs = self.db.range_get(&key_start, &key_end).unwrap();
@@ -198,7 +198,7 @@ where
         &self,
         key_start: &LSNKey<UK>,
         key_end: &LSNKey<UK>,
-    ) -> Result<SkipMap<UK, Value, false>> {
+    ) -> Result<SrSwSkipMap<UK, Value>> {
         self.inner.range_get(key_start, key_end)
     }
 
@@ -243,7 +243,7 @@ where
     pub fn start_transaction(db: &Arc<Self>, write_options: WriteOptions) -> WriteBatch<UK, M, L> {
         WriteBatch {
             db: db.clone(),
-            table: SkipMap::default(),
+            table: SrSwSkipMap::default(),
             lsn: db.next_lsn.fetch_add(1, Ordering::Release),
             mem_usage: AtomicI64::default(),
             write_options,
@@ -253,7 +253,7 @@ where
     pub fn write_batch(
         &self,
         write_options: &WriteOptions,
-        batch: SkipMap<LSNKey<UK>, Value, false>,
+        batch: SrSwSkipMap<LSNKey<UK>, Value>,
         mem_usage: u64,
     ) -> Result<()> {
         {

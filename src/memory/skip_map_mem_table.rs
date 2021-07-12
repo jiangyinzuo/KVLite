@@ -1,15 +1,15 @@
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{ReadWriteMode, SkipMap, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct SkipMapMemTable<SK: MemKey> {
     lock: Mutex<()>,
-    inner_guarded: SkipMap<SK, Value, false>,
+    inner_guarded: SrSwSkipMap<SK, Value>,
     mem_usage: AtomicI64,
 }
 
@@ -18,7 +18,7 @@ impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<InternalKey, Value, false>,
+        kvs: &mut SrSwSkipMap<InternalKey, Value>,
     ) {
         let _guard = self.lock.lock().unwrap();
         self.inner_guarded.range_get(key_start, key_end, kvs);
@@ -69,7 +69,7 @@ impl InternalKeyValueIterator for SkipMapMemTable<InternalKey> {
 }
 
 impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
-    fn merge(&self, kvs: SkipMap<InternalKey, Value, false>, mem_size: u64) {
+    fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, mem_size: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
         self.inner_guarded.merge(kvs);
@@ -82,11 +82,11 @@ impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
     }
 }
 
-pub(super) fn range_get_by_lsn_key<UK: MemKey, const MULTI_READ: bool>(
-    skip_map: &SkipMap<LSNKey<UK>, Value, MULTI_READ>,
+pub(super) fn range_get_by_lsn_key<UK: MemKey, const RWMode: ReadWriteMode>(
+    skip_map: &SkipMap<LSNKey<UK>, Value, RWMode>,
     key_start: &LSNKey<UK>,
     key_end: &LSNKey<UK>,
-    kvs: &mut SkipMap<UK, Value, false>,
+    kvs: &mut SrSwSkipMap<UK, Value>,
 ) {
     let mut node = skip_map.find_last_le(key_start);
     if node.is_null() {
@@ -118,8 +118,8 @@ pub(super) fn range_get_by_lsn_key<UK: MemKey, const MULTI_READ: bool>(
     }
 }
 
-pub(super) fn get_by_lsn_key<UK: MemKey, const MULTI_READ: bool>(
-    skip_map: &SkipMap<LSNKey<UK>, Value, MULTI_READ>,
+pub(super) fn get_by_lsn_key<UK: MemKey, const RWMode: ReadWriteMode>(
+    skip_map: &SkipMap<LSNKey<UK>, Value, RWMode>,
     key: &LSNKey<UK>,
 ) -> Result<Option<Value>> {
     let node = skip_map.find_last_le(key);
@@ -140,7 +140,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
         &self,
         key_start: &LSNKey<UK>,
         key_end: &LSNKey<UK>,
-        kvs: &mut SkipMap<UK, Value, false>,
+        kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         debug_assert!(key_start.le(key_end));
         debug_assert_eq!(key_start.lsn(), key_end.lsn());
@@ -205,7 +205,7 @@ impl<K: MemKey + 'static> InternalKeyValueIterator for SkipMapMemTable<LSNKey<K>
 }
 
 impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
-    fn merge(&self, kvs: SkipMap<LSNKey<UK>, Value, false>, mem_size: u64) {
+    fn merge(&self, kvs: SrSwSkipMap<LSNKey<UK>, Value>, mem_size: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
         self.inner_guarded.merge(kvs);

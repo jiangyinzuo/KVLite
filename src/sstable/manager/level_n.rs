@@ -1,5 +1,5 @@
 use crate::cache::{LRUEntry, ShardLRUCache};
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
 use crate::compact::level_n::start_compact;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{Value, MAX_LEVEL};
@@ -173,7 +173,7 @@ impl LevelNManager {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<UK, Value, false>,
+        kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         for level in (1..=MAX_LEVEL).rev() {
             let tables_lock =

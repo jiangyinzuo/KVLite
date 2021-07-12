@@ -12,6 +12,10 @@ matrix:
 
 script:
   - rustup component add llvm-tools-preview
+  - cargo build --all-targets
+  - cd observability/ && cargo build && cd ..
+  - cd fuzz/ && cargo build && cd ..
+  - cd ..
   - cargo test --verbose
   - cargo clean
   - export RUST_LOG=debug

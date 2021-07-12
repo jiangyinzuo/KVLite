@@ -1,4 +1,4 @@
-use crate::collections::skip_list::skipmap::{IntoIter, IntoPtrIter, SkipMap};
+use crate::collections::skip_list::skipmap::{IntoIter, IntoPtrIter, ReadWriteMode, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use crate::memory::MemTable;
@@ -76,7 +76,7 @@ where
     fn run(&mut self) {
         debug_assert!(!self.level0_table_handles.is_empty());
 
-        let level0_skip_map: SkipMap<InternalKey, Value, false> = self.merge_level0_tables();
+        let level0_skip_map: SrSwSkipMap<InternalKey, Value> = self.merge_level0_tables();
         let mut kv_total = level0_skip_map.len();
 
         if self.level1_table_handles.is_empty() {
@@ -84,7 +84,8 @@ where
             debug_assert!(level1_table_size >= LEVEL0_FILES_THRESHOLD);
 
             let mut temp_kvs: Vec<(InternalKey, Value)> = vec![];
-            let iter: IntoIter<InternalKey, Value, false> = level0_skip_map.into_iter();
+            let iter: IntoIter<InternalKey, Value, { ReadWriteMode::SrSw }> =
+                level0_skip_map.into_iter();
             for (k, v) in iter {
                 temp_kvs.push((k, v));
                 #[cfg(debug_assertions)]
@@ -126,7 +127,7 @@ where
                 };
             }
 
-            let mut level0_iter: IntoPtrIter<InternalKey, Value, false> =
+            let mut level0_iter: IntoPtrIter<InternalKey, Value, { ReadWriteMode::SrSw }> =
                 level0_skip_map.into_ptr_iter();
             let mut kv = level0_iter.current_mut_no_consume();
 
@@ -207,8 +208,8 @@ where
             .may_compact(unsafe { NonZeroUsize::new_unchecked(1) });
     }
 
-    fn merge_level0_tables(&self) -> SkipMap<InternalKey, Value, false> {
-        let mut skip_map = SkipMap::new();
+    fn merge_level0_tables(&self) -> SrSwSkipMap<InternalKey, Value> {
+        let mut skip_map = SrSwSkipMap::new();
         for table in &self.level0_table_handles {
             for (key, value) in table.iter() {
                 skip_map.insert(key, value);

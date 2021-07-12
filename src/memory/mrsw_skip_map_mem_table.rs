@@ -1,4 +1,4 @@
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{MrMwSkipMap, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::skip_map_mem_table::{get_by_lsn_key, range_get_by_lsn_key};
@@ -10,7 +10,7 @@ use std::sync::Mutex;
 #[derive(Default)]
 pub struct MrswSkipMapMemTable<SK: MemKey> {
     lock: Mutex<()>,
-    inner: SkipMap<SK, Value, true>,
+    inner: MrMwSkipMap<SK, Value>,
     mem_usage: AtomicI64,
 }
 
@@ -21,7 +21,7 @@ impl DBCommand<InternalKey, InternalKey> for MrswSkipMapMemTable<InternalKey> {
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
-        kvs: &mut SkipMap<InternalKey, Value, false>,
+        kvs: &mut SrSwSkipMap<InternalKey, Value>,
     ) {
         self.inner.range_get(key_start, key_end, kvs)
     }
@@ -69,7 +69,7 @@ impl InternalKeyValueIterator for MrswSkipMapMemTable<InternalKey> {
 }
 
 impl MemTable<InternalKey, InternalKey> for MrswSkipMapMemTable<InternalKey> {
-    fn merge(&self, kvs: SkipMap<InternalKey, Value, false>, mem_usage: u64) {
+    fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, mem_usage: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage
             .fetch_add(mem_usage as i64, Ordering::Release);
@@ -88,7 +88,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrswSkipMapMemTable<LSNKey<UK>> {
         &self,
         key_start: &LSNKey<UK>,
         key_end: &LSNKey<UK>,
-        kvs: &mut SkipMap<UK, Value, false>,
+        kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         debug_assert!(key_start.le(key_end));
         debug_assert_eq!(key_start.lsn(), key_end.lsn());

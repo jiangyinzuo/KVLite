@@ -1,5 +1,5 @@
 use crate::cache::ShardLRUCache;
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::MemKey;
 use crate::db::options::WriteOptions;
 use crate::db::{Value, DB, WRITE_BUFFER_SIZE};
@@ -110,8 +110,8 @@ where
         Ok(())
     }
 
-    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SkipMap<UK, Value, false>> {
-        let mut skip_map: SkipMap<UK, Value, false> = SkipMap::new();
+    fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SrSwSkipMap<UK, Value>> {
+        let mut skip_map = SrSwSkipMap::new();
         self.leveln_manager.range_query(
             key_start.internal_key(),
             key_end.internal_key(),

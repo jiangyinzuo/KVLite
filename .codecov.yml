@@ -11,6 +11,7 @@ coverage:
         target: 75%
         threshold: 20%
 ignore:
-  - "examples/"
   - "benches/"
   - "bin/"
+  - "examples/"
+  - "observability"

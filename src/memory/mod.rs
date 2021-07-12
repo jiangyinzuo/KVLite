@@ -4,7 +4,7 @@ pub use btree_mem_table::BTreeMemTable;
 pub use mrsw_skip_map_mem_table::MrswSkipMapMemTable;
 pub use skip_map_mem_table::SkipMapMemTable;
 
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{DBCommand, Value};
 
@@ -16,7 +16,7 @@ mod skip_map_mem_table;
 pub trait MemTable<SK: MemKey, UK: MemKey>:
     DBCommand<SK, UK> + Default + InternalKeyValueIterator + Send + Sync
 {
-    fn merge(&self, kvs: SkipMap<SK, Value, false>, memory_size: u64);
+    fn merge(&self, kvs: SrSwSkipMap<SK, Value>, memory_size: u64);
     fn approximate_memory_usage(&self) -> u64;
 }
 
@@ -32,7 +32,7 @@ pub trait InternalKeyValueIterator {
     fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_>;
 }
 
-impl InternalKeyValueIterator for SkipMap<InternalKey, Value, false> {
+impl InternalKeyValueIterator for SrSwSkipMap<InternalKey, Value> {
     fn len(&self) -> usize {
         self.len()
     }

@@ -1,5 +1,5 @@
 use crate::byteutils::u32_from_le_bytes;
-use crate::collections::skip_list::skipmap::SkipMap;
+use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use std::cmp::Ordering;
@@ -80,7 +80,7 @@ impl DataBlock {
     pub(super) fn get_all_record_le<UK: MemKey>(
         &self,
         key: &InternalKey,
-        kvs: &mut SkipMap<UK, Value, false>,
+        kvs: &mut SrSwSkipMap<UK, Value>,
     ) -> bool {
         let mut left = 0;
         let mut right = self.num_records;
