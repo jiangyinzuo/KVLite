@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::hash_map::VacantEntry;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -213,7 +212,7 @@ mod tests {
         let manager = create_manager(db_path);
 
         let handle_args = vec![(1, 1, 100..120), (2, 1, 100..110), (2, 2, 112..130)];
-        for (level, table_id, range) in &handle_args {
+        for (level, _table_id, range) in &handle_args {
             let mut handle = manager.create_table_write_handle(
                 NonZeroUsize::new(*level).unwrap(),
                 (range.end - range.start) as u32,

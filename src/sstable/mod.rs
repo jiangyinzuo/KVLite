@@ -77,12 +77,6 @@
 //!
 //! NOTE: All fixed-length integer are little-endian.
 
-use std::fs::File;
-use std::io::{Seek, SeekFrom};
-
-use crate::db::key_types::InternalKey;
-use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
-
 pub(super) mod data_block;
 pub(super) mod filter_block;
 pub(crate) mod footer;
@@ -94,14 +88,6 @@ pub mod table_handle;
 pub const DATA_BLOCK_SIZE: usize = 4096;
 pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 4;
 
-fn get_min_key(reader: &mut BufReaderWithPos<File>) -> InternalKey {
-    reader.seek(SeekFrom::Start(0)).unwrap();
-    let key_length = read_u32(reader).unwrap();
-    // value_length
-    reader.seek(SeekFrom::Current(4)).unwrap();
-    read_bytes_exact(reader, key_length as u64).unwrap()
-}
-
-pub fn sstable_file(db_path: &String, level: u32, table_id: u128) -> String {
+pub fn sstable_file(db_path: &str, level: u32, table_id: u128) -> String {
     format!("{}/{}/{}", db_path, level, table_id)
 }

@@ -209,7 +209,7 @@ where
     }
 
     fn merge_level0_tables(&self) -> SrSwSkipMap<InternalKey, Value> {
-        let mut skip_map = SrSwSkipMap::new();
+        let skip_map = SrSwSkipMap::new();
         for table in &self.level0_table_handles {
             for (key, value) in table.iter() {
                 skip_map.insert(key, value);

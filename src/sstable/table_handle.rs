@@ -1,6 +1,6 @@
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
-use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{max_level_shift, Value, WRITE_BUFFER_SIZE};
 use crate::env::file_system::{FileSystem, SequentialReadableFile};
@@ -366,7 +366,7 @@ impl TableReadHandle {
     /// Query value by `key` with `cache`
     pub fn query_sstable_with_cache(
         &self,
-        key: &InternalKey,
+        #[allow(clippy::ptr_arg)] key: &InternalKey,
         cache: &mut TableCache,
     ) -> Option<Value> {
         if cache.filter.may_contain(key) {
@@ -390,7 +390,7 @@ impl TableReadHandle {
     /// Query value by `key` and insert cache into `lru_cache`.
     pub fn query_sstable(
         &self,
-        key: &InternalKey,
+        #[allow(clippy::ptr_arg)] key: &InternalKey,
         lru_cache: &Arc<ShardLRUCache<u64, TableCache>>,
     ) -> Option<Value> {
         let mut buf_reader = self.create_buf_reader_with_pos();
@@ -407,7 +407,7 @@ impl TableReadHandle {
             let mut cache = TableCache::new(bloom_filter, index_block);
 
             let option = if let Some((offset, length, index_offset)) = may_contain_key {
-                let mut data_block =
+                let data_block =
                     DataBlock::from_reader(&mut buf_reader, offset, length, index_offset);
                 let option = data_block.get_value(key);
                 cache.start_data_block_map.insert(offset, data_block);
@@ -426,8 +426,8 @@ impl TableReadHandle {
     /// Return whether table_read_handle is overlapping with [`key_start`, `key_end`]
     pub fn range_query<UK: MemKey>(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
+        #[allow(clippy::ptr_arg)] key_start: &InternalKey,
+        #[allow(clippy::ptr_arg)] key_end: &InternalKey,
         kvs: &mut SrSwSkipMap<UK, Value>,
     ) -> bool {
         if self.is_overlapping(key_start, key_end) {
@@ -440,7 +440,7 @@ impl TableReadHandle {
                 if max_key > key_end {
                     break;
                 }
-                let mut data_block =
+                let data_block =
                     DataBlock::from_reader(&mut buf_reader, *offset, *length, *index_offset);
                 remain |= data_block.get_all_record_le(key_end, kvs);
             }
@@ -491,6 +491,7 @@ impl TableReadHandle {
     /// ----         ------      -----    ----
     ///   |---|       |--|     |---|    |------|
     ///```
+    #[allow(clippy::ptr_arg)]
     pub fn is_overlapping(&self, min_key: &InternalKey, max_key: &InternalKey) -> bool {
         self.min_key.le(min_key) && min_key.le(&self.max_key)
             || self.min_key.le(max_key) && max_key.le(&self.max_key)

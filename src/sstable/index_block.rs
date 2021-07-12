@@ -1,5 +1,5 @@
 use crate::db::key_types::InternalKey;
-use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
+use crate::ioutils::{read_bytes_exact, read_u32};
 use crate::sstable::footer::Footer;
 use crate::Result;
 use std::io::{Read, Seek, SeekFrom, Write};

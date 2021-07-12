@@ -12,6 +12,8 @@ matrix:
 
 script:
   - rustup component add llvm-tools-preview
+  - cargo fmt --all -- --check
+  #  - cargo clippy --all-targets --all-features -- --deny warnings
   - cargo build --all-targets
   - cd observability/ && cargo build && cd ..
   - cd fuzz/ && cargo build && cd ..

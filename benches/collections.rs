@@ -2,7 +2,7 @@
 extern crate kvlite;
 extern crate test;
 
-use kvlite::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
+use kvlite::collections::skip_list::skipmap::SrSwSkipMap;
 use kvlite::collections::treap::TreapMap;
 use std::collections::BTreeMap;
 use test::Bencher;

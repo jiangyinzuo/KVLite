@@ -1,4 +1,4 @@
-use crate::collections::skip_list::skipmap::{ReadWriteMode, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::{LSNKey, MemKey, LSN};
 use crate::db::no_transaction_db::NoTransactionDB;
 use crate::db::options::WriteOptions;

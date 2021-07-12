@@ -82,8 +82,8 @@ impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
     }
 }
 
-pub(super) fn range_get_by_lsn_key<UK: MemKey, const RWMode: ReadWriteMode>(
-    skip_map: &SkipMap<LSNKey<UK>, Value, RWMode>,
+pub(super) fn range_get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
+    skip_map: &SkipMap<LSNKey<UK>, Value, RW_MODE>,
     key_start: &LSNKey<UK>,
     key_end: &LSNKey<UK>,
     kvs: &mut SrSwSkipMap<UK, Value>,
@@ -118,8 +118,8 @@ pub(super) fn range_get_by_lsn_key<UK: MemKey, const RWMode: ReadWriteMode>(
     }
 }
 
-pub(super) fn get_by_lsn_key<UK: MemKey, const RWMode: ReadWriteMode>(
-    skip_map: &SkipMap<LSNKey<UK>, Value, RWMode>,
+pub(super) fn get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
+    skip_map: &SkipMap<LSNKey<UK>, Value, RW_MODE>,
     key: &LSNKey<UK>,
 ) -> Result<Option<Value>> {
     let node = skip_map.find_last_le(key);

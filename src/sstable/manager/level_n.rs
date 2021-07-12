@@ -1,5 +1,5 @@
 use crate::cache::{LRUEntry, ShardLRUCache};
-use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::compact::level_n::start_compact;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{Value, MAX_LEVEL};

@@ -4,8 +4,8 @@ use std::alloc::Layout;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-pub type SrSwSkipMap<K: Ord + Default, V: Default> = SkipMap<K, V, { SrSw }>;
-pub type MrMwSkipMap<K: Ord + Default, V: Default> = SkipMap<K, V, { MrMw }>;
+pub type SrSwSkipMap<K, V> = SkipMap<K, V, { SrSw }>;
+pub type MrMwSkipMap<K, V> = SkipMap<K, V, { MrMw }>;
 
 #[repr(i8)]
 #[derive(Eq, PartialEq)]
@@ -15,16 +15,10 @@ pub enum ReadWriteMode {
     MrMw,
 }
 
-impl ReadWriteMode {
-    const fn is_mr(&self) -> bool {
-        matches!(self, ReadWriteMode::MrMw | ReadWriteMode::MrSw)
-    }
-}
-
 use ReadWriteMode::*;
 
 #[repr(C)]
-pub struct Node<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
+pub struct Node<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
     pub entry: Entry<K, V>,
     /// ranges [0, `MAX_LEVEL`]
     level: usize,
@@ -32,12 +26,12 @@ pub struct Node<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
     next: [*mut Self; 0],
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Node<K, V, { RWMode }> {
-    fn head() -> *mut Node<K, V, { RWMode }> {
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Node<K, V, { RW_MODE }> {
+    fn head() -> *mut Node<K, V, { RW_MODE }> {
         Self::new_with_level(K::default(), V::default(), MAX_LEVEL)
     }
 
-    fn new_with_level(key: K, value: V, level: usize) -> *mut Node<K, V, { RWMode }> {
+    fn new_with_level(key: K, value: V, level: usize) -> *mut Node<K, V, { RW_MODE }> {
         let pointers_size = (level + 1) * std::mem::size_of::<*mut Self>();
         let layout = Layout::from_size_align(
             std::mem::size_of::<Self>() + pointers_size,
@@ -68,7 +62,7 @@ impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Node<K, V, { RWM
     pub fn get_next(&self, level: usize) -> *mut Self {
         unsafe {
             let p = self.next.get_unchecked(level);
-            match RWMode {
+            match RW_MODE {
                 ReadWriteMode::MrSw | ReadWriteMode::MrMw => std::intrinsics::atomic_load_acq(p),
                 ReadWriteMode::SrSw => *p,
             }
@@ -79,7 +73,7 @@ impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Node<K, V, { RWM
     fn set_next(&mut self, level: usize, node: *mut Self) {
         unsafe {
             let p = self.next.get_unchecked_mut(level);
-            match RWMode {
+            match RW_MODE {
                 ReadWriteMode::MrSw | ReadWriteMode::MrMw => {
                     std::intrinsics::atomic_store_rel(p, node)
                 }
@@ -89,11 +83,11 @@ impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Node<K, V, { RWM
     }
 }
 
-unsafe fn drop_node<K: Ord + Default, V: Default, const RWMode: ReadWriteMode>(
-    node: *mut Node<K, V, RWMode>,
+unsafe fn drop_node<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode>(
+    node: *mut Node<K, V, RW_MODE>,
 ) {
     let layout = (*node).get_layout();
-    std::ptr::drop_in_place(node as *mut Node<K, V, RWMode>);
+    std::ptr::drop_in_place(node as *mut Node<K, V, RW_MODE>);
     std::alloc::dealloc(node as *mut u8, layout);
 }
 
@@ -102,27 +96,27 @@ unsafe fn drop_node<K: Ord + Default, V: Default, const RWMode: ReadWriteMode>(
 /// # NOTICE:
 ///
 /// SkipMap is not thread-safe.
-pub struct SkipMap<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
-    dummy_head: *const Node<K, V, { RWMode }>,
-    tail: AtomicPtr<Node<K, V, { RWMode }>>,
+pub struct SkipMap<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
+    dummy_head: *const Node<K, V, { RW_MODE }>,
+    tail: AtomicPtr<Node<K, V, { RW_MODE }>>,
     cur_max_level: AtomicUsize,
     len: AtomicUsize,
     _key: PhantomData<K>,
     _value: PhantomData<V>,
 }
 
-unsafe impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Send
-    for SkipMap<K, V, RWMode>
+unsafe impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Send
+    for SkipMap<K, V, RW_MODE>
 {
 }
 
-unsafe impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Sync
-    for SkipMap<K, V, RWMode>
+unsafe impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Sync
+    for SkipMap<K, V, RW_MODE>
 {
 }
 
-impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, RWMode> {
-    pub fn new() -> SkipMap<SK, V, RWMode> {
+impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V, RW_MODE> {
+    pub fn new() -> SkipMap<SK, V, RW_MODE> {
         SkipMap {
             dummy_head: Node::head(),
             tail: AtomicPtr::default(),
@@ -145,20 +139,20 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
 
     /// # Safety
     /// node should be null or initialized
-    pub unsafe fn node_lt_key(node: *mut Node<SK, V, RWMode>, key: &SK) -> bool {
+    pub unsafe fn node_lt_key(node: *mut Node<SK, V, RW_MODE>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.lt(key)
     }
 
     /// # Safety
     /// node should be null or initialized
-    pub unsafe fn node_eq_key(node: *mut Node<SK, V, RWMode>, key: &SK) -> bool {
+    pub unsafe fn node_eq_key(node: *mut Node<SK, V, RW_MODE>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.eq(key)
     }
 
     /// # Safety
     /// node s
     /// hould be null or initialized
-    pub unsafe fn node_cmp(node: *mut Node<SK, V, RWMode>, key: &SK) -> std::cmp::Ordering {
+    pub unsafe fn node_cmp(node: *mut Node<SK, V, RW_MODE>, key: &SK) -> std::cmp::Ordering {
         if node.is_null() {
             return std::cmp::Ordering::Greater;
         }
@@ -185,9 +179,9 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
     /// # Safety
     /// `node` should be a part of skip-map and should not be nullptr
     pub unsafe fn find_last_le_from_node(
-        mut node: *mut Node<SK, V, RWMode>,
+        mut node: *mut Node<SK, V, RW_MODE>,
         key: &SK,
-    ) -> *mut Node<SK, V, RWMode> {
+    ) -> *mut Node<SK, V, RW_MODE> {
         debug_assert!(!node.is_null());
         if (*node).entry.key.eq(key) {
             return node;
@@ -229,9 +223,9 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
     /// # Safety
     /// `node` should be a part of skip-map and should not be nullptr
     pub unsafe fn find_first_ge_from_node(
-        mut node: *mut Node<SK, V, RWMode>,
+        mut node: *mut Node<SK, V, RW_MODE>,
         key: &SK,
-    ) -> *mut Node<SK, V, RWMode> {
+    ) -> *mut Node<SK, V, RW_MODE> {
         debug_assert!(!node.is_null());
         if (*node).entry.key.eq(key) {
             return node;
@@ -271,10 +265,10 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
     pub fn find_first_ge(
         &self,
         key: &SK,
-        mut prev_nodes: Option<&mut [*mut Node<SK, V, RWMode>; MAX_LEVEL + 1]>,
-    ) -> *mut Node<SK, V, RWMode> {
+        mut prev_nodes: Option<&mut [*mut Node<SK, V, RW_MODE>; MAX_LEVEL + 1]>,
+    ) -> *mut Node<SK, V, RW_MODE> {
         let mut level = self.cur_max_level.load(Ordering::Acquire);
-        let mut node = self.dummy_head as *mut Node<SK, V, RWMode>;
+        let mut node = self.dummy_head as *mut Node<SK, V, RW_MODE>;
         loop {
             unsafe {
                 let next = (*node).get_next(level);
@@ -316,9 +310,9 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
     ///     assert_eq!((*node).entry.key, 3);
     /// }
     /// ```
-    pub fn find_last_le(&self, key: &SK) -> *mut Node<SK, V, RWMode> {
+    pub fn find_last_le(&self, key: &SK) -> *mut Node<SK, V, RW_MODE> {
         let mut level = self.cur_max_level.load(Ordering::Acquire);
-        let mut node = self.dummy_head as *mut Node<SK, V, RWMode>;
+        let mut node = self.dummy_head as *mut Node<SK, V, RW_MODE>;
 
         let result = loop {
             let next = unsafe { (*node).get_next(level) };
@@ -403,7 +397,7 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
     /// Insert node with `key`, `value` after `prev_nodes`
     fn insert_after(
         &self,
-        prev_nodes: [*mut Node<SK, V, RWMode>; MAX_LEVEL + 1],
+        prev_nodes: [*mut Node<SK, V, RW_MODE>; MAX_LEVEL + 1],
         key: SK,
         value: V,
     ) {
@@ -467,7 +461,7 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
         }
     }
 
-    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V, RWMode> {
+    pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V, RW_MODE> {
         unsafe {
             IterPtr {
                 node: (*self.dummy_head).get_next(0),
@@ -476,7 +470,7 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
         }
     }
 
-    pub fn iter<'a>(&self) -> Iter<'a, SK, V, RWMode> {
+    pub fn iter<'a>(&self) -> Iter<'a, SK, V, RW_MODE> {
         unsafe {
             Iter {
                 node: (*self.dummy_head).get_next(0),
@@ -531,41 +525,43 @@ impl<SK: Ord + Default, V: Default, const RWMode: ReadWriteMode> SkipMap<SK, V, 
         }
     }
 
-    pub fn into_ptr_iter(self) -> IntoPtrIter<SK, V, RWMode> {
+    pub fn into_ptr_iter(self) -> IntoPtrIter<SK, V, RW_MODE> {
         unsafe {
             let node = (*self.dummy_head).get_next(0);
-            IntoPtrIter { inner: self, node }
+            IntoPtrIter { _inner: self, node }
         }
     }
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Default for SkipMap<K, V, RWMode> {
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Default
+    for SkipMap<K, V, RW_MODE>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Drop for SkipMap<K, V, RWMode> {
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Drop for SkipMap<K, V, RW_MODE> {
     fn drop(&mut self) {
         let mut node = self.dummy_head;
 
         unsafe {
             while !node.is_null() {
                 let next_node = (*node).get_next(0);
-                drop_node(node as *mut Node<K, V, RWMode>);
+                drop_node(node as *mut Node<K, V, RW_MODE>);
                 node = next_node;
             }
         }
     }
 }
 
-pub struct Iter<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
-    node: *const Node<K, V, RWMode>,
-    _marker: PhantomData<&'a Node<K, V, RWMode>>,
+pub struct Iter<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
+    node: *const Node<K, V, RW_MODE>,
+    _marker: PhantomData<&'a Node<K, V, RW_MODE>>,
 }
 
-impl<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
-    for Iter<'a, K, V, RWMode>
+impl<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
+    for Iter<'a, K, V, RW_MODE>
 {
     type Item = (&'a K, &'a V);
 
@@ -583,20 +579,20 @@ impl<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
 }
 
 /// Iteration over the contents of a SkipMap
-pub struct IterPtr<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
-    node: *const Node<K, V, RWMode>,
-    _marker: PhantomData<&'a Node<K, V, RWMode>>,
+pub struct IterPtr<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
+    node: *const Node<K, V, RW_MODE>,
+    _marker: PhantomData<&'a Node<K, V, RW_MODE>>,
 }
 
-impl<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> IterPtr<'a, K, V, RWMode> {
-    pub fn current_no_consume(&self) -> *const Node<K, V, RWMode> {
+impl<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> IterPtr<'a, K, V, RW_MODE> {
+    pub fn current_no_consume(&self) -> *const Node<K, V, RW_MODE> {
         self.node
     }
 
     /// # Notice
     ///
     /// Make sure `self.node` is not null.
-    pub fn next_node(&mut self) -> *const Node<K, V, RWMode> {
+    pub fn next_node(&mut self) -> *const Node<K, V, RW_MODE> {
         debug_assert!(!self.node.is_null());
         unsafe {
             self.node = (*self.node).get_next(0);
@@ -605,10 +601,10 @@ impl<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> IterPtr<'a, 
     }
 }
 
-impl<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
-    for IterPtr<'a, K, V, RWMode>
+impl<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
+    for IterPtr<'a, K, V, RW_MODE>
 {
-    type Item = *const Node<K, V, RWMode>;
+    type Item = *const Node<K, V, RW_MODE>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.node.is_null() {
@@ -623,20 +619,20 @@ impl<'a, K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
     }
 }
 
-pub struct IntoPtrIter<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
-    inner: SkipMap<K, V, RWMode>,
-    node: *mut Node<K, V, RWMode>,
+pub struct IntoPtrIter<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
+    _inner: SkipMap<K, V, RW_MODE>,
+    node: *mut Node<K, V, RW_MODE>,
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> IntoPtrIter<K, V, RWMode> {
-    pub fn current_mut_no_consume(&self) -> *mut Node<K, V, RWMode> {
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> IntoPtrIter<K, V, RW_MODE> {
+    pub fn current_mut_no_consume(&self) -> *mut Node<K, V, RW_MODE> {
         self.node as *mut _
     }
 
     /// # Notice
     ///
     /// Make sure `self.node` is not null.
-    pub fn next_node(&mut self) -> *mut Node<K, V, RWMode> {
+    pub fn next_node(&mut self) -> *mut Node<K, V, RW_MODE> {
         debug_assert!(!self.node.is_null());
         unsafe {
             self.node = (*self.node).get_next(0);
@@ -645,10 +641,10 @@ impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> IntoPtrIter<K, V
     }
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
-    for IntoPtrIter<K, V, RWMode>
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
+    for IntoPtrIter<K, V, RW_MODE>
 {
-    type Item = *mut Node<K, V, RWMode>;
+    type Item = *mut Node<K, V, RW_MODE>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.node.is_null() {
@@ -663,13 +659,13 @@ impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
     }
 }
 
-pub struct IntoIter<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> {
-    inner: SkipMap<K, V, RWMode>,
-    node: *mut Node<K, V, RWMode>,
+pub struct IntoIter<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
+    inner: SkipMap<K, V, RW_MODE>,
+    node: *mut Node<K, V, RW_MODE>,
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
-    for IntoIter<K, V, RWMode>
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
+    for IntoIter<K, V, RW_MODE>
 {
     type Item = (K, V);
 
@@ -687,11 +683,11 @@ impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> Iterator
     }
 }
 
-impl<K: Ord + Default, V: Default, const RWMode: ReadWriteMode> IntoIterator
-    for SkipMap<K, V, RWMode>
+impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> IntoIterator
+    for SkipMap<K, V, RW_MODE>
 {
     type Item = (K, V);
-    type IntoIter = IntoIter<K, V, RWMode>;
+    type IntoIter = IntoIter<K, V, RW_MODE>;
 
     fn into_iter(self) -> Self::IntoIter {
         unsafe {

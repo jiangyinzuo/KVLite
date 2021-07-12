@@ -1,5 +1,5 @@
 use crate::byteutils::u32_from_le_bytes;
-use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use std::cmp::Ordering;
@@ -42,6 +42,7 @@ impl DataBlock {
         }
     }
 
+    #[allow(clippy::ptr_arg)]
     pub(super) fn get_value(&self, key: &InternalKey) -> Option<Value> {
         let mut left = 0;
         let mut right = self.num_records;
@@ -63,7 +64,7 @@ impl DataBlock {
             let value_length = u32_from_le_bytes(&self.data[record_start + 4..key_start]) as usize;
             let value_start = key_start + key_length;
             let key_read = &self.data[key_start..value_start];
-            match key_read.cmp(&key) {
+            match key_read.cmp(key) {
                 Ordering::Less => left = mid + 1,
                 Ordering::Equal => {
                     return Some(Value::from(
@@ -102,7 +103,7 @@ impl DataBlock {
             let value_start = key_start + key_length;
             let key_read = &self.data[key_start..value_start];
 
-            match key_read.cmp(&key) {
+            match key_read.cmp(key) {
                 Ordering::Less => left = mid,
                 Ordering::Equal => {
                     left = mid;
