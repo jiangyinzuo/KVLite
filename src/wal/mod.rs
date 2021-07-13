@@ -5,6 +5,7 @@ use crate::memory::MemTable;
 use crate::Result;
 use std::fs;
 use std::fs::{File, OpenOptions};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 pub mod lsn_wal;
@@ -36,8 +37,8 @@ pub trait TransactionWAL<SK: MemKey, UK: MemKey>: WAL<SK, UK> {
 
 struct WALInner {
     log_path: PathBuf,
-    log0: File,
-    log1: File,
+    log0: BufWriter<File>,
+    log1: BufWriter<File>,
 }
 
 impl WALInner {
@@ -66,21 +67,21 @@ impl WALInner {
 
         Ok(WALInner {
             log_path,
-            log0,
-            log1,
+            log0: BufWriter::new(log0),
+            log1: BufWriter::new(log1),
         })
     }
 
     fn clear_imm_log(&mut self) -> Result<()> {
-        self.log0.set_len(0)?;
-        self.log0.sync_data()?;
+        self.log0.get_mut().set_len(0)?;
+        self.log0.get_mut().sync_data()?;
         Ok(())
     }
 
     fn freeze_mut_log(&mut self) -> Result<()> {
         std::mem::swap(&mut self.log0, &mut self.log1);
-        self.log1.set_len(0)?;
-        self.log1.sync_data()?;
+        self.log1.get_mut().set_len(0)?;
+        self.log1.get_mut().sync_data()?;
         Ok(())
     }
 }

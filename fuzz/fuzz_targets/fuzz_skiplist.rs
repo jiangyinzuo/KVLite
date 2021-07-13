@@ -1,6 +1,6 @@
 #![no_main]
 
-use kvlite::collections::skip_list::skipmap::SkipMap;
+use kvlite::collections::skip_list::skipmap::SrSwSkipMap;
 use libfuzzer_sys::arbitrary;
 use libfuzzer_sys::fuzz_target;
 
@@ -20,7 +20,7 @@ enum SkipMapMethod {
 }
 
 fuzz_target!(|methods: Vec<SkipMapMethod>| {
-    let mut skip_map = SkipMap::<Vec<u8>, Vec<u8>, false>::default();
+    let mut skip_map = SrSwSkipMap::<Vec<u8>, Vec<u8>>::default();
 
     use SkipMapMethod::*;
     for method in methods {
@@ -46,7 +46,7 @@ fuzz_target!(|methods: Vec<SkipMapMethod>| {
                 if key_start > key_end {
                     std::mem::swap(&mut key_start, &mut key_end);
                 }
-                let mut res = SkipMap::<Vec<u8>, Vec<u8>, false>::default();
+                let mut res = SrSwSkipMap::<Vec<u8>, Vec<u8>>::default();
                 skip_map.range_get(&key_start, &key_end, &mut res);
                 for kv in res {
                     assert!(key_start <= kv.0);

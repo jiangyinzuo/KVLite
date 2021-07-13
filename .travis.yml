@@ -11,7 +11,7 @@ matrix:
       rust: nightly
 
 script:
-  - rustup component add llvm-tools-preview
+  - rustup component add llvm-tools-preview rustfmt
   - cargo fmt --all -- --check
   #  - cargo clippy --all-targets --all-features -- --deny warnings
   - cargo build --all-targets
@@ -20,8 +20,10 @@ script:
   - cd ..
   - cargo test --verbose
   - cargo clean
-  - export RUST_LOG=debug
-  - export RUSTFLAGS="-Zinstrument-coverage"
-  - LLVM_PROFILE_FILE="kvlite-%p-%m.profraw" cargo test --verbose --features "snappy_compression"
-  - ./grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
-  - bash <(curl -s https://codecov.io/bash) -f lcov.info
+  - cargo test --verbose --features "snappy_compression"
+# TODO: uncomment it when issue(https://github.com/rust-lang/rust/issues/79565) is fixed
+#  - export RUST_LOG=debug
+#  - export RUSTFLAGS="-Zinstrument-coverage"
+#  - LLVM_PROFILE_FILE="kvlite-%p-%m.profraw" cargo test --verbose --features "snappy_compression"
+#  - ./grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
+#  - bash <(curl -s https://codecov.io/bash) -f lcov.info

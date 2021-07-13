@@ -3,7 +3,7 @@ extern crate kvlite;
 extern crate test;
 
 use kvlite::db::key_types::InternalKey;
-use kvlite::memory::{BTreeMemTable, MemTable, MrswSkipMapMemTable, SkipMapMemTable};
+use kvlite::memory::{BTreeMemTable, MemTable, MrSwSkipMapMemTable, SkipMapMemTable};
 use std::sync::Arc;
 use test::Bencher;
 
@@ -62,7 +62,7 @@ fn skip_map_mixed(b: &mut Bencher) {
 #[bench]
 fn mrsw_skip_map_mixed(b: &mut Bencher) {
     b.iter(|| {
-        let mrsw_skip_map = Arc::new(MrswSkipMapMemTable::default());
+        let mrsw_skip_map = Arc::new(MrSwSkipMapMemTable::default());
         let mrsw2_skip_map = mrsw_skip_map.clone();
         let handle1 = std::thread::spawn(move || table_get_set(mrsw_skip_map));
         let handle2 = std::thread::spawn(move || table_get_set(mrsw2_skip_map));

@@ -263,7 +263,9 @@ pub(crate) mod tests {
     use crate::db::no_transaction_db::NoTransactionDB;
     use crate::db::options::WriteOptions;
     use crate::db::{DB, MAX_LEVEL};
-    use crate::memory::{BTreeMemTable, MemTable, MrswSkipMapMemTable, SkipMapMemTable};
+    use crate::memory::{
+        BTreeMemTable, MemTable, MrMwSkipMapMemTable, MrSwSkipMapMemTable, SkipMapMemTable,
+    };
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
     use log::info;
@@ -290,14 +292,18 @@ pub(crate) mod tests {
             // let path_buf = PathBuf::from(format!("test_command_{}", j));
             // let path = path_buf.as_path();
             info!("{:?}", path);
+            _test_command::<MrMwSkipMapMemTable<InternalKey>>(path, 5);
+            check(path);
             for i in 0..2 {
                 _test_command::<BTreeMemTable<InternalKey>>(path, i);
                 check(path);
                 _test_command::<SkipMapMemTable<InternalKey>>(path, i);
                 check(path);
-                _test_command::<MrswSkipMapMemTable<InternalKey>>(path, i);
+                _test_command::<MrSwSkipMapMemTable<InternalKey>>(path, i);
                 check(path);
             }
+            _test_command::<MrMwSkipMapMemTable<InternalKey>>(path, 5);
+            check(path);
         }
     }
 

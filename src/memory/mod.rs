@@ -1,7 +1,8 @@
 //! Memory table
 
 pub use btree_mem_table::BTreeMemTable;
-pub use mrsw_skip_map_mem_table::MrswSkipMapMemTable;
+pub use mrmw_skip_map_mem_table::MrMwSkipMapMemTable;
+pub use mrsw_skip_map_mem_table::MrSwSkipMapMemTable;
 pub use skip_map_mem_table::SkipMapMemTable;
 
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
@@ -9,6 +10,7 @@ use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{DBCommand, Value};
 
 mod btree_mem_table;
+mod mrmw_skip_map_mem_table;
 mod mrsw_skip_map_mem_table;
 mod skip_map_mem_table;
 

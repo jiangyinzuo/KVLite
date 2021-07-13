@@ -17,7 +17,7 @@ pub type InternalKey = Vec<u8>;
 
 impl MemKey for InternalKey {
     fn internal_key(&self) -> &InternalKey {
-        &self
+        self
     }
 
     fn mem_size(&self) -> usize {
@@ -50,9 +50,9 @@ impl PartialEq for I32UserKey {
 
 impl Eq for I32UserKey {}
 
-impl Into<InternalKey> for I32UserKey {
-    fn into(self) -> InternalKey {
-        self.1
+impl From<I32UserKey> for InternalKey {
+    fn from(key: I32UserKey) -> Self {
+        key.1
     }
 }
 

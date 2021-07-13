@@ -2,7 +2,7 @@ use kvlite::db::key_types::InternalKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
-use kvlite::memory::MrswSkipMapMemTable;
+use kvlite::memory::{MrMwSkipMapMemTable, MrSwSkipMapMemTable};
 use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use procfs::CpuInfo;
 use rand::distributions::Uniform;
@@ -39,7 +39,7 @@ fn print_arguments() {
 type DataBase = NoTransactionDB<
     InternalKey,
     InternalKey,
-    MrswSkipMapMemTable<InternalKey>,
+    MrMwSkipMapMemTable<InternalKey>,
     SimpleWriteAheadLog,
 >;
 
@@ -135,6 +135,7 @@ impl BenchMark {
         let start = std::time::Instant::now();
         for i in 0..NUM_KVS {
             if self.db.get(&Vec::from(i.to_le_bytes())).unwrap().is_none() {
+                eprintln!("read_seq: {} not found", i);
                 not_found += 1;
             }
         }
@@ -178,8 +179,11 @@ impl BenchMark {
 fn main() {
     print_environment();
     print_arguments();
-    #[cfg(feature = "snappy_compression")]
-    println!("Use snappy compression algorithm");
+    if cfg!(feature = "snappy_compression") {
+        println!("Use snappy compression algorithm");
+    } else {
+        println!("No compression algorithm");
+    }
 
     println!("-------------------------------------------------");
     let mut benchmark = BenchMark::new();

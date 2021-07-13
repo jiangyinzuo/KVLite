@@ -1,37 +1,35 @@
-use crate::collections::skip_list::skipmap::{MrSwSkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::{MrMwSkipMap, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::skip_map_mem_table::{get_by_lsn_key, range_get_by_lsn_key};
 use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Mutex;
 
 #[derive(Default)]
-pub struct MrSwSkipMapMemTable<SK: MemKey> {
-    lock: Mutex<()>,
-    inner: MrSwSkipMap<SK, Value>,
+pub struct MrMwSkipMapMemTable<SK: MemKey> {
+    inner: MrMwSkipMap<SK, Value>,
     mem_usage: AtomicI64,
 }
 
-unsafe impl<SK: MemKey> Sync for MrSwSkipMapMemTable<SK> {}
-
-impl DBCommand<InternalKey, InternalKey> for MrSwSkipMapMemTable<InternalKey> {
+impl DBCommand<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
     fn range_get(
         &self,
         key_start: &InternalKey,
         key_end: &InternalKey,
         kvs: &mut SrSwSkipMap<InternalKey, Value>,
-    ) {
+    ) where
+        InternalKey: Into<InternalKey>,
+        InternalKey: From<InternalKey>,
+    {
         self.inner.range_get(key_start, key_end, kvs)
     }
 
-    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
+    fn get(&self, key: &InternalKey) -> crate::Result<Option<Value>> {
         Ok(self.inner.get_clone(key))
     }
 
-    fn set(&self, key: InternalKey, value: Value) -> Result<()> {
-        let _guard = self.lock.lock().unwrap();
+    fn set(&self, key: InternalKey, value: Value) -> crate::Result<()> {
         let key_mem_size = key.mem_size();
         let value_len = value.len();
         let mem_add = match self.inner.insert(key, value) {
@@ -42,8 +40,7 @@ impl DBCommand<InternalKey, InternalKey> for MrSwSkipMapMemTable<InternalKey> {
         Ok(())
     }
 
-    fn remove(&self, key: InternalKey) -> Result<()> {
-        let _guard = self.lock.lock().unwrap();
+    fn remove(&self, key: InternalKey) -> crate::Result<()> {
         let key_mem_size = key.mem_size();
         let mem_add = match self.inner.insert(key, Value::default()) {
             Some(v) => -((v.len() * std::mem::size_of::<u8>()) as i64),
@@ -54,7 +51,7 @@ impl DBCommand<InternalKey, InternalKey> for MrSwSkipMapMemTable<InternalKey> {
     }
 }
 
-impl InternalKeyValueIterator for MrSwSkipMapMemTable<InternalKey> {
+impl InternalKeyValueIterator for MrMwSkipMapMemTable<InternalKey> {
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -68,9 +65,8 @@ impl InternalKeyValueIterator for MrSwSkipMapMemTable<InternalKey> {
     }
 }
 
-impl MemTable<InternalKey, InternalKey> for MrSwSkipMapMemTable<InternalKey> {
+impl MemTable<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
     fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, mem_usage: u64) {
-        let _guard = self.lock.lock().unwrap();
         self.mem_usage
             .fetch_add(mem_usage as i64, Ordering::Release);
         self.inner.merge(kvs);
@@ -83,7 +79,7 @@ impl MemTable<InternalKey, InternalKey> for MrSwSkipMapMemTable<InternalKey> {
     }
 }
 
-impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrSwSkipMapMemTable<LSNKey<UK>> {
+impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrMwSkipMapMemTable<LSNKey<UK>> {
     fn range_get(
         &self,
         key_start: &LSNKey<UK>,
@@ -103,8 +99,6 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrSwSkipMapMemTable<LSNKey<UK>> {
     fn set(&self, key: LSNKey<UK>, value: Value) -> Result<()> {
         let key_mem_size = key.mem_size() as i64;
         let value_len = value.len() as i64;
-
-        let _guard = self.lock.lock().unwrap();
         let mem_add = match self.inner.insert(key, value) {
             Some(v) => (value_len as i64 - v.len() as i64),
             None => (key_mem_size + value_len),
@@ -115,7 +109,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrSwSkipMapMemTable<LSNKey<UK>> {
 
     fn remove(&self, key: LSNKey<UK>) -> Result<()> {
         let key_mem_size = key.mem_size();
-        let _guard = self.lock.lock().unwrap();
+
         let mem_add = match self.inner.insert(key, Value::default()) {
             Some(v) => -((v.len() * std::mem::size_of::<u8>()) as i64),
             None => (key_mem_size * std::mem::size_of::<u8>()) as i64,

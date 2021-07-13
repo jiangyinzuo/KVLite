@@ -2,10 +2,13 @@ use crate::collections::skip_list::{rand_level, MAX_LEVEL};
 use crate::collections::Entry;
 use std::alloc::Layout;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 pub type SrSwSkipMap<K, V> = SkipMap<K, V, { SrSw }>;
 pub type MrMwSkipMap<K, V> = SkipMap<K, V, { MrMw }>;
+pub type MrSwSkipMap<K, V> = SkipMap<K, V, { MrSw }>;
+
+const LOCK_MASK: usize = 1 << (std::mem::size_of::<usize>() * 8 - 1);
 
 #[repr(i8)]
 #[derive(Eq, PartialEq)]
@@ -15,13 +18,19 @@ pub enum ReadWriteMode {
     MrMw,
 }
 
+use std::fmt::Debug;
+use std::ptr::NonNull;
+use std::thread::sleep;
+use std::time::Duration;
 use ReadWriteMode::*;
 
 #[repr(C)]
 pub struct Node<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
     pub entry: Entry<K, V>,
-    /// ranges [0, `MAX_LEVEL`]
-    level: usize,
+
+    /// 1bit(inserted) | 63bit(level)
+    /// level ranges [0, `MAX_LEVEL`]
+    bit_field: usize,
     /// the actual size is `level + 1`
     next: [*mut Self; 0],
 }
@@ -42,14 +51,22 @@ impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Node<K, V, { RW
             let node_ptr = std::alloc::alloc(layout) as *mut Self;
             let node = &mut *node_ptr;
             std::ptr::write(&mut node.entry, Entry { key, value });
-            std::ptr::write(&mut node.level, level);
+            std::ptr::write(&mut node.bit_field, level);
             std::ptr::write_bytes(node.next.as_mut_ptr(), 0, level + 1);
             node_ptr
         }
     }
 
+    fn get_level(&self) -> usize {
+        match RW_MODE {
+            SrSw => self.bit_field,
+            MrSw => unsafe { std::intrinsics::atomic_load_acq(&self.bit_field) },
+            MrMw => unsafe { std::intrinsics::atomic_load_acq(&self.bit_field) & (!LOCK_MASK) },
+        }
+    }
+
     fn get_layout(&self) -> Layout {
-        let pointers_size = (self.level + 1) * std::mem::size_of::<*mut Self>();
+        let pointers_size = (self.get_level() + 1) * std::mem::size_of::<*mut Self>();
 
         Layout::from_size_align(
             std::mem::size_of::<Self>() + pointers_size,
@@ -66,6 +83,36 @@ impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Node<K, V, { RW
                 ReadWriteMode::MrSw | ReadWriteMode::MrMw => std::intrinsics::atomic_load_acq(p),
                 ReadWriteMode::SrSw => *p,
             }
+        }
+    }
+
+    fn lock_insertion(&self) {
+        let level = self.get_level();
+        unsafe {
+            let mut count = 0;
+            let p = &self.bit_field as *const usize as *mut usize;
+            debug_assert!(!p.is_null());
+            while !(std::intrinsics::atomic_cxchg_acq(p, level, level ^ LOCK_MASK)).1 {
+                count += 1;
+                if count == 100 {
+                    count = 0;
+                    warn!(
+                        "too many competitors, thread sleeping... {}, {}",
+                        level, self.bit_field
+                    );
+                    sleep(Duration::from_micros(
+                        (rand::random::<u64>() & 0xff) + 100u64,
+                    ))
+                }
+            }
+        }
+        debug_assert!(self.bit_field >= LOCK_MASK);
+    }
+
+    fn unlock_insertion(&self) {
+        unsafe {
+            debug_assert!(self.bit_field >= LOCK_MASK);
+            std::intrinsics::atomic_xor_rel(&self.bit_field as *const _ as *mut _, LOCK_MASK);
         }
     }
 
@@ -98,6 +145,7 @@ unsafe fn drop_node<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode>(
 /// SkipMap is not thread-safe.
 pub struct SkipMap<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
     dummy_head: *const Node<K, V, { RW_MODE }>,
+    tail_lock: AtomicBool,
     tail: AtomicPtr<Node<K, V, { RW_MODE }>>,
     cur_max_level: AtomicUsize,
     len: AtomicUsize,
@@ -115,10 +163,53 @@ unsafe impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Sync
 {
 }
 
+impl<SK: Ord + Default, V: Default> SkipMap<SK, V, { SrSw }> {
+    /// Remove all the `key` in map, return whether `key` exists
+    pub fn remove(&mut self, key: SK) -> bool {
+        let mut prev_nodes = [self.dummy_head as *mut _; MAX_LEVEL + 1];
+        let mut node = self.find_first_ge(&key, Some(&mut prev_nodes));
+        let has_key = unsafe { Self::node_eq_key(node, &key) };
+        if has_key {
+            unsafe {
+                while !node.is_null() && Self::node_eq_key(node, &key) {
+                    let next_node = (*node).get_next(0);
+                    for i in 0..=(*node).get_level() {
+                        (*prev_nodes[i]).set_next(i, (*node).get_next(i))
+                    }
+                    self.len.fetch_sub(1, Ordering::Release);
+                    if next_node.is_null() {
+                        self.tail
+                            .store(*prev_nodes.get_unchecked(0) as *mut _, Ordering::SeqCst);
+                    }
+                    drop_node(node);
+                    node = next_node;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<SK: Ord + Default, V: Default> SkipMap<SK, V, { MrMw }> {
+    /// return whether `key` has already exist.
+    #[inline]
+    pub fn insert_single_writer(&self, key: SK, mut value: V) -> Option<V> {
+        self.insert_inner::<true>(key, value)
+    }
+
+    #[inline]
+    pub fn merge_single_writer(&self, other: SkipMap<SK, V, { SrSw }>) {
+        self.merge_inner::<true>(other)
+    }
+}
+
 impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V, RW_MODE> {
     pub fn new() -> SkipMap<SK, V, RW_MODE> {
         SkipMap {
             dummy_head: Node::head(),
+            tail_lock: AtomicBool::new(false),
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
             len: AtomicUsize::default(),
@@ -186,7 +277,7 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         if (*node).entry.key.eq(key) {
             return node;
         }
-        let mut level = (*node).level;
+        let mut level = (*node).get_level();
         loop {
             let next = (*node).get_next(level);
             match Self::node_cmp(next, key) {
@@ -230,7 +321,7 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         if (*node).entry.key.eq(key) {
             return node;
         }
-        let mut level = (*node).level;
+        let mut level = (*node).get_level();
         loop {
             let next = (*node).get_next(level);
             match Self::node_cmp(next, key) {
@@ -283,6 +374,24 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
                         return next;
                     }
                     level -= 1;
+                }
+            }
+        }
+    }
+
+    fn update_first_ge(
+        &self,
+        key: &SK,
+        prev_nodes: &mut [*mut Node<SK, V, RW_MODE>; MAX_LEVEL + 1],
+    ) {
+        for (l, prev_node) in prev_nodes.iter_mut().enumerate() {
+            let mut next_node;
+            unsafe {
+                while {
+                    next_node = (**prev_node).get_next(l);
+                    !next_node.is_null() && (*next_node).entry.key.lt(&key)
+                } {
+                    *prev_node = next_node;
                 }
             }
         }
@@ -368,22 +477,69 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         }
     }
 
+    #[inline]
     pub fn merge(&self, other: SkipMap<SK, V, { SrSw }>) {
+        self.merge_inner::<false>(other)
+    }
+
+    fn merge_inner<const INSURE_SINGLE_WRITER: bool>(&self, other: SkipMap<SK, V, { SrSw }>) {
         // todo: optimize the time complexity
         for n in other.into_ptr_iter() {
             unsafe {
                 let kv: Entry<SK, V> = std::mem::take(&mut (*n).entry);
-                self.insert(kv.key, kv.value);
+                self.insert_inner::<INSURE_SINGLE_WRITER>(kv.key, kv.value);
             }
         }
     }
 
+    fn lock_tail_insertion(&self) {
+        let mut count = 0;
+        while self
+            .tail_lock
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            count += 1;
+            if count == 100 {
+                count = 0;
+                warn!("to many competitors in tail_insertion");
+                sleep(Duration::from_micros(
+                    (rand::random::<u64>() & 0xff) + 100u64,
+                ));
+            }
+        }
+    }
+
+    fn unlock_tail_insertion(&self) {
+        let old_value = self.tail_lock.swap(false, Ordering::AcqRel);
+        debug_assert!(old_value);
+    }
+
     /// return whether `key` has already exist.
     pub fn insert(&self, key: SK, mut value: V) -> Option<V> {
+        self.insert_inner::<false>(key, value)
+    }
+
+    /// return whether `key` has already exist.
+    fn insert_inner<const INSURE_SINGLE_WRITER: bool>(&self, key: SK, mut value: V) -> Option<V> {
         let mut prev_nodes = [self.dummy_head as *mut _; MAX_LEVEL + 1];
         let node = self.find_first_ge(&key, Some(&mut prev_nodes));
+
+        if let MrMw = RW_MODE {
+            if !INSURE_SINGLE_WRITER {
+                if node.is_null() {
+                    self.lock_tail_insertion();
+                } else {
+                    unsafe {
+                        (*node).lock_insertion();
+                    }
+                }
+                self.update_first_ge(&key, &mut prev_nodes);
+            }
+        }
+
         let has_key = unsafe { Self::node_eq_key(node, &key) };
-        if has_key {
+        let result = if has_key {
             unsafe {
                 std::mem::swap(&mut (*node).entry.value, &mut value);
             }
@@ -391,7 +547,20 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         } else {
             self.insert_after(prev_nodes, key, value);
             None
+        };
+
+        if let MrMw = RW_MODE {
+            if !INSURE_SINGLE_WRITER {
+                if node.is_null() {
+                    self.unlock_tail_insertion();
+                } else {
+                    unsafe {
+                        (*node).unlock_insertion();
+                    }
+                }
+            }
         }
+        result
     }
 
     /// Insert node with `key`, `value` after `prev_nodes`
@@ -405,10 +574,15 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         {
             for (level, prev) in prev_nodes.iter().enumerate() {
                 unsafe {
-                    debug_assert!(
-                        (*prev) == self.dummy_head as *mut _ || (**prev).entry.key.le(&key)
-                    );
-                    Self::node_lt_key((**prev).get_next(level), &key);
+                    if (*prev) != self.dummy_head as *mut _ {
+                        let prev_key = &(**prev).entry.key;
+                        if !prev_key.lt(&key) {
+                            println!("??");
+                        }
+                        debug_assert!(prev_key.lt(&key));
+                    }
+
+                    debug_assert!(!Self::node_lt_key((**prev).get_next(level), &key));
                 }
             }
         }
@@ -432,33 +606,6 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         }
 
         self.len.fetch_add(1, Ordering::Release);
-    }
-
-    /// Remove all the `key` in map, return whether `key` exists
-    pub fn remove(&mut self, key: SK) -> bool {
-        let mut prev_nodes = [self.dummy_head as *mut _; MAX_LEVEL + 1];
-        let mut node = self.find_first_ge(&key, Some(&mut prev_nodes));
-        let has_key = unsafe { Self::node_eq_key(node, &key) };
-        if has_key {
-            unsafe {
-                while !node.is_null() && Self::node_eq_key(node, &key) {
-                    let next_node = (*node).get_next(0);
-                    for i in 0..=(*node).level {
-                        (*prev_nodes[i]).set_next(i, (*node).get_next(i))
-                    }
-                    self.len.fetch_sub(1, Ordering::Release);
-                    if next_node.is_null() {
-                        self.tail
-                            .store(*prev_nodes.get_unchecked(0) as *mut _, Ordering::SeqCst);
-                    }
-                    drop_node(node);
-                    node = next_node;
-                }
-            }
-            true
-        } else {
-            false
-        }
     }
 
     pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V, RW_MODE> {
@@ -660,7 +807,7 @@ impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
 }
 
 pub struct IntoIter<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
-    inner: SkipMap<K, V, RW_MODE>,
+    _inner: SkipMap<K, V, RW_MODE>,
     node: *mut Node<K, V, RW_MODE>,
 }
 
@@ -692,7 +839,7 @@ impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> IntoIterator
     fn into_iter(self) -> Self::IntoIter {
         unsafe {
             let node = (*self.dummy_head).get_next(0);
-            IntoIter { inner: self, node }
+            IntoIter { _inner: self, node }
         }
     }
 }
@@ -756,8 +903,8 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let mut map1: SrSwSkipMap<String, String> = SrSwSkipMap::new();
-        let mut map2: SrSwSkipMap<String, String> = SrSwSkipMap::new();
+        let map1: SrSwSkipMap<String, String> = SrSwSkipMap::new();
+        let map2: SrSwSkipMap<String, String> = SrSwSkipMap::new();
         map1.insert("hello".to_string(), "world".to_string());
         map2.insert("hello".to_string(), "world3".to_string());
         map2.insert("a".to_string(), "b".to_string());
@@ -842,7 +989,7 @@ mod tests {
 
     #[test]
     fn test_find_last_le() {
-        let mut skip_map: SrSwSkipMap<i32, i32> = SrSwSkipMap::new();
+        let skip_map: SrSwSkipMap<i32, i32> = SrSwSkipMap::new();
         assert!(skip_map.find_last_le(&1).is_null());
         for i in 1..=100 {
             skip_map.insert(2 * i + 1, (2 * i + 1) * 2);

@@ -2,7 +2,7 @@ use kvlite::db::key_types::InternalKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
-use kvlite::memory::MrswSkipMapMemTable;
+use kvlite::memory::MrSwSkipMapMemTable;
 use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use minitrace_jaeger::Reporter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -10,7 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 type DataBase = NoTransactionDB<
     InternalKey,
     InternalKey,
-    MrswSkipMapMemTable<InternalKey>,
+    MrSwSkipMapMemTable<InternalKey>,
     SimpleWriteAheadLog,
 >;
 

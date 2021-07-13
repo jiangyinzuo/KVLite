@@ -61,8 +61,8 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
         let wal = LSNWriteAheadLog {
             inner: WALInner::open_logs(db_path)?,
         };
-        Self::load_log(&wal.inner.log1, mut_mem_table).unwrap();
-        Self::load_log(&wal.inner.log0, mut_mem_table).unwrap();
+        Self::load_log(wal.inner.log1.get_ref(), mut_mem_table).unwrap();
+        Self::load_log(wal.inner.log0.get_ref(), mut_mem_table).unwrap();
         Ok(wal)
     }
 
@@ -121,7 +121,7 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
         }
         self.inner.log1.flush()?;
         if write_options.sync {
-            self.inner.log1.sync_data()?;
+            self.inner.log1.get_mut().sync_data()?;
         }
         Ok(())
     }
