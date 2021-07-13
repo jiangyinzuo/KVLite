@@ -17,7 +17,6 @@ script:
   - cargo build --all-targets
   - cd observability/ && cargo build && cd ..
   - cd fuzz/ && cargo build && cd ..
-  - cd ..
   - cargo test --verbose
   - cargo clean
   - cargo test --verbose --features "snappy_compression"
