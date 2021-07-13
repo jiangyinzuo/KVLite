@@ -1,6 +1,6 @@
 use crate::cache::{LRUEntry, ShardLRUCache};
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
-use crate::compact::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
+use crate::compaction::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use crate::memory::MemTable;
@@ -186,7 +186,7 @@ where
         std::thread::spawn(move || {
             let table_manager = table_manager;
             let level0_manager = level0_manager;
-            info!("compact 0 task start");
+            info!("compaction 0 task start");
             while let Ok(true) = receiver.recv() {
                 let table_count = level0_manager.file_count();
                 if table_count > LEVEL0_FILES_THRESHOLD {
@@ -205,7 +205,7 @@ where
                     );
                 }
             }
-            info!("compact 0 task exit!");
+            info!("compaction 0 task exit!");
         })
     }
 
@@ -303,7 +303,7 @@ where
         v.clone()
     }
 
-    /// Return level0 tables to compact
+    /// Return level0 tables to compaction
     pub fn assign_level0_tables_to_compact(
         &self,
     ) -> (Vec<Arc<TableReadHandle>>, InternalKey, InternalKey) {

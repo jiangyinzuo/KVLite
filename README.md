@@ -51,38 +51,40 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
 ### Use snappy compression algorithm
 
     KVLite: version 0.1.0
-    Date: 2021-07-13T12:14:06.152110049
+    Date: 2021-07-13T13:10:53.138800941
     CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
     CPU Cache: 6144 KB
     Keys: 16 bytes each
     Values: 100 bytes each
     Entries: 1000000
     RawSize: 110.626220703125 MB (estimated)
+    Use system default memory allocator
     Use snappy compression algorithm
     -------------------------------------------------
-    fill_seq: 45.044436638625484 MB/s | file size: 135931250
-    read_seq: 32.88061709861111 MB/s (1000000 of 1000000 found)
-    fill_random_sync: 0.13417676723048427 MB/s) (10000 ops) | file size: 1240000
-    fill_random: 38.63624951671868 MB/s | file size: 155038153
-    read_random: 235909.89359239663 reads per second (631777 of 1000000 found)
+    fill_seq: 44.64303430330684 MB/s | file size: 135410416
+    read_seq: 38.77295238624774 MB/s (1000000 of 1000000 found)
+    fill_random_sync: 0.13073022188512345 MB/s) (10000 ops) | file size: 1240000
+    fill_random: 39.78769821447858 MB/s | file size: 99588198
+    read_random: 226000.5000893866 reads per second (631685 of 1000000 found)
 
 ### No compression
 
     KVLite: version 0.1.0
-    Date: 2021-07-13T12:12:53.960645016
+    Date: 2021-07-13T13:08:40.787929916
     CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
     CPU Cache: 6144 KB
     Keys: 16 bytes each
     Values: 100 bytes each
     Entries: 1000000
     RawSize: 110.626220703125 MB (estimated)
+    Use system default memory allocator
     No compression algorithm
     -------------------------------------------------
-    fill_seq: 44.71897356778016 MB/s | file size: 164353964
-    read_seq: 41.80858361930294 MB/s (1000000 of 1000000 found)
-    fill_random_sync: 0.12768166120122879 MB/s) (10000 ops) | file size: 1240000
-    fill_random: 35.40766444700086 MB/s | file size: 123891417
-    read_random: 225942.19170514427 reads per second (630738 of 1000000 found)
+    fill_seq: 44.520253951884015 MB/s | file size: 166520748
+    read_seq: 37.4738606837932 MB/s (1000000 of 1000000 found)
+    fill_random_sync: 0.13020515270604827 MB/s) (10000 ops) | file size: 1240000
+    fill_random: 39.43130443949237 MB/s | file size: 104770916
+    read_random: 233108.48758588755 reads per second (631821 of 1000000 found)
 
 ## References
 

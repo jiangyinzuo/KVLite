@@ -1,6 +1,6 @@
 use crate::cache::{LRUEntry, ShardLRUCache};
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
-use crate::compact::level_n::start_compact;
+use crate::compaction::level_n::start_compact;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{Value, MAX_LEVEL};
 use crate::sstable::table_cache::TableCache;
@@ -148,12 +148,13 @@ impl LevelNManager {
         std::thread::spawn(move || {
             info!("start compacting task for level {}.", compact_level);
             while let Ok(true) = receiver.recv() {
+                let leveln_manager2 = leveln_manager.clone();
                 if leveln_manager.size_over(compact_level) {
                     if let Some(handle_to_compact) =
                         leveln_manager.get_handle_to_compact(compact_level)
                     {
-                        debug!("compact level: {}", compact_level);
-                        start_compact(compact_level, handle_to_compact, leveln_manager.clone());
+                        debug!("compaction level: {}", compact_level);
+                        start_compact(compact_level, handle_to_compact, leveln_manager2);
                     }
                 }
             }
@@ -340,7 +341,7 @@ impl LevelNManager {
         let lock = self.get_level_tables_lock(level);
         let guard = lock.read().unwrap();
 
-        // find a handle to compact
+        // find a handle to compaction
         for _ in 0..10 {
             let id = self.next_to_compact.load(Ordering::Acquire) % guard.len();
             let v = guard.values().nth(id).unwrap();
@@ -353,7 +354,7 @@ impl LevelNManager {
         None
     }
 
-    /// May compact `level`th sstables.
+    /// May compaction `level`th sstables.
     pub fn may_compact(&self, level: NonZeroUsize) {
         if level.get() < MAX_LEVEL && self.size_over(level) {
             if let Err(e) = self.senders.get(level.get() - 1).unwrap().send(true) {

@@ -10,7 +10,7 @@ mod bloom;
 pub mod byteutils;
 pub mod cache;
 pub mod collections;
-mod compact;
+mod compaction;
 pub mod db;
 mod env;
 pub mod error;
@@ -21,3 +21,7 @@ pub mod sstable;
 pub mod wal;
 
 pub type Result<T> = std::result::Result<T, error::KVLiteError>;
+
+#[cfg(feature = "use_jemalloc")]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;

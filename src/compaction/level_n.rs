@@ -157,7 +157,7 @@ impl Compactor {
                 }
             }
 
-            // write all the remain key-values in compact level table
+            // write all the remain key-values in compaction level table
             if let CurLevelState::HasValue(kv) = cur_level_state {
                 add_kv!(kv.0, kv.1);
             }
@@ -201,7 +201,7 @@ impl Compactor {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use crate::compact::level_n::start_compact;
+    use crate::compaction::level_n::start_compact;
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::sstable::table_handle::temp_file_name;
 

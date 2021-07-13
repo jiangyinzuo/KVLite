@@ -179,6 +179,12 @@ impl BenchMark {
 fn main() {
     print_environment();
     print_arguments();
+    if cfg!(feature = "use_jemalloc") {
+        println!("Use jemalloc");
+    } else {
+        println!("Use system default memory allocator");
+    }
+
     if cfg!(feature = "snappy_compression") {
         println!("Use snappy compression algorithm");
     } else {

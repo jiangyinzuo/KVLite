@@ -7,14 +7,16 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-crossbeam-channel = "0.5"
+crossbeam-channel = "0.5.1"
 chrono = "0.4.19"
 fs_extra = "1.2.0"
 thiserror = "1.0.24"
 log = "0.4.14"
+jemallocator = "0.3.2"
+jemalloc-ctl = "0.3.2"
 memmap = "0.7.0"
 rand = "0.8.3"
-rayon = "1.5"
+rayon = "1.5.1"
 snap = "1.0.5"
 tempfile = "3.2.0"
 procfs = "0.9.1"
@@ -25,6 +27,7 @@ layout = {path = "./benches/layout"}
 
 [features]
 default = []
+use_jemalloc = []
 snappy_compression = []
 mmap = []
 

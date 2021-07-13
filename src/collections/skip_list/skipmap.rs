@@ -18,8 +18,6 @@ pub enum ReadWriteMode {
     MrMw,
 }
 
-use std::fmt::Debug;
-use std::ptr::NonNull;
 use std::thread::sleep;
 use std::time::Duration;
 use ReadWriteMode::*;
@@ -389,7 +387,7 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
             unsafe {
                 while {
                     next_node = (**prev_node).get_next(l);
-                    !next_node.is_null() && (*next_node).entry.key.lt(&key)
+                    Self::node_lt_key(next_node, key)
                 } {
                     *prev_node = next_node;
                 }
@@ -865,7 +863,7 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut skip_map: SrSwSkipMap<i32, String> = SrSwSkipMap::new();
+        let skip_map: SrSwSkipMap<i32, String> = SrSwSkipMap::new();
         for i in 0..100 {
             skip_map.insert(i, format!("value{}", i));
             assert_eq!(skip_map.last_key_value().unwrap().key, i);
