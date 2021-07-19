@@ -1,8 +1,9 @@
-use crate::collections::skip_list::skipmap::{MrMwSkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::ReadWriteMode::MrMw;
+use crate::collections::skip_list::skipmap::{MrMwSkipMap, SkipMap, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::skip_map_mem_table::{get_by_lsn_key, range_get_by_lsn_key};
-use crate::memory::{InternalKeyValueIterator, MemTable};
+use crate::memory::{InternalKeyValueIterator, MemTable, SkipMapMemTable};
 use crate::Result;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -76,6 +77,12 @@ impl MemTable<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
         let mem_usage = self.mem_usage.load(Ordering::Acquire);
         debug_assert!(mem_usage >= 0);
         mem_usage as u64
+    }
+}
+
+impl SkipMapMemTable<InternalKey, InternalKey, { MrMw }> for MrMwSkipMapMemTable<InternalKey> {
+    fn get_inner(&self) -> &SkipMap<InternalKey, Value, { MrMw }> {
+        &self.inner
     }
 }
 

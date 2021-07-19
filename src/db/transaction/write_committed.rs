@@ -181,16 +181,12 @@ where
 
     #[inline]
     fn set(&self, write_options: &WriteOptions, key: LSNKey<UK>, value: Value) -> Result<()> {
-        let guard = self.inner.set_locked(write_options, key, value)?;
-        self.may_freeze(guard);
-        Ok(())
+        self.inner.set(write_options, key, value)
     }
 
     #[inline]
     fn remove(&self, write_options: &WriteOptions, key: LSNKey<UK>) -> Result<()> {
-        let guard = self.inner.remove_locked(write_options, key)?;
-        self.may_freeze(guard);
-        Ok(())
+        self.inner.remove(write_options, key)
     }
 
     #[inline]
@@ -263,20 +259,21 @@ where
             }
         }
 
-        let mem_table_guard = self.inner.mut_mem_table.lock().unwrap();
-        mem_table_guard.merge(batch, mem_usage);
+        let mem_table = self.inner.get_mut_mem_table();
+        mem_table.merge(batch, mem_usage);
 
-        self.may_freeze(mem_table_guard);
+        self.may_freeze();
         Ok(())
     }
 
-    fn may_freeze(&self, mem_table_guard: MutexGuard<M>) {
+    fn may_freeze(&self) {
+        let mem_table = self.inner.get_mut_mem_table();
         if self.num_lsn_acquired.load(Ordering::Acquire) == 0
             && self
                 .inner
-                .should_freeze(mem_table_guard.approximate_memory_usage())
+                .should_freeze(mem_table.approximate_memory_usage())
         {
-            self.inner.freeze(mem_table_guard);
+            self.inner.freeze();
         }
     }
 }
@@ -287,7 +284,7 @@ mod tests {
     use crate::db::options::WriteOptions;
     use crate::db::transaction::write_committed::WriteCommittedDB;
     use crate::db::DB;
-    use crate::memory::SkipMapMemTable;
+    use crate::memory::{MrSwSkipMapMemTable, MutexSkipMapMemTable};
     use crate::wal::lsn_wal::LSNWriteAheadLog;
     use std::sync::Arc;
 
@@ -296,15 +293,14 @@ mod tests {
         let temp_dir = tempfile::Builder::new().prefix("txn").tempdir().unwrap();
         let path = temp_dir.path();
 
-        let db =
-            Arc::new(
-                WriteCommittedDB::<
-                    InternalKey,
-                    SkipMapMemTable<LSNKey<InternalKey>>,
-                    LSNWriteAheadLog,
-                >::open(path)
-                .unwrap(),
-            );
+        let db = Arc::new(
+            WriteCommittedDB::<
+                InternalKey,
+                MutexSkipMapMemTable<LSNKey<InternalKey>>,
+                LSNWriteAheadLog,
+            >::open(path)
+            .unwrap(),
+        );
         let mut txn1 = WriteCommittedDB::start_transaction(&db, WriteOptions { sync: false });
         for i in 1..=10i32 {
             txn1.set(Vec::from(i.to_be_bytes()), Vec::from((i + 1).to_be_bytes()))
@@ -340,7 +336,7 @@ mod tests {
         let path = temp_dir.path();
         let db: WriteCommittedDB<
             I32UserKey,
-            SkipMapMemTable<LSNKey<I32UserKey>>,
+            MutexSkipMapMemTable<LSNKey<I32UserKey>>,
             LSNWriteAheadLog,
         > = WriteCommittedDB::open(path).unwrap();
         let write_options = WriteOptions { sync: true };

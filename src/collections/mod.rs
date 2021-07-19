@@ -8,6 +8,13 @@ pub struct Entry<K: Ord + Default, V: Default> {
 }
 
 impl<K: Ord + Default, V: Default> Entry<K, V> {
+    pub fn take_key_value(&mut self) -> (K, V) {
+        (
+            std::mem::take(&mut self.key),
+            std::mem::take(&mut self.value),
+        )
+    }
+
     pub fn key_value(self) -> (K, V) {
         (self.key, self.value)
     }

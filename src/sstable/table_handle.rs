@@ -522,6 +522,8 @@ pub struct TableIterator {
     index_block: IndexBlock,
     data_block: DataBlockIter,
     cur_data_block_idx: usize,
+    #[cfg(debug_assertions)]
+    prev_key: InternalKey,
 }
 
 impl TableIterator {
@@ -539,6 +541,8 @@ impl TableIterator {
             index_block,
             data_block: data_block.into_iter(),
             cur_data_block_idx: 0,
+            #[cfg(debug_assertions)]
+            prev_key: InternalKey::default(),
         }
     }
 
@@ -556,7 +560,14 @@ impl Iterator for TableIterator {
             None
         } else {
             match self.data_block.next() {
-                Some(item) => Some(item),
+                Some(item) => {
+                    #[cfg(debug_assertions)]
+                    {
+                        assert!(self.prev_key < item.0);
+                        self.prev_key = item.0.clone();
+                    }
+                    Some(item)
+                }
                 None => {
                     self.cur_data_block_idx += 1;
                     if self.end() {
@@ -582,6 +593,7 @@ pub(crate) mod tests {
     use crate::sstable::footer::Footer;
     use crate::sstable::index_block::IndexBlock;
     use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
+    use std::sync::Arc;
 
     pub(crate) fn create_write_handle(
         db_path: &str,
@@ -621,10 +633,13 @@ pub(crate) mod tests {
         let path = temp_dir.path().to_str().unwrap().to_string();
 
         let read_handle = create_read_handle(&path, 1, 1, 0..100);
+
         assert_eq!(read_handle.table_key(), 9);
         assert_eq!(read_handle.min_key(), "key00".as_bytes());
         assert_eq!(read_handle.max_key(), "key99".as_bytes());
-        for (i, kv) in read_handle.iter().enumerate() {
+
+        let read_handle = Arc::new(read_handle);
+        for (i, kv) in TableReadHandle::iter(read_handle.clone()).enumerate() {
             assert_eq!(
                 kv,
                 (

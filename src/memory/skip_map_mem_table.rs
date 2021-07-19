@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 #[derive(Default)]
-pub struct SkipMapMemTable<SK: MemKey> {
+pub struct MutexSkipMapMemTable<SK: MemKey> {
     lock: Mutex<()>,
     inner_guarded: SrSwSkipMap<SK, Value>,
     mem_usage: AtomicI64,
 }
 
-impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
+impl DBCommand<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
     fn range_get(
         &self,
         key_start: &InternalKey,
@@ -54,7 +54,7 @@ impl DBCommand<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
     }
 }
 
-impl InternalKeyValueIterator for SkipMapMemTable<InternalKey> {
+impl InternalKeyValueIterator for MutexSkipMapMemTable<InternalKey> {
     fn len(&self) -> usize {
         self.inner_guarded.len()
     }
@@ -68,7 +68,7 @@ impl InternalKeyValueIterator for SkipMapMemTable<InternalKey> {
     }
 }
 
-impl MemTable<InternalKey, InternalKey> for SkipMapMemTable<InternalKey> {
+impl MemTable<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
     fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, mem_size: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
@@ -135,7 +135,7 @@ pub(super) fn get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
     }
 }
 
-impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
+impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MutexSkipMapMemTable<LSNKey<UK>> {
     fn range_get(
         &self,
         key_start: &LSNKey<UK>,
@@ -180,7 +180,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
     }
 }
 
-impl<K: MemKey + 'static> InternalKeyValueIterator for SkipMapMemTable<LSNKey<K>> {
+impl<K: MemKey + 'static> InternalKeyValueIterator for MutexSkipMapMemTable<LSNKey<K>> {
     fn len(&self) -> usize {
         self.inner_guarded.len()
     }
@@ -204,7 +204,7 @@ impl<K: MemKey + 'static> InternalKeyValueIterator for SkipMapMemTable<LSNKey<K>
     }
 }
 
-impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<UK>> {
+impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for MutexSkipMapMemTable<LSNKey<UK>> {
     fn merge(&self, kvs: SrSwSkipMap<LSNKey<UK>, Value>, mem_size: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
@@ -221,11 +221,11 @@ impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for SkipMapMemTable<LSNKey<U
 #[cfg(test)]
 mod internal_key_tests {
     use crate::db::DBCommand;
-    use crate::memory::SkipMapMemTable;
+    use crate::memory::MutexSkipMapMemTable;
 
     #[test]
     fn test_insert() {
-        let table = SkipMapMemTable::default();
+        let table = MutexSkipMapMemTable::default();
 
         let one = Vec::from(1i32.to_le_bytes());
         for i in 0..10i32 {
@@ -246,11 +246,11 @@ mod lsn_tests {
     use crate::collections::skip_list::skipmap::SkipMap;
     use crate::db::key_types::{I32UserKey, LSNKey};
     use crate::db::{DBCommand, Value};
-    use crate::memory::SkipMapMemTable;
+    use crate::memory::{MutexSkipMapMemTable, SkipMapMemTable};
 
     #[test]
     fn test_range_get() {
-        let table = SkipMapMemTable::<LSNKey<I32UserKey>>::default();
+        let table = MutexSkipMapMemTable::<LSNKey<I32UserKey>>::default();
         for lsn in 1..8 {
             for k in -100i32..100i32 {
                 table

@@ -6,6 +6,8 @@
 #[macro_use]
 extern crate log;
 
+use std::ptr::NonNull;
+
 mod bloom;
 pub mod byteutils;
 pub mod cache;

@@ -11,35 +11,7 @@ cargo build --release --features "snappy_compression"
 
 ## Examples
 
-`get`, `set` and `remove` command
-```rust
-use kvlite::db::key_types::InternalKey;
-use kvlite::db::no_transaction_db::NoTransactionDB;
-use kvlite::db::options::WriteOptions;
-use kvlite::db::DB;
-use kvlite::memory::SkipMapMemTable;
-use kvlite::wal::simple_wal::SimpleWriteAheadLog;
-use tempfile::TempDir;
-
-fn main() {
-    let temp_dir = TempDir::new().unwrap();
-    let db = NoTransactionDB::<
-        InternalKey,
-        InternalKey,
-        SkipMapMemTable<InternalKey>,
-        SimpleWriteAheadLog,
-    >::open(temp_dir.path())
-        .unwrap();
-    let write_option = WriteOptions { sync: false };
-    let hello = Vec::from("hello");
-    let value = Vec::from("value1");
-    db.set(&write_option, hello.clone(), value).unwrap();
-
-    println!("{:?}", db.get(&"hello".into()).unwrap()); // Some("value1")
-    db.remove(&write_option, hello).unwrap();
-    assert!(db.get(&"hello".into()).unwrap().is_none());
-}
-```
+see `/examples`
 
 ## Run tests 
 ```shell
@@ -51,7 +23,7 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
 ### Use snappy compression algorithm
 
     KVLite: version 0.1.0
-    Date: 2021-07-13T13:10:53.138800941
+    Date: 2021-07-19T16:03:10.161110194
     CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
     CPU Cache: 6144 KB
     Keys: 16 bytes each
@@ -61,16 +33,16 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
     Use system default memory allocator
     Use snappy compression algorithm
     -------------------------------------------------
-    fill_seq: 44.64303430330684 MB/s | file size: 135410416
-    read_seq: 38.77295238624774 MB/s (1000000 of 1000000 found)
-    fill_random_sync: 0.13073022188512345 MB/s) (10000 ops) | file size: 1240000
-    fill_random: 39.78769821447858 MB/s | file size: 99588198
-    read_random: 226000.5000893866 reads per second (631685 of 1000000 found)
+    fill_seq: 65.99137920154317 MB/s | file size: 117962025
+    read_seq: 545.4534480532583 MB/s (1000000 of 1000000 found)
+    fill_random_sync: 0.10728091068326079 MB/s) (10000 ops) | file size: 1240000
+    fill_random: 41.788200062823 MB/s | file size: 98338764
+    read_random: 246199.28336031933 reads per second (632443 of 1000000 found)
 
 ### No compression
 
     KVLite: version 0.1.0
-    Date: 2021-07-13T13:08:40.787929916
+    Date: 2021-07-19T16:00:02.526203242
     CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
     CPU Cache: 6144 KB
     Keys: 16 bytes each
@@ -80,11 +52,11 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
     Use system default memory allocator
     No compression algorithm
     -------------------------------------------------
-    fill_seq: 44.520253951884015 MB/s | file size: 166520748
-    read_seq: 37.4738606837932 MB/s (1000000 of 1000000 found)
-    fill_random_sync: 0.13020515270604827 MB/s) (10000 ops) | file size: 1240000
-    fill_random: 39.43130443949237 MB/s | file size: 104770916
-    read_random: 233108.48758588755 reads per second (631821 of 1000000 found)
+    fill_seq: 63.87387531471826 MB/s | file size: 130046026
+    read_seq: 625.4276292143252 MB/s (1000000 of 1000000 found)
+    fill_random_sync: 0.10877451308420993 MB/s) (10000 ops) | file size: 1240000
+    fill_random: 42.21374494305283 MB/s | file size: 104648452
+    read_random: 245721.01528415605 reads per second (632574 of 1000000 found)
 
 ## References
 

@@ -3,7 +3,9 @@ extern crate kvlite;
 extern crate test;
 
 use kvlite::db::key_types::InternalKey;
-use kvlite::memory::{BTreeMemTable, MemTable, MrSwSkipMapMemTable, SkipMapMemTable};
+use kvlite::memory::{
+    BTreeMemTable, MemTable, MrSwSkipMapMemTable, MutexSkipMapMemTable, SkipMapMemTable,
+};
 use std::sync::Arc;
 use test::Bencher;
 
@@ -21,7 +23,7 @@ fn btree_map_insert(b: &mut Bencher) {
 #[bench]
 fn skip_map_insert(b: &mut Bencher) {
     b.iter(|| {
-        let mut skip_map = SkipMapMemTable::default();
+        let mut skip_map = MutexSkipMapMemTable::default();
         table_set(&mut skip_map);
         skip_map
     });
@@ -40,7 +42,7 @@ fn btree_map_get(b: &mut Bencher) {
 #[bench]
 fn skip_map_get(b: &mut Bencher) {
     b.iter(|| {
-        let mut skip_map = SkipMapMemTable::default();
+        let mut skip_map = MutexSkipMapMemTable::default();
         table_set(&mut skip_map);
         table_get(&mut skip_map);
         skip_map
@@ -50,7 +52,7 @@ fn skip_map_get(b: &mut Bencher) {
 #[bench]
 fn skip_map_mixed(b: &mut Bencher) {
     b.iter(|| {
-        let skip_map = Arc::new(SkipMapMemTable::default());
+        let skip_map = Arc::new(MutexSkipMapMemTable::default());
         let skip_map2 = skip_map.clone();
         let handle1 = std::thread::spawn(move || table_get_set(skip_map));
         let handle2 = std::thread::spawn(move || table_get_set(skip_map2));

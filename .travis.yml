@@ -14,9 +14,9 @@ script:
   - rustup component add llvm-tools-preview rustfmt
   - cargo fmt --all -- --check
   #  - cargo clippy --all-targets --all-features -- --deny warnings
-  - cargo build --all-targets
-  - cd observability/ && cargo build && cd ..
-  - cd fuzz/ && cargo build && cd ..
+  - cargo check --all-targets
+  - cd observability/ && cargo check && cd ..
+  - cd fuzz/ && cargo check && cd ..
   - cargo test --verbose
   - cargo clean
   - cargo test --verbose --features "snappy_compression"

@@ -1,18 +1,19 @@
 use crate::cache::ShardLRUCache;
-use crate::collections::skip_list::skipmap::SrSwSkipMap;
-use crate::db::key_types::MemKey;
+use crate::collections::skip_list::skipmap::{ReadWriteMode, SrSwSkipMap};
+use crate::db::db_iter::DBIterator;
+use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::options::WriteOptions;
 use crate::db::{Value, DB, WRITE_BUFFER_SIZE};
-use crate::memory::MemTable;
+use crate::memory::{MemTable, MemTableCloneIterator, SkipMapMemTable};
 use crate::sstable::manager::level_0::Level0Manager;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::wal::WAL;
 use crate::Result;
+use arc_swap::ArcSwap;
 use crossbeam_channel::Sender;
-use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 pub struct NoTransactionDB<
@@ -23,8 +24,8 @@ pub struct NoTransactionDB<
 > {
     db_path: String,
     pub(crate) wal: Arc<Mutex<L>>,
-    pub(crate) mut_mem_table: Arc<Mutex<M>>,
-    imm_mem_table: Arc<Mutex<M>>,
+    pub(crate) mut_mem_table: ArcSwap<M>,
+    imm_mem_table: Arc<ArcSwap<M>>,
 
     level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
     leveln_manager: Arc<LevelNManager>,
@@ -53,7 +54,7 @@ where
             L::open_and_load_logs(&db_path, &mut mut_mem_table).unwrap(),
         ));
 
-        let imm_mem_table = Arc::new(Mutex::new(M::default()));
+        let imm_mem_table = Arc::new(ArcSwap::new(Arc::new(M::default())));
         let channel = crossbeam_channel::unbounded();
 
         let background_task_write_to_level0_is_running = Arc::new(AtomicBool::default());
@@ -71,7 +72,7 @@ where
         Ok(NoTransactionDB {
             db_path,
             wal,
-            mut_mem_table: Arc::new(Mutex::new(mut_mem_table)),
+            mut_mem_table: ArcSwap::new(Arc::new(mut_mem_table)),
             imm_mem_table,
             leveln_manager,
             level0_manager,
@@ -95,17 +96,30 @@ where
     }
 
     fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()> {
-        let mem_table_guard = self.set_locked(write_options, key, value)?;
-        if self.should_freeze(mem_table_guard.approximate_memory_usage()) {
-            self.freeze(mem_table_guard);
+        {
+            let mut wal_guard = self.wal.lock().unwrap();
+            wal_guard.append(write_options, &key, Some(&value))?;
+        }
+
+        let mut_mem_table = self.get_mut_mem_table();
+        mut_mem_table.set(key, value)?;
+        if self.should_freeze(mut_mem_table.approximate_memory_usage()) {
+            self.freeze();
         }
         Ok(())
     }
 
     fn remove(&self, write_options: &WriteOptions, key: SK) -> Result<()> {
-        let mem_table_guard = self.remove_locked(write_options, key)?;
-        if self.should_freeze(mem_table_guard.approximate_memory_usage()) {
-            self.freeze(mem_table_guard);
+        {
+            let mut wal_guard = self.wal.lock().unwrap();
+            wal_guard.append(write_options, &key, None)?;
+        }
+
+        let mut_mem_table = self.get_mut_mem_table();
+        mut_mem_table.remove(key)?;
+
+        if self.should_freeze(mut_mem_table.approximate_memory_usage()) {
+            self.freeze();
         }
         Ok(())
     }
@@ -122,14 +136,12 @@ where
             key_end.internal_key(),
             &mut skip_map,
         );
-        {
-            let imm_guard = self.imm_mem_table.lock().unwrap();
-            imm_guard.range_get(key_start, key_end, &mut skip_map);
-        }
-        {
-            let mem_table_guard = self.mut_mem_table.lock().unwrap();
-            mem_table_guard.range_get(key_start, key_end, &mut skip_map);
-        }
+
+        let imm_mem_table = self.get_imm_mem_table();
+        imm_mem_table.range_get(key_start, key_end, &mut skip_map);
+
+        let mut_mem_table = self.get_mut_mem_table();
+        mut_mem_table.range_get(key_start, key_end, &mut skip_map);
         Ok(skip_map)
     }
 
@@ -145,36 +157,6 @@ where
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK>,
 {
-    pub(crate) fn set_locked(
-        &self,
-        write_options: &WriteOptions,
-        key: SK,
-        value: Value,
-    ) -> Result<MutexGuard<M>> {
-        {
-            let mut wal_guard = self.wal.lock().unwrap();
-            wal_guard.append(write_options, &key, Some(&value))?;
-        }
-
-        let mem_table_guard = self.mut_mem_table.lock().unwrap();
-        mem_table_guard.set(key, value)?;
-
-        Ok(mem_table_guard)
-    }
-
-    pub(crate) fn remove_locked(
-        &self,
-        write_options: &WriteOptions,
-        key: SK,
-    ) -> Result<MutexGuard<M>> {
-        let mut wal_writer_lock = self.wal.lock().unwrap();
-        wal_writer_lock.append(write_options, &key, None)?;
-
-        let mem_table_guard = self.mut_mem_table.lock().unwrap();
-        mem_table_guard.remove(key)?;
-        Ok(mem_table_guard)
-    }
-
     pub(crate) fn should_freeze(&self, table_size: u64) -> bool {
         table_size >= WRITE_BUFFER_SIZE
             && !self
@@ -182,7 +164,7 @@ where
                 .load(Ordering::Acquire)
     }
 
-    pub(crate) fn freeze(&self, mut mem_guard: MutexGuard<M>) {
+    pub(crate) fn freeze(&self) {
         self.background_task_write_to_level0_is_running
             .store(true, Ordering::Release);
         {
@@ -191,14 +173,9 @@ where
             wal_guard.freeze_mut_log().unwrap();
         }
 
-        let mut imm_guard = self
-            .imm_mem_table
-            .lock()
-            .expect("error in RwLock on imm_tables");
+        let imm = self.mut_mem_table.swap(Arc::new(M::default()));
+        self.imm_mem_table.store(imm);
 
-        let imm_table = std::mem::take(mem_guard.deref_mut());
-        *imm_guard = imm_table;
-        drop(mem_guard);
         if let Some(chan) = &self.write_level0_channel {
             if let Err(e) = chan.send(()) {
                 warn!("{}", e);
@@ -206,11 +183,21 @@ where
         }
     }
 
+    pub(crate) fn get_mut_mem_table(&self) -> Arc<M> {
+        let guard = self.mut_mem_table.load();
+        guard.clone()
+    }
+
+    pub(crate) fn get_imm_mem_table(&self) -> Arc<M> {
+        let guard = self.imm_mem_table.load();
+        guard.clone()
+    }
+
     fn query(&self, key: &SK) -> Result<Option<Value>> {
         // query mutable memory table
         {
-            let mem_table_guard = self.mut_mem_table.lock().unwrap();
-            let option = mem_table_guard.get(key)?;
+            let mut_mem = self.get_mut_mem_table();
+            let option = mut_mem.get(key)?;
             if option.is_some() {
                 return Ok(option);
             }
@@ -218,11 +205,8 @@ where
 
         // query immutable memory table
         {
-            let imm_guard = self
-                .imm_mem_table
-                .lock()
-                .expect("error in RwLock on imm_tables");
-            let option = imm_guard.get(key)?;
+            let imm_mem = self.get_imm_mem_table();
+            let option = imm_mem.get(key)?;
             if option.is_some() {
                 return Ok(option);
             }
@@ -237,6 +221,27 @@ where
         // query sstables
         let option = self.leveln_manager.query(key.internal_key()).unwrap();
         Ok(option)
+    }
+
+    /// Get an iterator for all the valid key-value pairs in databases.
+    pub fn get_db_iterator<const RW_MODE: ReadWriteMode>(&self) -> DBIterator
+    where
+        M: SkipMapMemTable<InternalKey, InternalKey, { RW_MODE }>,
+    {
+        let imm_mem = self.get_imm_mem_table();
+        let imm_mem_iterator = MemTableCloneIterator::new(imm_mem.clone());
+
+        let mut_mem = self.get_mut_mem_table();
+        let mut_mem_iterator = MemTableCloneIterator::new(mut_mem.clone());
+
+        let level0_iterator = self.level0_manager.get_level0_iterator();
+        let leveln_iterators = self.leveln_manager.get_iterators();
+        DBIterator::new(
+            imm_mem_iterator,
+            mut_mem_iterator,
+            level0_iterator,
+            leveln_iterators,
+        )
     }
 }
 
@@ -264,7 +269,8 @@ pub(crate) mod tests {
     use crate::db::options::WriteOptions;
     use crate::db::{DB, MAX_LEVEL};
     use crate::memory::{
-        BTreeMemTable, MemTable, MrMwSkipMapMemTable, MrSwSkipMapMemTable, SkipMapMemTable,
+        BTreeMemTable, MemTable, MrMwSkipMapMemTable, MrSwSkipMapMemTable, MutexSkipMapMemTable,
+        SkipMapMemTable,
     };
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
@@ -297,7 +303,7 @@ pub(crate) mod tests {
             for i in 0..2 {
                 _test_command::<BTreeMemTable<InternalKey>>(path, i);
                 check(path);
-                _test_command::<SkipMapMemTable<InternalKey>>(path, i);
+                _test_command::<MutexSkipMapMemTable<InternalKey>>(path, i);
                 check(path);
                 _test_command::<MrSwSkipMapMemTable<InternalKey>>(path, i);
                 check(path);
@@ -452,7 +458,7 @@ pub(crate) mod tests {
         let db = NoTransactionDB::<
             InternalKey,
             InternalKey,
-            SkipMapMemTable<InternalKey>,
+            MrSwSkipMapMemTable<InternalKey>,
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
@@ -495,7 +501,7 @@ pub(crate) mod tests {
         let db = NoTransactionDB::<
             InternalKey,
             InternalKey,
-            SkipMapMemTable<InternalKey>,
+            MrSwSkipMapMemTable<InternalKey>,
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
@@ -542,7 +548,7 @@ pub(crate) mod tests {
             NoTransactionDB::<
                 InternalKey,
                 InternalKey,
-                SkipMapMemTable<InternalKey>,
+                MrMwSkipMapMemTable<InternalKey>,
                 SimpleWriteAheadLog,
             >::open(path)
             .unwrap(),
@@ -610,7 +616,7 @@ pub(crate) mod tests {
         let db = NoTransactionDB::<
             InternalKey,
             InternalKey,
-            SkipMapMemTable<InternalKey>,
+            MrMwSkipMapMemTable<InternalKey>,
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
@@ -645,6 +651,82 @@ pub(crate) mod tests {
                 } else {
                     panic!("{} {}", k, v);
                 }
+            }
+        }
+    }
+
+    fn setup_iterate1(
+        db: &NoTransactionDB<
+            InternalKey,
+            InternalKey,
+            MrMwSkipMapMemTable<InternalKey>,
+            SimpleWriteAheadLog,
+        >,
+        write_option: &WriteOptions,
+    ) -> usize {
+        for _ in 0..3 {
+            for i in 0..10000u128 {
+                db.set(
+                    write_option,
+                    Vec::from(i.to_be_bytes()),
+                    Vec::from((i + 1).to_be_bytes()),
+                )
+                .unwrap();
+            }
+        }
+        10000
+    }
+
+    fn setup_iterate2(
+        db: &NoTransactionDB<
+            InternalKey,
+            InternalKey,
+            MrMwSkipMapMemTable<InternalKey>,
+            SimpleWriteAheadLog,
+        >,
+        write_option: &WriteOptions,
+    ) -> usize {
+        for i in 0..1000000u128 {
+            db.set(
+                write_option,
+                Vec::from(i.to_be_bytes()),
+                Vec::from((i + 1).to_be_bytes()),
+            )
+            .unwrap();
+        }
+        1000000
+    }
+
+    #[test]
+    fn test_iterate() {
+        for f in [setup_iterate1, setup_iterate2] {
+            let temp_dir = tempfile::Builder::new()
+                .prefix("iterate")
+                .tempdir()
+                .unwrap();
+            let path = temp_dir.path();
+            let write_option = WriteOptions { sync: false };
+            let db = NoTransactionDB::<
+                InternalKey,
+                InternalKey,
+                MrMwSkipMapMemTable<InternalKey>,
+                SimpleWriteAheadLog,
+            >::open(path)
+            .unwrap();
+
+            let expected_count = f(&db, &write_option);
+            let iterator = db.get_db_iterator();
+            let mut count = 0;
+            for _ in iterator {
+                count += 1;
+            }
+            assert_eq!(expected_count, count);
+
+            let iterator = db.get_db_iterator();
+            for (i, (k, v)) in iterator.enumerate() {
+                let i = i as u128;
+                assert_eq!(Vec::from(i.to_be_bytes()), k);
+                assert_eq!(Vec::from((i + 1).to_be_bytes()), v);
             }
         }
     }

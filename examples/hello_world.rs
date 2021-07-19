@@ -2,7 +2,7 @@ use kvlite::db::key_types::InternalKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
-use kvlite::memory::SkipMapMemTable;
+use kvlite::memory::MutexSkipMapMemTable;
 use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use tempfile::TempDir;
 
@@ -11,7 +11,7 @@ fn main() {
     let db = NoTransactionDB::<
         InternalKey,
         InternalKey,
-        SkipMapMemTable<InternalKey>,
+        MutexSkipMapMemTable<InternalKey>,
         SimpleWriteAheadLog,
     >::open(temp_dir.path())
     .unwrap();

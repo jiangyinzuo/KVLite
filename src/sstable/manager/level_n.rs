@@ -1,8 +1,10 @@
 use crate::cache::{LRUEntry, ShardLRUCache};
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::compaction::level_n::start_compact;
+use crate::db::db_iter::InternalKeyValue;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{Value, MAX_LEVEL};
+use crate::sstable::manager::level_iter::LevelNIterator;
 use crate::sstable::table_cache::TableCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::TableID;
@@ -169,6 +171,18 @@ impl LevelNManager {
     ) -> &std::sync::RwLock<BTreeMap<(InternalKey, u64), Arc<TableReadHandle>>> {
         let lock = self.level_tables.get(level.get() - 1).unwrap();
         lock
+    }
+
+    pub fn get_iterators(&self) -> Vec<Box<dyn Iterator<Item = InternalKeyValue>>> {
+        self.level_tables
+            .iter()
+            .map(|tables| {
+                let guard = tables.read().unwrap();
+                let elem: Box<dyn Iterator<Item = InternalKeyValue>> =
+                    Box::new(LevelNIterator::new(&*guard));
+                elem
+            })
+            .collect()
     }
 
     pub fn range_query<UK: MemKey>(

@@ -606,10 +606,15 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         self.len.fetch_add(1, Ordering::Release);
     }
 
+    /// Get first real node of SkipMap
+    pub fn first_node(&self) -> *const Node<SK, V, RW_MODE> {
+        unsafe { (*self.dummy_head).get_next(0) }
+    }
+
     pub fn iter_ptr<'a>(&self) -> IterPtr<'a, SK, V, RW_MODE> {
         unsafe {
             IterPtr {
-                node: (*self.dummy_head).get_next(0),
+                node: self.first_node(),
                 _marker: PhantomData,
             }
         }

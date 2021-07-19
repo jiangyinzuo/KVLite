@@ -11,6 +11,7 @@ use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
 use crate::sstable::{TableID, NUM_LEVEL0_TABLE_TO_COMPACT};
 use crate::wal::WAL;
 use crate::Result;
+use arc_swap::ArcSwap;
 use crossbeam_channel::Receiver;
 use rand::Rng;
 use std::collections::BTreeMap;
@@ -110,7 +111,7 @@ where
         db_path: String,
         leveln_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<L>>,
-        imm_mem_table: Arc<Mutex<M>>,
+        imm_mem_table: Arc<ArcSwap<M>>,
         index_cache: Arc<ShardLRUCache<TableID, TableCache>>,
         recv: Receiver<()>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
@@ -133,8 +134,11 @@ where
                     debug_assert!(manager2
                         .background_task_write_to_level0_is_running
                         .load(Ordering::Acquire));
-                    let imm_guard = imm_mem_table.lock().unwrap();
-                    if let Err(e) = manager2.write_to_table(imm_guard.deref()) {
+
+                    let guard = imm_mem_table.load();
+                    let imm_mem = guard.clone();
+                    drop(guard);
+                    if let Err(e) = manager2.write_to_table(imm_mem) {
                         let bt = std::backtrace::Backtrace::capture();
                         error!(
                             "Error in thread `{}`: {:?}",
@@ -154,9 +158,9 @@ where
     }
 
     /// Persistently write the `table` to disk.
-    fn write_to_table(&self, table: &M) -> Result<()> {
+    fn write_to_table(&self, table: Arc<M>) -> Result<()> {
         let mut handle = self.create_table_write_handle(table.len() as u32);
-        handle.write_sstable(table)?;
+        handle.write_sstable(table.deref())?;
         self.insert_table_handle(handle);
         self.delete_imm_table_log()?;
         self.may_compact();
@@ -218,7 +222,7 @@ where
     }
 
     /// Iterate all the key-value pairs in level0
-    pub fn iter(&self) -> Level0Iterator {
+    pub fn get_level0_iterator(&self) -> Level0Iterator {
         let guard = self.level0_tables.read().unwrap();
         let tables = &*guard;
         Level0Iterator::new(tables)
@@ -354,11 +358,12 @@ where
 mod tests {
     use crate::db::key_types::InternalKey;
     use crate::db::DBCommand;
-    use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
+    use crate::memory::{InternalKeyValueIterator, MutexSkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
     use crate::wal::WAL;
+    use arc_swap::ArcSwap;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -382,15 +387,14 @@ mod tests {
     fn test_query(path: String, insert_value: bool) {
         let leveln_manager = create_manager(&path);
 
-        let mut mut_mem = SkipMapMemTable::<InternalKey>::default();
+        let mut mut_mem = MutexSkipMapMemTable::<InternalKey>::default();
 
         let (sender, receiver) = crossbeam_channel::unbounded();
         let wal = SimpleWriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();
 
         assert!(mut_mem.is_empty());
 
-        let imm_mem = Arc::new(Mutex::new(SkipMapMemTable::default()));
-
+        let imm_mem = Arc::new(ArcSwap::new(Arc::new(MutexSkipMapMemTable::default())));
         let background = Arc::new(AtomicBool::default());
         let (manager, handle) = Level0Manager::start_task_write_level0(
             path,
@@ -403,9 +407,9 @@ mod tests {
         );
 
         if insert_value {
-            let imm_mem_guard = imm_mem.lock().unwrap();
             for i in 0..NUM_KEYS {
-                imm_mem_guard
+                imm_mem
+                    .load_full()
                     .set(
                         format!("key{}", i).into_bytes(),
                         format!("value{}", i).into_bytes(),

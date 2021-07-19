@@ -82,7 +82,7 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
 mod tests {
     use crate::db::key_types::InternalKey;
     use crate::db::options::WriteOptions;
-    use crate::memory::{InternalKeyValueIterator, SkipMapMemTable};
+    use crate::memory::{InternalKeyValueIterator, MutexSkipMapMemTable, SkipMapMemTable};
     use crate::wal::simple_wal::SimpleWriteAheadLog;
     use crate::wal::WAL;
     use tempfile::TempDir;
@@ -92,14 +92,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().to_str().unwrap();
 
-        let mut mut_mem = SkipMapMemTable::<InternalKey>::default();
+        let mut mut_mem = MutexSkipMapMemTable::<InternalKey>::default();
 
         let mut wal: SimpleWriteAheadLog =
             SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());
         let wo = WriteOptions { sync: false };
         for i in 1..4 {
-            mut_mem = SkipMapMemTable::default();
+            mut_mem = MutexSkipMapMemTable::default();
             for j in 0..100 {
                 <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
                     &mut wal,
@@ -123,7 +123,7 @@ mod tests {
         }
         <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::freeze_mut_log(&mut wal).unwrap();
         <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::clear_imm_log(&mut wal).unwrap();
-        mut_mem = SkipMapMemTable::default();
+        mut_mem = MutexSkipMapMemTable::default();
         wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());
     }
