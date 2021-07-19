@@ -7,6 +7,7 @@ use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use procfs::CpuInfo;
 use rand::distributions::Uniform;
 use rand::{Rng, RngCore};
+use std::collections::HashSet;
 use tempfile::TempDir;
 
 const NUM_KVS: i128 = 1000000;
@@ -132,11 +133,14 @@ impl BenchMark {
 
     fn read_seq(&self) {
         let mut not_found = 0;
+        let mut not_found_keys = HashSet::new();
         let start = std::time::Instant::now();
         for i in 0..NUM_KVS {
-            if self.db.get(&Vec::from(i.to_le_bytes())).unwrap().is_none() {
+            let key = Vec::from(i.to_le_bytes());
+            if self.db.get(&key).unwrap().is_none() {
                 eprintln!("read_seq: {} not found", i);
                 not_found += 1;
+                not_found_keys.insert(key);
             }
         }
 
@@ -148,6 +152,13 @@ impl BenchMark {
             NUM_KVS - not_found,
             NUM_KVS
         );
+        if !not_found_keys.is_empty() {
+            for key in not_found_keys {
+                if self.db.get(&key).unwrap().is_none() {
+                    eprintln!("still not found");
+                }
+            }
+        }
     }
 
     fn read_random(&self) {

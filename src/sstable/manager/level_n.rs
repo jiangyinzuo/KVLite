@@ -5,6 +5,7 @@ use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{Value, MAX_LEVEL};
 use crate::sstable::table_cache::TableCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
+use crate::sstable::TableID;
 use crate::Result;
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::{BTreeMap, VecDeque};
@@ -18,11 +19,11 @@ pub struct LevelNManager {
     db_path: String,
     /// map: <max key, tableID>
     level_tables:
-        [std::sync::RwLock<BTreeMap<(InternalKey, u64), Arc<TableReadHandle>>>; MAX_LEVEL],
+        [std::sync::RwLock<BTreeMap<(InternalKey, TableID), Arc<TableReadHandle>>>; MAX_LEVEL],
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
-    pub(crate) index_cache: Arc<ShardLRUCache<u64, TableCache>>,
+    pub(crate) index_cache: Arc<ShardLRUCache<TableID, TableCache>>,
     senders: Vec<Sender<bool>>,
     handles: RwLock<Vec<JoinHandle<()>>>,
     next_to_compact: AtomicUsize,
@@ -88,7 +89,7 @@ impl LevelNManager {
                 // The file whose file_name is a number is considered as sstable.
                 if let Ok(table_id) = path.file_name().unwrap().to_str().unwrap().parse::<u64>() {
                     next_table_id = next_table_id.max(table_id);
-                    let handle = TableReadHandle::open_table(&manager.db_path, i as _, table_id);
+                    let handle = TableReadHandle::open(&manager.db_path, i as _, table_id);
 
                     // Safety: i is in range [1, MAX_LEVEL]
                     unsafe {

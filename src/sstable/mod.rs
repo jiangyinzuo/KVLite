@@ -85,6 +85,8 @@ pub mod manager;
 mod table_cache;
 pub mod table_handle;
 
+pub type TableID = u64;
+
 pub const DATA_BLOCK_SIZE: usize = 4096;
 pub const NUM_LEVEL0_TABLE_TO_COMPACT: usize = 4;
 

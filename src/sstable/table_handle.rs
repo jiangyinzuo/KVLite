@@ -1,6 +1,7 @@
 use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
+use crate::db::db_iter::InternalKeyValue;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{max_level_shift, Value, WRITE_BUFFER_SIZE};
 use crate::env::file_system::{FileSystem, SequentialReadableFile};
@@ -12,7 +13,7 @@ use crate::sstable::filter_block::{load_filter_block, write_filter_block};
 use crate::sstable::footer::{write_footer, Footer};
 use crate::sstable::index_block::IndexBlock;
 use crate::sstable::table_cache::TableCache;
-use crate::sstable::DATA_BLOCK_SIZE;
+use crate::sstable::{TableID, DATA_BLOCK_SIZE};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::Deref;
@@ -233,7 +234,7 @@ impl TableWriter {
 pub struct TableReadHandle {
     file_path: String,
     level: usize,
-    table_id: u64,
+    table_id: TableID,
     table_key: u64,
     hash: u32,
     status: RwLock<TableStatus>,
@@ -248,7 +249,7 @@ unsafe impl Sync for TableReadHandle {}
 
 impl TableReadHandle {
     /// Create a table handle for existing sstable.
-    pub fn open_table(db_path: &str, level: usize, table_id: u64) -> TableReadHandle {
+    pub fn open(db_path: &str, level: usize, table_id: u64) -> TableReadHandle {
         let file_path = format!("{}/{}/{}", db_path, level, table_id);
 
         let file = File::open(&file_path).unwrap();
@@ -498,8 +499,8 @@ impl TableReadHandle {
             || min_key.le(&self.min_key) && self.max_key.le(max_key)
     }
 
-    pub fn iter(&self) -> Iter {
-        Iter::new(self)
+    pub fn iter(handle: Arc<Self>) -> TableIterator {
+        TableIterator::new(handle)
     }
 }
 
@@ -515,16 +516,16 @@ pub(crate) fn temp_file_name(file_name: &str) -> String {
     format!("{}_write", file_name)
 }
 
-pub struct Iter<'table> {
+pub struct TableIterator {
     reader: Box<dyn SequentialReadableFile>,
-    max_key: &'table InternalKey,
+    handle: Arc<TableReadHandle>,
     index_block: IndexBlock,
     data_block: DataBlockIter,
     cur_data_block_idx: usize,
 }
 
-impl<'table> Iter<'table> {
-    fn new(handle: &'table TableReadHandle) -> Iter<'table> {
+impl TableIterator {
+    pub(super) fn new(handle: Arc<TableReadHandle>) -> TableIterator {
         let mut reader = Box::new(handle.create_buf_reader_with_pos());
         let footer = Footer::load_footer(&mut reader).unwrap();
         let index_block = IndexBlock::load_index(&mut reader, &footer);
@@ -532,9 +533,9 @@ impl<'table> Iter<'table> {
         let index = &index_block.indexes[0];
         let data_block = DataBlock::from_reader(&mut reader, index.0, index.1, index.2);
 
-        Iter {
+        TableIterator {
             reader,
-            max_key: &handle.max_key,
+            handle,
             index_block,
             data_block: data_block.into_iter(),
             cur_data_block_idx: 0,
@@ -547,8 +548,8 @@ impl<'table> Iter<'table> {
     }
 }
 
-impl<'table> Iterator for Iter<'table> {
-    type Item = (InternalKey, Value);
+impl Iterator for TableIterator {
+    type Item = InternalKeyValue;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.end() {
@@ -610,7 +611,7 @@ pub(crate) mod tests {
     ) -> TableReadHandle {
         let write_handle = create_write_handle(db_path, level, table_id, range);
         write_handle.rename();
-        TableReadHandle::open_table(db_path, level, table_id)
+        TableReadHandle::open(db_path, level, table_id)
     }
 
     #[test]

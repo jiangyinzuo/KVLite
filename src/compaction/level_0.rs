@@ -132,7 +132,8 @@ where
             let mut kv = level0_iter.current_mut_no_consume();
 
             for level1_table_handle in self.level1_table_handles.iter() {
-                for (level1_key, level1_value) in level1_table_handle.iter() {
+                for (level1_key, level1_value) in TableReadHandle::iter(level1_table_handle.clone())
+                {
                     if kv.is_null() {
                         // write all the remain key-values in level1 tables.
                         add_kv!(level1_key, level1_value);
@@ -211,7 +212,7 @@ where
     fn merge_level0_tables(&self) -> SrSwSkipMap<InternalKey, Value> {
         let skip_map = SrSwSkipMap::new();
         for table in &self.level0_table_handles {
-            for (key, value) in table.iter() {
+            for (key, value) in TableReadHandle::iter(table.clone()) {
                 skip_map.insert(key, value);
             }
         }

@@ -1,6 +1,4 @@
-use crate::ioutils::BufReaderWithPos;
 use crate::Result;
-use std::fs::File;
 use std::io::{Read, Seek};
 use std::path::Path;
 
@@ -15,6 +13,8 @@ impl FileSystem {
         }
         #[cfg(not(feature = "mmap"))]
         {
+            use crate::ioutils::BufReaderWithPos;
+            use std::fs::File;
             BufReaderWithPos::new(File::open(path)?)
         }
     }

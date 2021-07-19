@@ -5,6 +5,7 @@ use crate::memory::MemTable;
 use crate::Result;
 use std::path::Path;
 
+pub mod db_iter;
 pub mod key_types;
 pub mod no_transaction_db;
 pub mod options;

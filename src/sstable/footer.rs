@@ -8,10 +8,10 @@ pub const FOOTER_MAGIC_NUMBER: u32 = 0xdb991122;
 pub const FOOTER_BYTE_SIZE: i64 = 20;
 
 pub(crate) struct Footer {
-    pub index_block_offset: u32,
-    pub index_block_length: u32,
-    pub filter_length: u32,
-    pub kv_total: u32,
+    pub(crate) index_block_offset: u32,
+    pub(crate) index_block_length: u32,
+    pub(crate) filter_length: u32,
+    pub(crate) kv_total: u32,
 }
 
 impl Footer {

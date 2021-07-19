@@ -23,7 +23,7 @@ pub struct NoTransactionDB<
 > {
     db_path: String,
     pub(crate) wal: Arc<Mutex<L>>,
-    pub(crate) mut_mem_table: Mutex<M>,
+    pub(crate) mut_mem_table: Arc<Mutex<M>>,
     imm_mem_table: Arc<Mutex<M>>,
 
     level0_manager: Arc<Level0Manager<SK, UK, M, L>>,
@@ -71,7 +71,7 @@ where
         Ok(NoTransactionDB {
             db_path,
             wal,
-            mut_mem_table: Mutex::new(mut_mem_table),
+            mut_mem_table: Arc::new(Mutex::new(mut_mem_table)),
             imm_mem_table,
             leveln_manager,
             level0_manager,

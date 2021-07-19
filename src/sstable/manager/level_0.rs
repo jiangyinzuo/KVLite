@@ -4,10 +4,11 @@ use crate::compaction::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::Value;
 use crate::memory::MemTable;
+use crate::sstable::manager::level_iter::Level0Iterator;
 use crate::sstable::manager::level_n::LevelNManager;
 use crate::sstable::table_cache::TableCache;
 use crate::sstable::table_handle::{TableReadHandle, TableWriteHandle};
-use crate::sstable::NUM_LEVEL0_TABLE_TO_COMPACT;
+use crate::sstable::{TableID, NUM_LEVEL0_TABLE_TO_COMPACT};
 use crate::wal::WAL;
 use crate::Result;
 use crossbeam_channel::Receiver;
@@ -25,7 +26,7 @@ use std::thread::JoinHandle;
 pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {
     db_path: String,
 
-    level0_tables: std::sync::RwLock<BTreeMap<u64, Arc<TableReadHandle>>>,
+    level0_tables: std::sync::RwLock<BTreeMap<TableID, Arc<TableReadHandle>>>,
     file_size: AtomicU64,
 
     table_manager: std::sync::Arc<LevelNManager>,
@@ -35,7 +36,7 @@ pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK,
     wal: Arc<Mutex<L>>,
 
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-    table_cache: Arc<ShardLRUCache<u64, TableCache>>,
+    table_cache: Arc<ShardLRUCache<TableID, TableCache>>,
 
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
     _phantom_key: PhantomData<SK>,
@@ -52,7 +53,7 @@ where
         db_path: String,
         table_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<L>>,
-        index_cache: Arc<ShardLRUCache<u64, TableCache>>,
+        index_cache: Arc<ShardLRUCache<TableID, TableCache>>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> Result<Arc<Level0Manager<SK, UK, M, L>>> {
         std::fs::create_dir_all(format!("{}/0", db_path)).unwrap();
@@ -68,11 +69,11 @@ where
                 .to_str()
                 .unwrap()
                 .to_string()
-                .parse::<u64>();
+                .parse::<TableID>();
             if let Ok(table_id) = table_id {
                 file_size += d.metadata().unwrap().len();
 
-                let handle = TableReadHandle::open_table(&db_path, 0, table_id);
+                let handle = TableReadHandle::open(&db_path, 0, table_id);
                 level0_tables.insert(handle.table_id(), Arc::new(handle));
             } else {
                 // remove temporary file.
@@ -110,7 +111,7 @@ where
         leveln_manager: Arc<LevelNManager>,
         wal: Arc<Mutex<L>>,
         imm_mem_table: Arc<Mutex<M>>,
-        index_cache: Arc<ShardLRUCache<u64, TableCache>>,
+        index_cache: Arc<ShardLRUCache<TableID, TableCache>>,
         recv: Receiver<()>,
         background_task_write_to_level0_is_running: Arc<AtomicBool>,
     ) -> (Arc<Level0Manager<SK, UK, M, L>>, JoinHandle<()>) {
@@ -212,8 +213,15 @@ where
     #[inline]
     pub fn get_level0_tables_lock(
         &self,
-    ) -> &std::sync::RwLock<BTreeMap<u64, Arc<TableReadHandle>>> {
+    ) -> &std::sync::RwLock<BTreeMap<TableID, Arc<TableReadHandle>>> {
         &self.level0_tables
+    }
+
+    /// Iterate all the key-value pairs in level0
+    pub fn iter(&self) -> Level0Iterator {
+        let guard = self.level0_tables.read().unwrap();
+        let tables = &*guard;
+        Level0Iterator::new(tables)
     }
 
     pub fn range_query(
@@ -252,7 +260,7 @@ where
         Ok(None)
     }
 
-    fn get_next_table_id(&self) -> u64 {
+    fn get_next_table_id(&self) -> TableID {
         let table_guard = self.level0_tables.read().unwrap();
         match table_guard.last_key_value() {
             Some((k, _v)) => k + 1,
@@ -395,7 +403,7 @@ mod tests {
         );
 
         if insert_value {
-            let mut imm_mem_guard = imm_mem.lock().unwrap();
+            let imm_mem_guard = imm_mem.lock().unwrap();
             for i in 0..NUM_KEYS {
                 imm_mem_guard
                     .set(

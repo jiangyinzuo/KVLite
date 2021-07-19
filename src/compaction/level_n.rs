@@ -54,7 +54,7 @@ impl Compactor {
         let new_table_size = total / next_level_table_handles.len().max(2) + 1;
 
         let mut temp_kvs: Vec<(InternalKey, Value)> = vec![];
-        let mut table_to_compact_iter = self.handle_to_compact.iter();
+        let mut table_to_compact_iter = TableReadHandle::iter(self.handle_to_compact.clone());
 
         macro_rules! add_kv {
             ($key:expr, $value:expr) => {
@@ -84,7 +84,9 @@ impl Compactor {
             let mut cur_level_state = CurLevelState::Start;
 
             for next_level_table_handle in next_level_table_handles.iter() {
-                for (next_level_key, next_level_value) in next_level_table_handle.iter() {
+                for (next_level_key, next_level_value) in
+                    TableReadHandle::iter(next_level_table_handle.clone())
+                {
                     match cur_level_state {
                         CurLevelState::Start => loop {
                             let cur_level_kv = match table_to_compact_iter.next() {
