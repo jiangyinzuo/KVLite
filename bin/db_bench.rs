@@ -7,6 +7,7 @@ use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use procfs::CpuInfo;
 use rand::distributions::Uniform;
 use rand::{Rng, RngCore};
+use std::time::Duration;
 use tempfile::TempDir;
 
 const NUM_KVS: u128 = 1000000;
@@ -44,8 +45,9 @@ type DataBase = NoTransactionDB<
 >;
 
 struct BenchMark {
-    _temp_dir: TempDir,
+    // drop `db` before `_temp_dir`
     db: DataBase,
+    _temp_dir: TempDir,
 }
 
 impl BenchMark {
@@ -79,38 +81,56 @@ impl BenchMark {
         }
         let end = std::time::Instant::now();
         let elapsed = (end - start).as_secs_f64();
-        let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
-        println!(
-            "fill_seq: {:?} MB/s | file size: {}",
+        let elapsed_micros = (end - start).as_micros();
+        self.print_write(
+            "fill_seq",
+            elapsed_micros as f64 / NUM_KVS as f64,
             RAW_SIZE / elapsed,
-            file_size
         );
     }
 
     fn fill_random(&mut self) {
-        let elapsed = self.do_write(false, NUM_KVS);
-        let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
-        println!(
-            "fill_random: {:?} MB/s | file size: {}",
+        let duration = self.do_write(false, NUM_KVS, true);
+        let elapsed = duration.as_secs_f64();
+        let elapsed_micros = duration.as_micros() as f64;
+        self.print_write(
+            "fill_random",
+            elapsed_micros as f64 / NUM_KVS as f64,
             RAW_SIZE / elapsed,
-            file_size
         );
     }
 
     fn fill_random_sync(&mut self) {
         let num_kvs = NUM_KVS / 100;
-        let elapsed = self.do_write(true, num_kvs);
+        let duration = self.do_write(true, num_kvs, true);
+        let elapsed = duration.as_secs_f64();
+        let elapsed_micros = duration.as_micros() as f64;
         let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
         println!(
-            "fill_random_sync: {:?} MB/s) ({} ops) | file size: {} ",
+            "{:<20}: {:>10.3} micros/op {:>10.3} MB/s | file size: {}  ({} ops)",
+            "fill_random_sync",
+            elapsed_micros / num_kvs as f64,
             RAW_SIZE / 100f64 / elapsed,
-            num_kvs,
-            file_size
+            file_size,
+            num_kvs
         );
     }
 
-    fn do_write(&mut self, sync: bool, num_kvs: u128) -> f64 {
-        self.reopen_db();
+    fn overwrite(&mut self) {
+        let duration = self.do_write(false, NUM_KVS, false);
+        let elapsed = duration.as_secs_f64();
+        let elapsed_micros = duration.as_micros() as f64;
+        self.print_write(
+            "overwrite",
+            elapsed_micros as f64 / NUM_KVS as f64,
+            RAW_SIZE / elapsed,
+        );
+    }
+
+    fn do_write(&mut self, sync: bool, num_kvs: u128, reopen_db: bool) -> Duration {
+        if reopen_db {
+            self.reopen_db();
+        }
         let random = rand::thread_rng();
         let mut random_iter = random.sample_iter(Uniform::new_inclusive(0, num_kvs));
         let mut random = rand::thread_rng();
@@ -127,7 +147,7 @@ impl BenchMark {
                 .unwrap();
         }
         let end = std::time::Instant::now();
-        (end - start).as_secs_f64()
+        end - start
     }
 
     fn read_seq(&self) {
@@ -142,7 +162,8 @@ impl BenchMark {
         let end = std::time::Instant::now();
         let elapsed = (end - start).as_secs_f64();
         println!(
-            "read_seq: {:?} MB/s ({} of {} found)",
+            "{:<20}: {:10.3} MB/s ({} of {} found)",
+            "read_seq",
             RAW_SIZE / elapsed,
             count,
             NUM_KVS
@@ -167,10 +188,19 @@ impl BenchMark {
         let end = std::time::Instant::now();
         let elapsed = (end - start).as_secs_f64();
         println!(
-            "read_random: {:?} reads per second ({} of {} found)",
+            "{:<20}: {:10.3} reads per second ({} of {} found)",
+            "read_random",
             NUM_KVS as f64 / elapsed,
             NUM_KVS - not_found,
             NUM_KVS
+        );
+    }
+
+    fn print_write(&self, bench_name: &str, micros_per_op: f64, size_per_sec: f64) {
+        let file_size = fs_extra::dir::get_size(self.db.db_path()).unwrap();
+        println!(
+            "{:<20}: {:>10.3} micros/op {:>10.3} MB/s | file size: {}",
+            bench_name, micros_per_op, size_per_sec, file_size
         );
     }
 }
@@ -197,4 +227,5 @@ fn main() {
     benchmark.fill_random_sync();
     benchmark.fill_random();
     benchmark.read_random();
+    benchmark.overwrite();
 }

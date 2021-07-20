@@ -23,7 +23,7 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
 ### Use snappy compression algorithm
 
     KVLite: version 0.1.0
-    Date: 2021-07-19T16:03:10.161110194
+    Date: 2021-07-20T03:13:10.975323388
     CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
     CPU Cache: 6144 KB
     Keys: 16 bytes each
@@ -33,16 +33,37 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
     Use system default memory allocator
     Use snappy compression algorithm
     -------------------------------------------------
-    fill_seq: 65.99137920154317 MB/s | file size: 117962025
-    read_seq: 545.4534480532583 MB/s (1000000 of 1000000 found)
-    fill_random_sync: 0.10728091068326079 MB/s) (10000 ops) | file size: 1240000
-    fill_random: 41.788200062823 MB/s | file size: 98338764
-    read_random: 246199.28336031933 reads per second (632443 of 1000000 found)
+    fill_seq            :      1.767 micros/op     62.604 MB/s | file size: 113853798
+    read_seq            :    580.254 MB/s (1000000 of 1000000 found)
+    fill_random_sync    :   1098.047 micros/op      0.101 MB/s | file size: 1240000  (10000 ops)
+    fill_random         :      2.578 micros/op     42.911 MB/s | file size: 96048869
+    read_random         : 245514.353 reads per second (633076 of 1000000 found)
+    overwrite           :      2.747 micros/op     40.278 MB/s | file size: 196794071
+
+### Use Jemalloc
+
+    KVLite: version 0.1.0
+    Date: 2021-07-20T03:15:41.872893199
+    CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
+    CPU Cache: 6144 KB
+    Keys: 16 bytes each
+    Values: 100 bytes each
+    Entries: 1000000
+    RawSize: 110.626220703125 MB (estimated)
+    Use jemalloc
+    No compression algorithm
+    -------------------------------------------------
+    fill_seq            :      1.624 micros/op     68.139 MB/s | file size: 130046026
+    read_seq            :    594.012 MB/s (1000000 of 1000000 found)
+    fill_random_sync    :   1094.695 micros/op      0.101 MB/s | file size: 1240000  (10000 ops)
+    fill_random         :      2.053 micros/op     53.895 MB/s | file size: 103494362
+    read_random         : 361354.763 reads per second (631783 of 1000000 found)
+    overwrite           :      2.178 micros/op     50.803 MB/s | file size: 163332454
 
 ### No compression
 
     KVLite: version 0.1.0
-    Date: 2021-07-19T16:00:02.526203242
+    Date: 2021-07-20T03:12:08.584243849
     CPU: 8 * Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
     CPU Cache: 6144 KB
     Keys: 16 bytes each
@@ -52,11 +73,12 @@ RUST_LOG=debug RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-
     Use system default memory allocator
     No compression algorithm
     -------------------------------------------------
-    fill_seq: 63.87387531471826 MB/s | file size: 130046026
-    read_seq: 625.4276292143252 MB/s (1000000 of 1000000 found)
-    fill_random_sync: 0.10877451308420993 MB/s) (10000 ops) | file size: 1240000
-    fill_random: 42.21374494305283 MB/s | file size: 104648452
-    read_random: 245721.01528415605 reads per second (632574 of 1000000 found)
+    fill_seq            :      1.685 micros/op     65.639 MB/s | file size: 130046026
+    read_seq            :    643.674 MB/s (1000000 of 1000000 found)
+    fill_random_sync    :   1074.981 micros/op      0.103 MB/s | file size: 1240000  (10000 ops)
+    fill_random         :      2.625 micros/op     42.149 MB/s | file size: 119826300
+    read_random         : 250493.885 reads per second (631575 of 1000000 found)
+    overwrite           :      2.729 micros/op     40.541 MB/s | file size: 165017016
 
 ## References
 
