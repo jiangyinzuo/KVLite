@@ -1,4 +1,4 @@
-use crate::collections::skip_list::{rand_level, MAX_LEVEL};
+use crate::collections::skip_list::{rand_level, MemoryAllocator, MAX_LEVEL};
 use crate::collections::Entry;
 use std::alloc::Layout;
 use std::marker::PhantomData;
@@ -18,6 +18,8 @@ pub enum ReadWriteMode {
     MrMw,
 }
 
+use crate::collections::skip_list::arena::Arena;
+use std::cell::Cell;
 use std::thread::sleep;
 use std::time::Duration;
 use ReadWriteMode::*;
@@ -34,6 +36,7 @@ pub struct Node<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
 }
 
 impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Node<K, V, { RW_MODE }> {
+    #[inline]
     fn head() -> *mut Node<K, V, { RW_MODE }> {
         Self::new_with_level(K::default(), V::default(), MAX_LEVEL)
     }
@@ -126,6 +129,107 @@ impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Node<K, V, { RW
             }
         }
     }
+
+    /// # Safety
+    /// node s
+    /// hould be null or initialized
+    pub unsafe fn node_cmp(node: *mut Node<K, V, RW_MODE>, key: &K) -> std::cmp::Ordering {
+        if node.is_null() {
+            return std::cmp::Ordering::Greater;
+        }
+        (*node).entry.key.cmp(key)
+    }
+
+    /// # Example
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::{SrSwSkipMap, ReadWriteMode, Node};
+    /// let mut skip_map: SrSwSkipMap<i32, i32> = SrSwSkipMap::new();
+    /// for i in 1..10 {
+    ///     skip_map.insert(i, i + 1);
+    /// }
+    /// let node = skip_map.find_first_ge(&3, None);
+    /// unsafe {
+    ///     let node = Node::find_first_ge_from_node(node, &7);
+    ///     assert_eq!((*node).entry.value, 8);
+    /// }
+    /// ```
+    /// # Safety
+    /// `node` should be a part of skip-map and should not be nullptr
+    pub unsafe fn find_first_ge_from_node(
+        mut node: *mut Node<K, V, RW_MODE>,
+        key: &K,
+    ) -> *mut Node<K, V, RW_MODE> {
+        debug_assert!(!node.is_null());
+        if (*node).entry.key.eq(key) {
+            return node;
+        }
+        let mut level = (*node).get_level();
+        loop {
+            let next = (*node).get_next(level);
+            match Self::node_cmp(next, key) {
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        return next;
+                    }
+                    level -= 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    return next;
+                }
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+            }
+        }
+    }
+
+    /// # Example
+    ///
+    /// ```rust
+    /// use kvlite::collections::skip_list::skipmap::{SrSwSkipMap, ReadWriteMode, Node};
+    /// let mut skip_map: SrSwSkipMap<i32, i32> = SrSwSkipMap::new();
+    /// for i in 1..10 {
+    ///     skip_map.insert(i, i + 1);
+    /// }
+    /// let node = skip_map.find_first_ge(&3, None);
+    /// unsafe {
+    ///     let node = Node::find_last_le_from_node(node, &9);
+    ///     assert_eq!((*node).entry.value, 10);
+    ///     let node2 = Node::find_last_le_from_node(node, &-123);
+    ///     assert_eq!(node, node2);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    /// `node` should be a part of skip-map and should not be nullptr
+    pub unsafe fn find_last_le_from_node(
+        mut node: *mut Node<K, V, RW_MODE>,
+        key: &K,
+    ) -> *mut Node<K, V, RW_MODE> {
+        debug_assert!(!node.is_null());
+        if (*node).entry.key.eq(key) {
+            return node;
+        }
+        let mut level = (*node).get_level();
+        loop {
+            let next = (*node).get_next(level);
+            match Self::node_cmp(next, key) {
+                std::cmp::Ordering::Greater => {
+                    if level == 0 {
+                        return node;
+                    }
+                    level -= 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    return next;
+                }
+                std::cmp::Ordering::Less => {
+                    node = next;
+                }
+            }
+        }
+    }
 }
 
 unsafe fn drop_node<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode>(
@@ -179,6 +283,8 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V, { SrSw }> {
                         self.tail
                             .store(*prev_nodes.get_unchecked(0) as *mut _, Ordering::SeqCst);
                     }
+
+                    // default allocator needs manually drop
                     drop_node(node);
                     node = next_node;
                 }
@@ -198,15 +304,16 @@ impl<SK: Ord + Default, V: Default> SkipMap<SK, V, { MrMw }> {
     }
 
     #[inline]
-    pub fn merge_single_writer(&self, other: SkipMap<SK, V, { SrSw }>) {
+    pub fn merge_single_writer(&self, other: SrSwSkipMap<SK, V>) {
         self.merge_inner::<true>(other)
     }
 }
 
 impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V, RW_MODE> {
     pub fn new() -> SkipMap<SK, V, RW_MODE> {
+        let mut dummy_head = Node::head();
         SkipMap {
-            dummy_head: Node::head(),
+            dummy_head,
             tail_lock: AtomicBool::new(false),
             tail: AtomicPtr::default(),
             cur_max_level: AtomicUsize::default(),
@@ -236,107 +343,6 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
     /// node should be null or initialized
     pub unsafe fn node_eq_key(node: *mut Node<SK, V, RW_MODE>, key: &SK) -> bool {
         !node.is_null() && (*node).entry.key.eq(key)
-    }
-
-    /// # Safety
-    /// node s
-    /// hould be null or initialized
-    pub unsafe fn node_cmp(node: *mut Node<SK, V, RW_MODE>, key: &SK) -> std::cmp::Ordering {
-        if node.is_null() {
-            return std::cmp::Ordering::Greater;
-        }
-        (*node).entry.key.cmp(key)
-    }
-
-    /// # Example
-    ///
-    /// ```rust
-    /// use kvlite::collections::skip_list::skipmap::{SrSwSkipMap, ReadWriteMode};
-    /// let mut skip_map: SrSwSkipMap<i32, i32> = SrSwSkipMap::new();
-    /// for i in 1..10 {
-    ///     skip_map.insert(i, i + 1);
-    /// }
-    /// let node = skip_map.find_first_ge(&3, None);
-    /// unsafe {
-    ///     let node = SrSwSkipMap::find_last_le_from_node(node, &9);
-    ///     assert_eq!((*node).entry.value, 10);
-    ///     let node2 = SrSwSkipMap::find_last_le_from_node(node, &-123);
-    ///     assert_eq!(node, node2);
-    /// }
-    /// ```
-    ///
-    /// # Safety
-    /// `node` should be a part of skip-map and should not be nullptr
-    pub unsafe fn find_last_le_from_node(
-        mut node: *mut Node<SK, V, RW_MODE>,
-        key: &SK,
-    ) -> *mut Node<SK, V, RW_MODE> {
-        debug_assert!(!node.is_null());
-        if (*node).entry.key.eq(key) {
-            return node;
-        }
-        let mut level = (*node).get_level();
-        loop {
-            let next = (*node).get_next(level);
-            match Self::node_cmp(next, key) {
-                std::cmp::Ordering::Greater => {
-                    if level == 0 {
-                        return node;
-                    }
-                    level -= 1;
-                }
-                std::cmp::Ordering::Equal => {
-                    return next;
-                }
-                std::cmp::Ordering::Less => {
-                    node = next;
-                }
-            }
-        }
-    }
-
-    /// # Example
-    ///
-    /// ```rust
-    /// use kvlite::collections::skip_list::skipmap::{SrSwSkipMap, ReadWriteMode};
-    /// let mut skip_map: SrSwSkipMap<i32, i32> = SrSwSkipMap::new();
-    /// for i in 1..10 {
-    ///     skip_map.insert(i, i + 1);
-    /// }
-    /// let node = skip_map.find_first_ge(&3, None);
-    /// unsafe {
-    ///     let node = SrSwSkipMap::find_first_ge_from_node(node, &7);
-    ///     assert_eq!((*node).entry.value, 8);
-    /// }
-    /// ```
-    /// # Safety
-    /// `node` should be a part of skip-map and should not be nullptr
-    pub unsafe fn find_first_ge_from_node(
-        mut node: *mut Node<SK, V, RW_MODE>,
-        key: &SK,
-    ) -> *mut Node<SK, V, RW_MODE> {
-        debug_assert!(!node.is_null());
-        if (*node).entry.key.eq(key) {
-            return node;
-        }
-        let mut level = (*node).get_level();
-        loop {
-            let next = (*node).get_next(level);
-            match Self::node_cmp(next, key) {
-                std::cmp::Ordering::Greater => {
-                    if level == 0 {
-                        return next;
-                    }
-                    level -= 1;
-                }
-                std::cmp::Ordering::Equal => {
-                    return next;
-                }
-                std::cmp::Ordering::Less => {
-                    node = next;
-                }
-            }
-        }
     }
 
     /// Return the first node `N` whose key is greater or equal than given `key`.
@@ -423,7 +429,7 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
 
         let result = loop {
             let next = unsafe { (*node).get_next(level) };
-            match unsafe { Self::node_cmp(next, key) } {
+            match unsafe { Node::node_cmp(next, key) } {
                 std::cmp::Ordering::Equal => return next,
                 std::cmp::Ordering::Less => {
                     node = next;
@@ -457,7 +463,7 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         }
     }
 
-    pub fn range_get<UK>(&self, key_start: &SK, key_end: &SK, kvs: &mut SkipMap<UK, V, { SrSw }>)
+    pub fn range_get<UK>(&self, key_start: &SK, key_end: &SK, kvs: &mut SrSwSkipMap<UK, V>)
     where
         SK: Clone + Into<UK>,
         UK: Ord + Default,
@@ -476,11 +482,11 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
     }
 
     #[inline]
-    pub fn merge(&self, other: SkipMap<SK, V, { SrSw }>) {
+    pub fn merge(&self, other: SrSwSkipMap<SK, V>) {
         self.merge_inner::<false>(other)
     }
 
-    fn merge_inner<const INSURE_SINGLE_WRITER: bool>(&self, other: SkipMap<SK, V, { SrSw }>) {
+    fn merge_inner<const INSURE_SINGLE_WRITER: bool>(&self, other: SrSwSkipMap<SK, V>) {
         // todo: optimize the time complexity
         for n in other.into_ptr_iter() {
             unsafe {

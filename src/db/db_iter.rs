@@ -1,4 +1,5 @@
 use crate::collections::skip_list::skipmap::ReadWriteMode;
+use crate::collections::skip_list::MemoryAllocator;
 use crate::db::key_types::InternalKey;
 use crate::db::Value;
 use crate::memory::{MemTableCloneIterator, SkipMapMemTable};

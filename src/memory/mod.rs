@@ -6,6 +6,7 @@ pub use mrsw_skip_map_mem_table::MrSwSkipMapMemTable;
 pub use skip_map_mem_table::MutexSkipMapMemTable;
 
 use crate::collections::skip_list::skipmap::{Node, ReadWriteMode, SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::MemoryAllocator;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{DBCommand, Value};
 use std::marker::PhantomData;
@@ -39,7 +40,7 @@ pub struct MemTableCloneIterator<
 > {
     _mem_table: Arc<M>,
     node: *mut Node<SK, Value, RW_MODE>,
-    _mark: PhantomData<(UK, Value)>,
+    _marker: PhantomData<(UK, Value)>,
 }
 
 impl<
@@ -54,7 +55,7 @@ impl<
         MemTableCloneIterator {
             _mem_table: mem_table,
             node,
-            _mark: PhantomData,
+            _marker: PhantomData,
         }
     }
 }

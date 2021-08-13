@@ -2,7 +2,7 @@ use crate::setup;
 use memmap::{Mmap, MmapOptions};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::iter::TrustedRandomAccess;
+use std::iter::{TrustedRandomAccess, TrustedRandomAccessNoCoerce};
 use std::ops::Range;
 use tempfile::TempDir;
 

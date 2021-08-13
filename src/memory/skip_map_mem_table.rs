@@ -1,4 +1,5 @@
-use crate::collections::skip_list::skipmap::{ReadWriteMode, SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::{Node, ReadWriteMode, SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::MemoryAllocator;
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::{InternalKeyValueIterator, MemTable};
@@ -103,13 +104,13 @@ pub(super) fn range_get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
         let lsn_max = unsafe { LSNKey::upper_bound(&(*node).entry.key) };
         unsafe {
             // get next user key
-            node = SkipMap::find_first_ge_from_node(node, &lsn_max);
+            node = Node::find_first_ge_from_node(node, &lsn_max);
             if node.is_null() || (*node).entry.key.user_key().gt(key_end.user_key()) {
                 return;
             }
 
             let lsn_key = LSNKey::new((*node).entry.key.user_key().clone(), key_end.lsn());
-            node = SkipMap::find_last_le_from_node(node, &lsn_key);
+            node = Node::find_last_le_from_node(node, &lsn_key);
             debug_assert!(!node.is_null());
             if (*node).entry.key.user_key().eq(lsn_key.user_key()) {
                 kvs.insert(lsn_key.user_key().clone(), (*node).entry.value.clone());

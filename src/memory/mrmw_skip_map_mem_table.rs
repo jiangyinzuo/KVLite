@@ -1,5 +1,5 @@
 use crate::collections::skip_list::skipmap::ReadWriteMode::MrMw;
-use crate::collections::skip_list::skipmap::{MrMwSkipMap, SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
 use crate::db::key_types::{InternalKey, LSNKey, MemKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::skip_map_mem_table::{get_by_lsn_key, range_get_by_lsn_key};
@@ -7,12 +7,19 @@ use crate::memory::{InternalKeyValueIterator, MemTable, SkipMapMemTable};
 use crate::Result;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-#[derive(Default)]
 pub struct MrMwSkipMapMemTable<SK: MemKey> {
-    inner: MrMwSkipMap<SK, Value>,
+    inner: SkipMap<SK, Value, { MrMw }>,
     mem_usage: AtomicI64,
 }
 
+impl<SK: MemKey> Default for MrMwSkipMapMemTable<SK> {
+    fn default() -> Self {
+        MrMwSkipMapMemTable {
+            inner: SkipMap::default(),
+            mem_usage: AtomicI64::default(),
+        }
+    }
+}
 impl DBCommand<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
     fn range_get(
         &self,

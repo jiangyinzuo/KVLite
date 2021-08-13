@@ -1,5 +1,6 @@
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::{ReadWriteMode, SrSwSkipMap};
+use crate::collections::skip_list::MemoryAllocator;
 use crate::db::db_iter::DBIterator;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::options::WriteOptions;
@@ -154,6 +155,7 @@ impl<SK, UK, M, L: 'static> NoTransactionDB<SK, UK, M, L>
 where
     SK: MemKey + 'static,
     UK: MemKey,
+
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK>,
 {
@@ -264,13 +266,13 @@ where
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::collections::skip_list::skipmap::ReadWriteMode::{MrMw, MrSw, SrSw};
     use crate::db::key_types::InternalKey;
     use crate::db::no_transaction_db::NoTransactionDB;
     use crate::db::options::WriteOptions;
     use crate::db::{DB, MAX_LEVEL};
     use crate::memory::{
         BTreeMemTable, MemTable, MrMwSkipMapMemTable, MrSwSkipMapMemTable, MutexSkipMapMemTable,
-        SkipMapMemTable,
     };
     use crate::sstable::manager::level_n::tests::create_manager;
     use crate::wal::simple_wal::SimpleWriteAheadLog;
@@ -289,7 +291,7 @@ pub(crate) mod tests {
     fn test_command() {
         let _ = env_logger::try_init();
 
-        for j in 0..2 {
+        for _ in 0..2 {
             let temp_dir = tempfile::Builder::new()
                 .prefix("test_command")
                 .tempdir()
