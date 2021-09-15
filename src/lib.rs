@@ -1,12 +1,11 @@
 #![feature(backtrace)]
 #![feature(map_first_last)]
 #![feature(core_intrinsics)]
-#![feature(const_generics)]
+#![feature(adt_const_params)]
 
 #[macro_use]
 extern crate log;
 
-mod bloom;
 pub mod byteutils;
 pub mod cache;
 pub mod collections;
@@ -14,6 +13,7 @@ mod compaction;
 pub mod db;
 mod env;
 pub mod error;
+pub mod filter;
 mod hash;
 pub mod ioutils;
 pub mod memory;

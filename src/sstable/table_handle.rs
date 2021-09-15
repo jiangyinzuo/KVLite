@@ -1,10 +1,10 @@
-use crate::bloom::BloomFilter;
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::db_iter::InternalKeyValue;
 use crate::db::key_types::{InternalKey, MemKey};
 use crate::db::{max_level_shift, Value, WRITE_BUFFER_SIZE};
 use crate::env::file_system::{FileSystem, SequentialReadableFile};
+use crate::filter::{DefaultBloomFilter, SEED};
 use crate::hash::murmur_hash;
 use crate::ioutils::{BufReaderWithPos, BufWriterWithPos};
 use crate::memory::InternalKeyValueIterator;
@@ -131,7 +131,7 @@ pub(crate) struct TableWriter {
     pub(crate) index_block: IndexBlock,
     pub(crate) writer: BufWriterWithPos<File>,
     record_offsets: Vec<u8>,
-    filter: BloomFilter,
+    filter: DefaultBloomFilter,
     #[cfg(feature = "snappy_compression")]
     snappy_encoder: snap::raw::Encoder,
 }
@@ -146,7 +146,7 @@ impl TableWriter {
             index_block: IndexBlock::default(),
             writer,
             record_offsets: Vec::with_capacity(kv_total as usize),
-            filter: BloomFilter::create_filter(kv_total as usize),
+            filter: DefaultBloomFilter::create_filter(kv_total as usize),
             #[cfg(feature = "snappy_compression")]
             snappy_encoder: snap::raw::Encoder::new(),
         }
@@ -154,8 +154,9 @@ impl TableWriter {
 
     fn add_key_value(&mut self, mut k: InternalKey, mut v: Value) {
         debug_assert!(!k.is_empty(), "attempt to write empty key");
-        self.filter.add(&k);
-        debug_assert!(self.filter.may_contain(&k));
+        let h = murmur_hash(&k, SEED);
+        self.filter.add(h);
+        debug_assert!(self.filter.may_contain(h));
 
         #[cfg(debug_assertions)]
         let excepted_data_len = self.data.len() + 8 + k.len() + v.len();
@@ -215,7 +216,7 @@ impl TableWriter {
             index_block_offset,
             index_block_length,
             &mut self.writer,
-            self.filter.len(),
+            self.filter.len() as u32,
             self.kv_total,
         );
         #[cfg(debug_assertions)]
@@ -370,7 +371,8 @@ impl TableReadHandle {
         #[allow(clippy::ptr_arg)] key: &InternalKey,
         cache: &mut TableCache,
     ) -> Option<Value> {
-        if cache.filter.may_contain(key) {
+        let h = murmur_hash(key, SEED);
+        if cache.filter.may_contain(h) {
             if let Some((offset, length, index_offset)) = cache.index.may_contain_key(key) {
                 return match cache.start_data_block_map.get(&offset) {
                     Some(data_block) => data_block.get_value(key),
@@ -402,7 +404,8 @@ impl TableReadHandle {
             &mut buf_reader,
         );
 
-        if bloom_filter.may_contain(key) {
+        let h = murmur_hash(key, SEED);
+        if bloom_filter.may_contain(h) {
             let index_block = IndexBlock::load_index(&mut buf_reader, &footer);
             let may_contain_key = index_block.may_contain_key(key);
             let mut cache = TableCache::new(bloom_filter, index_block);

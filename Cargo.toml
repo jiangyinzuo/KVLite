@@ -21,10 +21,11 @@ rayon = "1.5.1"
 snap = "1.0.5"
 tempfile = "3.2.0"
 procfs = "0.9.1"
+filters-rs = { git = "https://github.com/ChiangYintso/filters-rs.git" }
 
 [dev-dependencies]
 env_logger = "0.8.3"
-layout = {path = "./benches/layout"}
+layout = { path = "./benches/layout" }
 
 [features]
 default = []

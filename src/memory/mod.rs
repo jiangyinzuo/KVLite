@@ -35,8 +35,8 @@ pub trait SkipMapMemTable<SK: MemKey, UK: MemKey, const RW_MODE: ReadWriteMode>:
 pub struct MemTableCloneIterator<
     SK: MemKey,
     UK: MemKey,
-    const RW_MODE: ReadWriteMode,
     M: SkipMapMemTable<SK, UK, { RW_MODE }>,
+    const RW_MODE: ReadWriteMode,
 > {
     _mem_table: Arc<M>,
     node: *mut Node<SK, Value, RW_MODE>,
@@ -46,9 +46,9 @@ pub struct MemTableCloneIterator<
 impl<
         SK: MemKey,
         UK: MemKey,
-        const RW_MODE: ReadWriteMode,
         M: SkipMapMemTable<SK, UK, { RW_MODE }>,
-    > MemTableCloneIterator<SK, UK, { RW_MODE }, M>
+        const RW_MODE: ReadWriteMode,
+    > MemTableCloneIterator<SK, UK, M, { RW_MODE }>
 {
     pub fn new(mem_table: Arc<M>) -> Self {
         let node = mem_table.get_inner().first_node() as *mut _;
@@ -63,9 +63,9 @@ impl<
 impl<
         SK: MemKey,
         UK: MemKey,
-        const RW_MODE: ReadWriteMode,
         M: SkipMapMemTable<SK, UK, { RW_MODE }>,
-    > Iterator for MemTableCloneIterator<SK, UK, { RW_MODE }, M>
+        const RW_MODE: ReadWriteMode,
+    > Iterator for MemTableCloneIterator<SK, UK, M, { RW_MODE }>
 {
     type Item = (SK, Value);
 

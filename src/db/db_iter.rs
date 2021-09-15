@@ -46,11 +46,11 @@ pub type DBIterator = MergingIterator<Box<dyn Iterator<Item = InternalKeyValue>>
 
 impl DBIterator {
     pub(crate) fn new<
-        const RW_MODE: ReadWriteMode,
         M: SkipMapMemTable<InternalKey, Value, { RW_MODE }> + 'static,
+        const RW_MODE: ReadWriteMode,
     >(
-        imm_mem_iterator: MemTableCloneIterator<InternalKey, Value, { RW_MODE }, M>,
-        mut_mem_iterator: MemTableCloneIterator<InternalKey, Value, { RW_MODE }, M>,
+        imm_mem_iterator: MemTableCloneIterator<InternalKey, Value, M, { RW_MODE }>,
+        mut_mem_iterator: MemTableCloneIterator<InternalKey, Value, M, { RW_MODE }>,
         level0_iterator: Level0Iterator,
         mut leveln_iterators: Vec<Box<dyn Iterator<Item = InternalKeyValue>>>,
     ) -> DBIterator {

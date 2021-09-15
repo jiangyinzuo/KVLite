@@ -67,7 +67,7 @@ impl PAXHandle {
             self.file
                 .seek(SeekFrom::Start(((i * self.length) as u64 + pk) * 8));
             let mut buffer = [0u8; 8];
-            self.file.read_exact(&mut buffer);
+            self.file.read_exact(&mut buffer).unwrap();
             result[i] = u64::from_le_bytes(buffer);
         }
         result
