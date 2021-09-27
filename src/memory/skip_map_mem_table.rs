@@ -1,6 +1,6 @@
 use crate::collections::skip_list::skipmap::{Node, ReadWriteMode, SkipMap, SrSwSkipMap};
 use crate::collections::skip_list::MemoryAllocator;
-use crate::db::key_types::{InternalKey, LSNKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey, SeqNumKey};
 use crate::db::{DBCommand, Value};
 use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
@@ -8,29 +8,29 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 #[derive(Default)]
-pub struct MutexSkipMapMemTable<SK: MemKey> {
+pub struct MutexSkipMapMemTable<SK: DBKey> {
     lock: Mutex<()>,
     inner_guarded: SrSwSkipMap<SK, Value>,
     mem_usage: AtomicI64,
 }
 
-impl DBCommand<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
+impl DBCommand<RawUserKey, RawUserKey> for MutexSkipMapMemTable<RawUserKey> {
     fn range_get(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
-        kvs: &mut SrSwSkipMap<InternalKey, Value>,
+        key_start: &RawUserKey,
+        key_end: &RawUserKey,
+        kvs: &mut SrSwSkipMap<RawUserKey, Value>,
     ) {
         let _guard = self.lock.lock().unwrap();
         self.inner_guarded.range_get(key_start, key_end, kvs);
     }
 
-    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
+    fn get(&self, key: &RawUserKey) -> Result<Option<Value>> {
         let _guard = self.lock.lock().unwrap();
         Ok(self.inner_guarded.get_clone(key))
     }
 
-    fn set(&self, key: InternalKey, value: Value) -> Result<()> {
+    fn set(&self, key: RawUserKey, value: Value) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
         let key_len = key.len();
         let value_len = value.len();
@@ -42,7 +42,7 @@ impl DBCommand<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
         Ok(())
     }
 
-    fn remove(&self, key: InternalKey) -> Result<()> {
+    fn remove(&self, key: RawUserKey) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
 
         let key_len = key.len();
@@ -55,12 +55,12 @@ impl DBCommand<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
     }
 }
 
-impl InternalKeyValueIterator for MutexSkipMapMemTable<InternalKey> {
+impl InternalKeyValueIterator for MutexSkipMapMemTable<RawUserKey> {
     fn len(&self) -> usize {
         self.inner_guarded.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&RawUserKey, &Value)> + '_> {
         Box::new(
             self.inner_guarded
                 .iter_ptr()
@@ -69,8 +69,8 @@ impl InternalKeyValueIterator for MutexSkipMapMemTable<InternalKey> {
     }
 }
 
-impl MemTable<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
-    fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, mem_size: u64) {
+impl MemTable<RawUserKey, RawUserKey> for MutexSkipMapMemTable<RawUserKey> {
+    fn merge(&self, kvs: SrSwSkipMap<RawUserKey, Value>, mem_size: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
         self.inner_guarded.merge(kvs);
@@ -83,10 +83,10 @@ impl MemTable<InternalKey, InternalKey> for MutexSkipMapMemTable<InternalKey> {
     }
 }
 
-pub(super) fn range_get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
-    skip_map: &SkipMap<LSNKey<UK>, Value, RW_MODE>,
-    key_start: &LSNKey<UK>,
-    key_end: &LSNKey<UK>,
+pub(super) fn range_get_by_lsn_key<UK: DBKey, const RW_MODE: ReadWriteMode>(
+    skip_map: &SkipMap<SeqNumKey<UK>, Value, RW_MODE>,
+    key_start: &SeqNumKey<UK>,
+    key_end: &SeqNumKey<UK>,
     kvs: &mut SrSwSkipMap<UK, Value>,
 ) {
     let mut node = skip_map.find_last_le(key_start);
@@ -101,7 +101,7 @@ pub(super) fn range_get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
     }
 
     loop {
-        let lsn_max = unsafe { LSNKey::upper_bound(&(*node).entry.key) };
+        let lsn_max = unsafe { SeqNumKey::upper_bound(&(*node).entry.key) };
         unsafe {
             // get next user key
             node = Node::find_first_ge_from_node(node, &lsn_max);
@@ -109,7 +109,7 @@ pub(super) fn range_get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
                 return;
             }
 
-            let lsn_key = LSNKey::new((*node).entry.key.user_key().clone(), key_end.lsn());
+            let lsn_key = SeqNumKey::new((*node).entry.key.user_key().clone(), key_end.seq_num());
             node = Node::find_last_le_from_node(node, &lsn_key);
             debug_assert!(!node.is_null());
             if (*node).entry.key.user_key().eq(lsn_key.user_key()) {
@@ -119,9 +119,9 @@ pub(super) fn range_get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
     }
 }
 
-pub(super) fn get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
-    skip_map: &SkipMap<LSNKey<UK>, Value, RW_MODE>,
-    key: &LSNKey<UK>,
+pub(super) fn get_by_lsn_key<UK: DBKey, const RW_MODE: ReadWriteMode>(
+    skip_map: &SkipMap<SeqNumKey<UK>, Value, RW_MODE>,
+    key: &SeqNumKey<UK>,
 ) -> Result<Option<Value>> {
     let node = skip_map.find_last_le(key);
     if node.is_null() {
@@ -136,26 +136,26 @@ pub(super) fn get_by_lsn_key<UK: MemKey, const RW_MODE: ReadWriteMode>(
     }
 }
 
-impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MutexSkipMapMemTable<LSNKey<UK>> {
+impl<UK: DBKey> DBCommand<SeqNumKey<UK>, UK> for MutexSkipMapMemTable<SeqNumKey<UK>> {
     fn range_get(
         &self,
-        key_start: &LSNKey<UK>,
-        key_end: &LSNKey<UK>,
+        key_start: &SeqNumKey<UK>,
+        key_end: &SeqNumKey<UK>,
         kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         debug_assert!(key_start.le(key_end));
-        debug_assert_eq!(key_start.lsn(), key_end.lsn());
+        debug_assert_eq!(key_start.seq_num(), key_end.seq_num());
 
         let _guard = self.lock.lock().unwrap();
         range_get_by_lsn_key(&self.inner_guarded, key_start, key_end, kvs)
     }
 
-    fn get(&self, key: &LSNKey<UK>) -> Result<Option<Value>> {
+    fn get(&self, key: &SeqNumKey<UK>) -> Result<Option<Value>> {
         let _guard = self.lock.lock().unwrap();
         get_by_lsn_key(&self.inner_guarded, key)
     }
 
-    fn set(&self, key: LSNKey<UK>, value: Value) -> Result<()> {
+    fn set(&self, key: SeqNumKey<UK>, value: Value) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
 
         let key_mem_size = key.mem_size() as i64;
@@ -168,7 +168,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MutexSkipMapMemTable<LSNKey<UK>> 
         Ok(())
     }
 
-    fn remove(&self, key: LSNKey<UK>) -> Result<()> {
+    fn remove(&self, key: SeqNumKey<UK>) -> Result<()> {
         let _guard = self.lock.lock().unwrap();
         let key_mem_size = key.mem_size();
 
@@ -181,21 +181,21 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MutexSkipMapMemTable<LSNKey<UK>> 
     }
 }
 
-impl<K: MemKey + 'static> InternalKeyValueIterator for MutexSkipMapMemTable<LSNKey<K>> {
+impl<K: DBKey + 'static> InternalKeyValueIterator for MutexSkipMapMemTable<SeqNumKey<K>> {
     fn len(&self) -> usize {
         self.inner_guarded.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)>> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&RawUserKey, &Value)>> {
         Box::new(self.inner_guarded.iter_ptr().filter_map(|n| {
             debug_assert!(!n.is_null());
             unsafe {
                 let next = (*n).get_next(0);
-                let internal_key = (*n).entry.key.internal_key();
+                let internal_key = (*n).entry.key.raw_user_key();
                 if next.is_null() {
                     Some((internal_key, &(*n).entry.value))
                 } else {
-                    match internal_key.cmp((*next).entry.key.internal_key()) {
+                    match internal_key.cmp((*next).entry.key.raw_user_key()) {
                         std::cmp::Ordering::Equal => None,
                         _ => Some((internal_key, &(*n).entry.value)),
                     }
@@ -205,8 +205,8 @@ impl<K: MemKey + 'static> InternalKeyValueIterator for MutexSkipMapMemTable<LSNK
     }
 }
 
-impl<UK: 'static + MemKey> MemTable<LSNKey<UK>, UK> for MutexSkipMapMemTable<LSNKey<UK>> {
-    fn merge(&self, kvs: SrSwSkipMap<LSNKey<UK>, Value>, mem_size: u64) {
+impl<UK: 'static + DBKey> MemTable<SeqNumKey<UK>, UK> for MutexSkipMapMemTable<SeqNumKey<UK>> {
+    fn merge(&self, kvs: SrSwSkipMap<SeqNumKey<UK>, Value>, mem_size: u64) {
         let _guard = self.lock.lock().unwrap();
         self.mem_usage.fetch_add(mem_size as i64, Ordering::Release);
         self.inner_guarded.merge(kvs);
@@ -245,18 +245,18 @@ mod internal_key_tests {
 #[cfg(test)]
 mod lsn_tests {
     use crate::collections::skip_list::skipmap::SkipMap;
-    use crate::db::key_types::{I32UserKey, LSNKey};
+    use crate::db::key_types::{I32UserKey, SeqNumKey};
     use crate::db::{DBCommand, Value};
     use crate::memory::{MutexSkipMapMemTable, SkipMapMemTable};
 
     #[test]
     fn test_range_get() {
-        let table = MutexSkipMapMemTable::<LSNKey<I32UserKey>>::default();
+        let table = MutexSkipMapMemTable::<SeqNumKey<I32UserKey>>::default();
         for lsn in 1..8 {
             for k in -100i32..100i32 {
                 table
                     .set(
-                        LSNKey::new(I32UserKey::new(k), lsn),
+                        SeqNumKey::new(I32UserKey::new(k), lsn),
                         Value::from(k.to_be_bytes()),
                     )
                     .unwrap();
@@ -265,13 +265,13 @@ mod lsn_tests {
 
         let mut kvs = SkipMap::new();
         table.range_get(
-            &LSNKey::new(I32UserKey::new(-10i32), 5),
-            &LSNKey::new(I32UserKey::new(20i32), 5),
+            &SeqNumKey::new(I32UserKey::new(-10i32), 5),
+            &SeqNumKey::new(I32UserKey::new(20i32), 5),
             &mut kvs,
         );
         assert_eq!(kvs.len(), 31);
         let option = table
-            .get(&LSNKey::new(I32UserKey::new(20i32), 100))
+            .get(&SeqNumKey::new(I32UserKey::new(20i32), 100))
             .unwrap();
         assert_eq!(option, Some(Value::from(20i32.to_be_bytes())));
     }

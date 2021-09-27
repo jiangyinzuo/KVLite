@@ -1,5 +1,5 @@
 use crate::db::db_iter::{InternalKeyValue, KeyValueIterItem};
-use crate::db::key_types::InternalKey;
+use crate::db::key_types::RawUserKey;
 use crate::sstable::table_handle::{TableIterator, TableReadHandle};
 use crate::sstable::TableID;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -21,7 +21,7 @@ pub struct MergingIterator<It: Iterator<Item = InternalKeyValue>> {
     pub(crate) iterators: Vec<It>,
     priority_queue: BinaryHeap<KeyValueIterItem>,
     #[cfg(debug_assertions)]
-    prev_key: InternalKey,
+    prev_key: RawUserKey,
 }
 
 impl<It: Iterator<Item = InternalKeyValue>> MergingIterator<It> {
@@ -36,7 +36,7 @@ impl<It: Iterator<Item = InternalKeyValue>> MergingIterator<It> {
             iterators,
             priority_queue,
             #[cfg(debug_assertions)]
-            prev_key: InternalKey::default(),
+            prev_key: RawUserKey::default(),
         }
     }
 
@@ -79,18 +79,18 @@ pub struct LevelNIterator {
     iterators: Vec<TableIterator>,
     idx: usize,
     #[cfg(debug_assertions)]
-    prev_key: InternalKey,
+    prev_key: RawUserKey,
     #[cfg(debug_assertions)]
     prev_idx: usize,
 }
 
 impl LevelNIterator {
     pub(super) fn new(
-        table_handles: &BTreeMap<(InternalKey, TableID), Arc<TableReadHandle>>,
+        table_handles: &BTreeMap<(RawUserKey, TableID), Arc<TableReadHandle>>,
     ) -> LevelNIterator {
         #[cfg(debug_assertions)]
         {
-            let mut last_max_key = InternalKey::default();
+            let mut last_max_key = RawUserKey::default();
             for table in table_handles.values() {
                 assert!(last_max_key.lt(table.min_key()));
                 last_max_key = table.max_key().clone();
@@ -105,7 +105,7 @@ impl LevelNIterator {
             iterators,
             idx: 0,
             #[cfg(debug_assertions)]
-            prev_key: InternalKey::default(),
+            prev_key: RawUserKey::default(),
             #[cfg(debug_assertions)]
             prev_idx: 0,
         }

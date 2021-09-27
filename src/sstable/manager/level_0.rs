@@ -1,7 +1,7 @@
 use crate::cache::{LRUEntry, ShardLRUCache};
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::compaction::level_0::{compact_and_insert, LEVEL0_FILES_THRESHOLD};
-use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey};
 use crate::db::Value;
 use crate::memory::MemTable;
 use crate::sstable::manager::level_iter::Level0Iterator;
@@ -24,7 +24,7 @@ use std::thread;
 use std::thread::JoinHandle;
 
 /// Struct for read and write level0 sstable.
-pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {
+pub struct Level0Manager<SK: DBKey, UK: DBKey, M: MemTable<SK, UK>, L: WAL<SK, UK>> {
     db_path: String,
 
     level0_tables: std::sync::RwLock<BTreeMap<TableID, Arc<TableReadHandle>>>,
@@ -45,7 +45,7 @@ pub struct Level0Manager<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>, L: WAL<SK,
     _phantom_table: PhantomData<M>,
 }
 
-impl<SK: 'static + MemKey, UK: MemKey + 'static, M: MemTable<SK, UK> + 'static, L>
+impl<SK: 'static + DBKey, UK: DBKey + 'static, M: MemTable<SK, UK> + 'static, L>
     Level0Manager<SK, UK, M, L>
 where
     L: WAL<SK, UK> + 'static,
@@ -230,8 +230,8 @@ where
 
     pub fn range_query(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
+        key_start: &RawUserKey,
+        key_end: &RawUserKey,
         kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         let tables_guard = self.level0_tables.read().unwrap();
@@ -242,7 +242,7 @@ where
         }
     }
 
-    pub fn query(&self, key: &InternalKey) -> Result<Option<Value>> {
+    pub fn query(&self, key: &RawUserKey) -> Result<Option<Value>> {
         let tables_guard = self.level0_tables.read().unwrap();
 
         // query the latest table first
@@ -318,16 +318,16 @@ where
     /// Return level0 tables to compaction
     pub fn assign_level0_tables_to_compact(
         &self,
-    ) -> (Vec<Arc<TableReadHandle>>, InternalKey, InternalKey) {
+    ) -> (Vec<Arc<TableReadHandle>>, RawUserKey, RawUserKey) {
         let guard = self.level0_tables.read().unwrap();
 
         let mut tables = Vec::new();
         tables.reserve(NUM_LEVEL0_TABLE_TO_COMPACT);
 
         let mut count = 0;
-        let mut min_key: Option<&InternalKey> = None;
-        let max = InternalKey::default();
-        let mut max_key: &InternalKey = &max;
+        let mut min_key: Option<&RawUserKey> = None;
+        let max = RawUserKey::default();
+        let mut max_key: &RawUserKey = &max;
         for (_id, table) in guard.iter() {
             if table.test_and_set_compacting() {
                 tables.push(table.clone());
@@ -356,7 +356,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::db::key_types::InternalKey;
+    use crate::db::key_types::RawUserKey;
     use crate::db::DBCommand;
     use crate::memory::{InternalKeyValueIterator, MutexSkipMapMemTable};
     use crate::sstable::manager::level_0::Level0Manager;
@@ -387,7 +387,7 @@ mod tests {
     fn test_query(path: String, insert_value: bool) {
         let leveln_manager = create_manager(&path);
 
-        let mut mut_mem = MutexSkipMapMemTable::<InternalKey>::default();
+        let mut mut_mem = MutexSkipMapMemTable::<RawUserKey>::default();
 
         let (sender, receiver) = crossbeam_channel::unbounded();
         let wal = SimpleWriteAheadLog::open_and_load_logs(&path, &mut mut_mem).unwrap();

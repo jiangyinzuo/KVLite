@@ -1,16 +1,16 @@
 use crate::collections::skip_list::skipmap::ReadWriteMode;
 use crate::collections::skip_list::MemoryAllocator;
-use crate::db::key_types::InternalKey;
+use crate::db::key_types::RawUserKey;
 use crate::db::Value;
 use crate::memory::{MemTableCloneIterator, SkipMapMemTable};
 use crate::sstable::manager::level_iter::{Level0Iterator, MergingIterator};
 use std::cmp::Ordering;
 
-pub type InternalKeyValue = (InternalKey, Value);
+pub type InternalKeyValue = (RawUserKey, Value);
 
 #[derive(PartialEq, Eq)]
 pub(crate) struct KeyValueIterItem {
-    pub(crate) key: InternalKey,
+    pub(crate) key: RawUserKey,
     pub(crate) value: Value,
     pub(crate) iter_id: usize,
 }
@@ -34,7 +34,7 @@ impl Ord for KeyValueIterItem {
 }
 
 impl KeyValueIterItem {
-    pub(crate) fn new(key: InternalKey, value: Value, iter_id: usize) -> KeyValueIterItem {
+    pub(crate) fn new(key: RawUserKey, value: Value, iter_id: usize) -> KeyValueIterItem {
         KeyValueIterItem {
             key,
             value,
@@ -46,11 +46,11 @@ pub type DBIterator = MergingIterator<Box<dyn Iterator<Item = InternalKeyValue>>
 
 impl DBIterator {
     pub(crate) fn new<
-        M: SkipMapMemTable<InternalKey, Value, { RW_MODE }> + 'static,
+        M: SkipMapMemTable<RawUserKey, Value, { RW_MODE }> + 'static,
         const RW_MODE: ReadWriteMode,
     >(
-        imm_mem_iterator: MemTableCloneIterator<InternalKey, Value, M, { RW_MODE }>,
-        mut_mem_iterator: MemTableCloneIterator<InternalKey, Value, M, { RW_MODE }>,
+        imm_mem_iterator: MemTableCloneIterator<RawUserKey, Value, M, { RW_MODE }>,
+        mut_mem_iterator: MemTableCloneIterator<RawUserKey, Value, M, { RW_MODE }>,
         level0_iterator: Level0Iterator,
         mut leveln_iterators: Vec<Box<dyn Iterator<Item = InternalKeyValue>>>,
     ) -> DBIterator {

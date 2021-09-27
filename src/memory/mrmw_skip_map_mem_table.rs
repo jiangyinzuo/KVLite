@@ -1,18 +1,18 @@
 use crate::collections::skip_list::skipmap::ReadWriteMode::MrMw;
 use crate::collections::skip_list::skipmap::{SkipMap, SrSwSkipMap};
-use crate::db::key_types::{InternalKey, LSNKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey, SeqNumKey, SequenceNumber};
 use crate::db::{DBCommand, Value};
 use crate::memory::skip_map_mem_table::{get_by_lsn_key, range_get_by_lsn_key};
 use crate::memory::{InternalKeyValueIterator, MemTable, SkipMapMemTable};
 use crate::Result;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-pub struct MrMwSkipMapMemTable<SK: MemKey> {
+pub struct MrMwSkipMapMemTable<SK: DBKey> {
     inner: SkipMap<SK, Value, { MrMw }>,
     mem_usage: AtomicI64,
 }
 
-impl<SK: MemKey> Default for MrMwSkipMapMemTable<SK> {
+impl<SK: DBKey> Default for MrMwSkipMapMemTable<SK> {
     fn default() -> Self {
         MrMwSkipMapMemTable {
             inner: SkipMap::default(),
@@ -20,24 +20,24 @@ impl<SK: MemKey> Default for MrMwSkipMapMemTable<SK> {
         }
     }
 }
-impl DBCommand<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
+impl DBCommand<RawUserKey, RawUserKey> for MrMwSkipMapMemTable<RawUserKey> {
     fn range_get(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
-        kvs: &mut SrSwSkipMap<InternalKey, Value>,
+        key_start: &RawUserKey,
+        key_end: &RawUserKey,
+        kvs: &mut SrSwSkipMap<RawUserKey, Value>,
     ) where
-        InternalKey: Into<InternalKey>,
-        InternalKey: From<InternalKey>,
+        RawUserKey: Into<RawUserKey>,
+        RawUserKey: From<RawUserKey>,
     {
         self.inner.range_get(key_start, key_end, kvs)
     }
 
-    fn get(&self, key: &InternalKey) -> crate::Result<Option<Value>> {
+    fn get(&self, key: &RawUserKey) -> crate::Result<Option<Value>> {
         Ok(self.inner.get_clone(key))
     }
 
-    fn set(&self, key: InternalKey, value: Value) -> crate::Result<()> {
+    fn set(&self, key: RawUserKey, value: Value) -> crate::Result<()> {
         let key_mem_size = key.mem_size();
         let value_len = value.len();
         let mem_add = match self.inner.insert(key, value) {
@@ -48,7 +48,7 @@ impl DBCommand<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
         Ok(())
     }
 
-    fn remove(&self, key: InternalKey) -> crate::Result<()> {
+    fn remove(&self, key: RawUserKey) -> crate::Result<()> {
         let key_mem_size = key.mem_size();
         let mem_add = match self.inner.insert(key, Value::default()) {
             Some(v) => -((v.len() * std::mem::size_of::<u8>()) as i64),
@@ -59,12 +59,12 @@ impl DBCommand<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
     }
 }
 
-impl InternalKeyValueIterator for MrMwSkipMapMemTable<InternalKey> {
+impl InternalKeyValueIterator for MrMwSkipMapMemTable<RawUserKey> {
     fn len(&self) -> usize {
         self.inner.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)>> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&RawUserKey, &Value)>> {
         Box::new(
             self.inner
                 .iter_ptr()
@@ -73,8 +73,8 @@ impl InternalKeyValueIterator for MrMwSkipMapMemTable<InternalKey> {
     }
 }
 
-impl MemTable<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
-    fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, mem_usage: u64) {
+impl MemTable<RawUserKey, RawUserKey> for MrMwSkipMapMemTable<RawUserKey> {
+    fn merge(&self, kvs: SrSwSkipMap<RawUserKey, Value>, mem_usage: u64) {
         self.mem_usage
             .fetch_add(mem_usage as i64, Ordering::Release);
         self.inner.merge(kvs);
@@ -87,30 +87,30 @@ impl MemTable<InternalKey, InternalKey> for MrMwSkipMapMemTable<InternalKey> {
     }
 }
 
-impl SkipMapMemTable<InternalKey, InternalKey, { MrMw }> for MrMwSkipMapMemTable<InternalKey> {
-    fn get_inner(&self) -> &SkipMap<InternalKey, Value, { MrMw }> {
+impl SkipMapMemTable<RawUserKey, RawUserKey, { MrMw }> for MrMwSkipMapMemTable<RawUserKey> {
+    fn get_inner(&self) -> &SkipMap<RawUserKey, Value, { MrMw }> {
         &self.inner
     }
 }
 
-impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrMwSkipMapMemTable<LSNKey<UK>> {
+impl<UK: DBKey> DBCommand<SeqNumKey<UK>, UK> for MrMwSkipMapMemTable<SeqNumKey<UK>> {
     fn range_get(
         &self,
-        key_start: &LSNKey<UK>,
-        key_end: &LSNKey<UK>,
+        key_start: &SeqNumKey<UK>,
+        key_end: &SeqNumKey<UK>,
         kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         debug_assert!(key_start.le(key_end));
-        debug_assert_eq!(key_start.lsn(), key_end.lsn());
+        debug_assert_eq!(key_start.seq_num(), key_end.seq_num());
 
         range_get_by_lsn_key(&self.inner, key_start, key_end, kvs)
     }
 
-    fn get(&self, key: &LSNKey<UK>) -> Result<Option<Value>> {
+    fn get(&self, key: &SeqNumKey<UK>) -> Result<Option<Value>> {
         get_by_lsn_key(&self.inner, key)
     }
 
-    fn set(&self, key: LSNKey<UK>, value: Value) -> Result<()> {
+    fn set(&self, key: SeqNumKey<UK>, value: Value) -> Result<()> {
         let key_mem_size = key.mem_size() as i64;
         let value_len = value.len() as i64;
         let mem_add = match self.inner.insert(key, value) {
@@ -121,7 +121,7 @@ impl<UK: MemKey> DBCommand<LSNKey<UK>, UK> for MrMwSkipMapMemTable<LSNKey<UK>> {
         Ok(())
     }
 
-    fn remove(&self, key: LSNKey<UK>) -> Result<()> {
+    fn remove(&self, key: SeqNumKey<UK>) -> Result<()> {
         let key_mem_size = key.mem_size();
 
         let mem_add = match self.inner.insert(key, Value::default()) {

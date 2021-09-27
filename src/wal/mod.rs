@@ -1,4 +1,4 @@
-use crate::db::key_types::MemKey;
+use crate::db::key_types::DBKey;
 use crate::db::options::WriteOptions;
 use crate::db::Value;
 use crate::memory::MemTable;
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub mod lsn_wal;
 pub mod simple_wal;
 
-pub trait WAL<SK: MemKey, UK: MemKey>: Sized + Sync + Send {
+pub trait WAL<SK: DBKey, UK: DBKey>: Sized + Sync + Send {
     /// Open the logs at `db_path` and load to memory tables
     fn open_and_load_logs(db_path: &str, mut_mem_table: &mut impl MemTable<SK, UK>)
         -> Result<Self>;
@@ -30,7 +30,7 @@ pub trait WAL<SK: MemKey, UK: MemKey>: Sized + Sync + Send {
     fn freeze_mut_log(&mut self) -> Result<()>;
 }
 
-pub trait TransactionWAL<SK: MemKey, UK: MemKey>: WAL<SK, UK> {
+pub trait TransactionWAL<SK: DBKey, UK: DBKey>: WAL<SK, UK> {
     fn start_transaction(&mut self) -> Result<()>;
     fn end_transaction(&mut self) -> Result<()>;
 }

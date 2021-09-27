@@ -1,5 +1,5 @@
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
-use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey, SequenceNumber};
 use crate::db::{DBCommand, Value};
 use crate::memory::{InternalKeyValueIterator, MemTable};
 use crate::Result;
@@ -9,37 +9,37 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::RwLock;
 
 /// Wrapper of `BTreeMap<String, String>`
-pub struct BTreeMemTable<SK: MemKey> {
+pub struct BTreeMemTable<SK: DBKey> {
     rw_lock: RwLock<()>,
     inner: UnsafeCell<BTreeMap<SK, Value>>,
     mem_usage: AtomicI64,
 }
 
-unsafe impl<SK: MemKey> Sync for BTreeMemTable<SK> {}
+unsafe impl<SK: DBKey> Sync for BTreeMemTable<SK> {}
 
-impl DBCommand<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
+impl DBCommand<RawUserKey, RawUserKey> for BTreeMemTable<RawUserKey> {
     fn range_get(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
-        kvs: &mut SrSwSkipMap<InternalKey, Value>,
+        key_start: &RawUserKey,
+        key_end: &RawUserKey,
+        kvs: &mut SrSwSkipMap<RawUserKey, Value>,
     ) {
         let _guard = self.rw_lock.read().unwrap();
         let inner_ptr = self.inner.get();
         unsafe {
             (*inner_ptr).get_key_value(key_end);
-            for (k, v) in (*inner_ptr).range::<InternalKey, _>(key_start..=key_end) {
+            for (k, v) in (*inner_ptr).range::<RawUserKey, _>(key_start..=key_end) {
                 kvs.insert(k.clone(), v.clone());
             }
         }
     }
 
-    fn get(&self, key: &InternalKey) -> Result<Option<Value>> {
+    fn get(&self, key: &RawUserKey) -> Result<Option<Value>> {
         let _lock = self.rw_lock.read().unwrap();
         Ok(unsafe { (*self.inner.get()).get(key).cloned() })
     }
 
-    fn set(&self, key: InternalKey, value: Value) -> Result<()> {
+    fn set(&self, key: RawUserKey, value: Value) -> Result<()> {
         let _lock = self.rw_lock.write().unwrap();
         let key_length = key.len();
         let value_length = value.len();
@@ -52,11 +52,11 @@ impl DBCommand<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
         Ok(())
     }
 
-    fn remove(&self, key: InternalKey) -> Result<()> {
+    fn remove(&self, key: RawUserKey) -> Result<()> {
         let _lock = self.rw_lock.write().unwrap();
         unsafe {
             let key_len = key.len();
-            let option = (*self.inner.get()).insert(key, InternalKey::default());
+            let option = (*self.inner.get()).insert(key, RawUserKey::default());
             let mem_add = match option {
                 Some(v) => -(v.len() as i64),
                 None => key_len as i64 * std::mem::size_of::<u8>() as i64,
@@ -68,7 +68,7 @@ impl DBCommand<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
     }
 }
 
-impl<K: MemKey> Default for BTreeMemTable<K> {
+impl<K: DBKey> Default for BTreeMemTable<K> {
     fn default() -> Self {
         BTreeMemTable {
             rw_lock: RwLock::default(),
@@ -78,20 +78,20 @@ impl<K: MemKey> Default for BTreeMemTable<K> {
     }
 }
 
-impl InternalKeyValueIterator for BTreeMemTable<InternalKey> {
+impl InternalKeyValueIterator for BTreeMemTable<RawUserKey> {
     fn len(&self) -> usize {
         let _lock = self.rw_lock.read().unwrap();
         unsafe { (*self.inner.get()).len() }
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&RawUserKey, &Value)> + '_> {
         let _lock = self.rw_lock.read().unwrap();
         Box::new(unsafe { (*self.inner.get()).iter() })
     }
 }
 
-impl MemTable<InternalKey, InternalKey> for BTreeMemTable<InternalKey> {
-    fn merge(&self, kvs: SrSwSkipMap<InternalKey, Value>, memory_size: u64) {
+impl MemTable<RawUserKey, RawUserKey> for BTreeMemTable<RawUserKey> {
+    fn merge(&self, kvs: SrSwSkipMap<RawUserKey, Value>, memory_size: u64) {
         let mut _lock_guard = self.rw_lock.write().unwrap();
         unsafe {
             (*self.inner.get()).extend(kvs.into_iter());

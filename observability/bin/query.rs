@@ -1,4 +1,4 @@
-use kvlite::db::key_types::InternalKey;
+use kvlite::db::key_types::RawUserKey;
 use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
@@ -7,17 +7,13 @@ use kvlite::wal::simple_wal::SimpleWriteAheadLog;
 use minitrace_jaeger::Reporter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-type DataBase = NoTransactionDB<
-    InternalKey,
-    InternalKey,
-    MrSwSkipMapMemTable<InternalKey>,
-    SimpleWriteAheadLog,
->;
+type DataBase =
+    NoTransactionDB<RawUserKey, RawUserKey, MrSwSkipMapMemTable<RawUserKey>, SimpleWriteAheadLog>;
 
 fn trace(db: DataBase) {
     let wo = WriteOptions { sync: false };
-    let key = InternalKey::from([1, 2, 3, 4, 5]);
-    let value = InternalKey::from([4, 5, 6, 7, 8]);
+    let key = RawUserKey::from([1, 2, 3, 4, 5]);
+    let value = RawUserKey::from([4, 5, 6, 7, 8]);
     db.set(&wo, key, value).unwrap();
 }
 

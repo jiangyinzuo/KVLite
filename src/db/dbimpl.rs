@@ -2,7 +2,7 @@ use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::{ReadWriteMode, SrSwSkipMap};
 use crate::collections::skip_list::MemoryAllocator;
 use crate::db::db_iter::DBIterator;
-use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey};
 use crate::db::options::WriteOptions;
 use crate::db::{Value, DB, WRITE_BUFFER_SIZE};
 use crate::memory::{MemTable, MemTableCloneIterator, SkipMapMemTable};
@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-pub struct NoTransactionDB<
-    SK: MemKey + 'static,
-    UK: MemKey + 'static,
+pub struct DBImpl<
+    SK: DBKey + 'static,
+    UK: DBKey + 'static,
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK> + 'static,
 > {
@@ -36,10 +36,10 @@ pub struct NoTransactionDB<
     background_task_write_to_level0_is_running: Arc<AtomicBool>,
 }
 
-impl<SK, UK, M, L> DB<SK, UK, M> for NoTransactionDB<SK, UK, M, L>
+impl<SK, UK, M, L> DB<SK, UK, M> for DBImpl<SK, UK, M, L>
 where
-    SK: MemKey + 'static,
-    UK: MemKey + From<SK>,
+    SK: DBKey + 'static,
+    UK: DBKey + From<SK>,
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK> + 'static,
 {
@@ -70,7 +70,7 @@ where
                 background_task_write_to_level0_is_running.clone(),
             );
 
-        Ok(NoTransactionDB {
+        Ok(DBImpl {
             db_path,
             wal,
             mut_mem_table: ArcSwap::new(Arc::new(mut_mem_table)),
@@ -128,13 +128,13 @@ where
     fn range_get(&self, key_start: &SK, key_end: &SK) -> Result<SrSwSkipMap<UK, Value>> {
         let mut skip_map = SrSwSkipMap::new();
         self.leveln_manager.range_query(
-            key_start.internal_key(),
-            key_end.internal_key(),
+            key_start.raw_user_key(),
+            key_end.raw_user_key(),
             &mut skip_map,
         );
         self.level0_manager.range_query(
-            key_start.internal_key(),
-            key_end.internal_key(),
+            key_start.raw_user_key(),
+            key_end.raw_user_key(),
             &mut skip_map,
         );
 
@@ -151,11 +151,10 @@ where
     }
 }
 
-impl<SK, UK, M, L: 'static> NoTransactionDB<SK, UK, M, L>
+impl<SK, UK, M, L: 'static> DBImpl<SK, UK, M, L>
 where
-    SK: MemKey + 'static,
-    UK: MemKey,
-
+    SK: DBKey + 'static,
+    UK: DBKey,
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK>,
 {
@@ -215,26 +214,26 @@ where
         }
 
         // query level0 sstables
-        let option = self.level0_manager.query(key.internal_key()).unwrap();
+        let option = self.level0_manager.query(key.raw_user_key()).unwrap();
         if option.is_some() {
             return Ok(option);
         }
 
         // query sstables
-        let option = self.leveln_manager.query(key.internal_key()).unwrap();
+        let option = self.leveln_manager.query(key.raw_user_key()).unwrap();
         Ok(option)
     }
 
     /// Get an iterator for all the valid key-value pairs in databases.
     pub fn get_db_iterator<const RW_MODE: ReadWriteMode>(&self) -> DBIterator
     where
-        M: SkipMapMemTable<InternalKey, InternalKey, { RW_MODE }>,
+        M: SkipMapMemTable<RawUserKey, RawUserKey, { RW_MODE }>,
     {
         let imm_mem = self.get_imm_mem_table();
-        let imm_mem_iterator = MemTableCloneIterator::new(imm_mem.clone());
+        let imm_mem_iterator = MemTableCloneIterator::new(imm_mem);
 
         let mut_mem = self.get_mut_mem_table();
-        let mut_mem_iterator = MemTableCloneIterator::new(mut_mem.clone());
+        let mut_mem_iterator = MemTableCloneIterator::new(mut_mem);
 
         let level0_iterator = self.level0_manager.get_level0_iterator();
         let leveln_iterators = self.leveln_manager.get_iterators();
@@ -247,10 +246,10 @@ where
     }
 }
 
-impl<SK, UK, M, L> Drop for NoTransactionDB<SK, UK, M, L>
+impl<SK, UK, M, L> Drop for DBImpl<SK, UK, M, L>
 where
-    SK: MemKey + 'static,
-    UK: MemKey,
+    SK: DBKey + 'static,
+    UK: DBKey,
     M: MemTable<SK, UK> + 'static,
     L: WAL<SK, UK> + 'static,
 {
@@ -267,8 +266,8 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::collections::skip_list::skipmap::ReadWriteMode::{MrMw, MrSw, SrSw};
-    use crate::db::key_types::InternalKey;
-    use crate::db::no_transaction_db::NoTransactionDB;
+    use crate::db::dbimpl::DBImpl;
+    use crate::db::key_types::RawUserKey;
     use crate::db::options::WriteOptions;
     use crate::db::{DB, MAX_LEVEL};
     use crate::memory::{
@@ -300,27 +299,27 @@ pub(crate) mod tests {
             // let path_buf = PathBuf::from(format!("test_command_{}", j));
             // let path = path_buf.as_path();
             info!("{:?}", path);
-            _test_command::<MrMwSkipMapMemTable<InternalKey>>(path, 5);
+            _test_command::<MrMwSkipMapMemTable<RawUserKey>>(path, 5);
             check(path);
             for i in 0..2 {
-                _test_command::<BTreeMemTable<InternalKey>>(path, i);
+                _test_command::<BTreeMemTable<RawUserKey>>(path, i);
                 check(path);
-                _test_command::<MutexSkipMapMemTable<InternalKey>>(path, i);
+                _test_command::<MutexSkipMapMemTable<RawUserKey>>(path, i);
                 check(path);
-                _test_command::<MrSwSkipMapMemTable<InternalKey>>(path, i);
+                _test_command::<MrSwSkipMapMemTable<RawUserKey>>(path, i);
                 check(path);
             }
-            _test_command::<MrMwSkipMapMemTable<InternalKey>>(path, 5);
+            _test_command::<MrMwSkipMapMemTable<RawUserKey>>(path, 5);
             check(path);
         }
     }
 
     fn query(
         db1: Arc<
-            NoTransactionDB<
-                InternalKey,
-                InternalKey,
-                impl MemTable<InternalKey, InternalKey>,
+            DBImpl<
+                RawUserKey,
+                RawUserKey,
+                impl MemTable<RawUserKey, RawUserKey>,
                 SimpleWriteAheadLog,
             >,
         >,
@@ -362,13 +361,12 @@ pub(crate) mod tests {
         }
     }
 
-    fn _test_command<M: 'static + MemTable<InternalKey, InternalKey>>(
+    fn _test_command<M: 'static + MemTable<RawUserKey, RawUserKey>>(
         path: &Path,
         value_prefix: u32,
     ) {
         let wo = WriteOptions { sync: false };
-        let db = NoTransactionDB::<InternalKey, InternalKey, M, SimpleWriteAheadLog>::open(path)
-            .unwrap();
+        let db = DBImpl::<RawUserKey, RawUserKey, M, SimpleWriteAheadLog>::open(path).unwrap();
         db.set(
             &wo,
             "hello".into(),
@@ -428,7 +426,7 @@ pub(crate) mod tests {
     }
 
     fn check(path: &Path) {
-        let min = InternalKey::default();
+        let min = RawUserKey::default();
 
         let db_path = path.to_str().unwrap();
         let leveln_manager = create_manager(db_path);
@@ -437,7 +435,7 @@ pub(crate) mod tests {
                 leveln_manager.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(i) });
             let read_guard = lock.read().unwrap();
             let mut last_min_key;
-            let mut last_max_key: &InternalKey = &min;
+            let mut last_max_key: &RawUserKey = &min;
             for (_, table) in read_guard.iter() {
                 let (min_key, max_key) = table.min_max_key();
                 assert!(last_max_key.lt(min_key));
@@ -457,10 +455,10 @@ pub(crate) mod tests {
             .tempdir()
             .unwrap();
         let path = temp_dir.path();
-        let db = NoTransactionDB::<
-            InternalKey,
-            InternalKey,
-            MrSwSkipMapMemTable<InternalKey>,
+        let db = DBImpl::<
+            RawUserKey,
+            RawUserKey,
+            MrSwSkipMapMemTable<RawUserKey>,
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
@@ -500,10 +498,10 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
 
-        let db = NoTransactionDB::<
-            InternalKey,
-            InternalKey,
-            MrSwSkipMapMemTable<InternalKey>,
+        let db = DBImpl::<
+            RawUserKey,
+            RawUserKey,
+            MrSwSkipMapMemTable<RawUserKey>,
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
@@ -518,13 +516,11 @@ pub(crate) mod tests {
         }
         drop(db);
 
-        let db = NoTransactionDB::<
-            InternalKey,
-            InternalKey,
-            BTreeMemTable<InternalKey>,
-            SimpleWriteAheadLog,
-        >::open(path)
-        .unwrap();
+        let db =
+            DBImpl::<RawUserKey, RawUserKey, BTreeMemTable<RawUserKey>, SimpleWriteAheadLog>::open(
+                path,
+            )
+            .unwrap();
 
         for i in 0..NUM_KEYS - 1 {
             assert_eq!(
@@ -546,15 +542,16 @@ pub(crate) mod tests {
         }
 
         drop(db);
-        let db = Arc::new(
-            NoTransactionDB::<
-                InternalKey,
-                InternalKey,
-                MrMwSkipMapMemTable<InternalKey>,
-                SimpleWriteAheadLog,
-            >::open(path)
-            .unwrap(),
-        );
+        let db =
+            Arc::new(
+                DBImpl::<
+                    RawUserKey,
+                    RawUserKey,
+                    MrMwSkipMapMemTable<RawUserKey>,
+                    SimpleWriteAheadLog,
+                >::open(path)
+                .unwrap(),
+            );
         for _ in 0..4 {
             test_log(db.clone());
         }
@@ -579,8 +576,8 @@ pub(crate) mod tests {
         }
     }
 
-    fn test_log<M: MemTable<InternalKey, InternalKey> + 'static>(
-        db: Arc<NoTransactionDB<InternalKey, InternalKey, M, SimpleWriteAheadLog>>,
+    fn test_log<M: MemTable<RawUserKey, RawUserKey> + 'static>(
+        db: Arc<DBImpl<RawUserKey, RawUserKey, M, SimpleWriteAheadLog>>,
     ) {
         for _ in 0..3 {
             for i in NUM_KEYS..NUM_KEYS + 30 {
@@ -615,10 +612,10 @@ pub(crate) mod tests {
             .unwrap();
         let path = temp_dir.path();
         let write_option = WriteOptions { sync: false };
-        let db = NoTransactionDB::<
-            InternalKey,
-            InternalKey,
-            MrMwSkipMapMemTable<InternalKey>,
+        let db = DBImpl::<
+            RawUserKey,
+            RawUserKey,
+            MrMwSkipMapMemTable<RawUserKey>,
             SimpleWriteAheadLog,
         >::open(path)
         .unwrap();
@@ -658,12 +655,7 @@ pub(crate) mod tests {
     }
 
     fn setup_iterate1(
-        db: &NoTransactionDB<
-            InternalKey,
-            InternalKey,
-            MrMwSkipMapMemTable<InternalKey>,
-            SimpleWriteAheadLog,
-        >,
+        db: &DBImpl<RawUserKey, RawUserKey, MrMwSkipMapMemTable<RawUserKey>, SimpleWriteAheadLog>,
         write_option: &WriteOptions,
     ) -> usize {
         for _ in 0..3 {
@@ -680,12 +672,7 @@ pub(crate) mod tests {
     }
 
     fn setup_iterate2(
-        db: &NoTransactionDB<
-            InternalKey,
-            InternalKey,
-            MrMwSkipMapMemTable<InternalKey>,
-            SimpleWriteAheadLog,
-        >,
+        db: &DBImpl<RawUserKey, RawUserKey, MrMwSkipMapMemTable<RawUserKey>, SimpleWriteAheadLog>,
         write_option: &WriteOptions,
     ) -> usize {
         for i in 0..1000000u128 {
@@ -708,10 +695,10 @@ pub(crate) mod tests {
                 .unwrap();
             let path = temp_dir.path();
             let write_option = WriteOptions { sync: false };
-            let db = NoTransactionDB::<
-                InternalKey,
-                InternalKey,
-                MrMwSkipMapMemTable<InternalKey>,
+            let db = DBImpl::<
+                RawUserKey,
+                RawUserKey,
+                MrMwSkipMapMemTable<RawUserKey>,
                 SimpleWriteAheadLog,
             >::open(path)
             .unwrap();

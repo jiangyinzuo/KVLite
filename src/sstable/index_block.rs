@@ -1,4 +1,4 @@
-use crate::db::key_types::InternalKey;
+use crate::db::key_types::RawUserKey;
 use crate::ioutils::{read_bytes_exact, read_u32};
 use crate::sstable::footer::Footer;
 use crate::Result;
@@ -6,9 +6,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Default)]
 pub struct IndexBlock {
-    pub(crate) min_key: InternalKey,
+    pub(crate) min_key: RawUserKey,
     /// offset, length, index_offset_uncompressed, max key length, max key
-    pub(crate) indexes: Vec<(u32, u32, u32, u32, InternalKey)>,
+    pub(crate) indexes: Vec<(u32, u32, u32, u32, RawUserKey)>,
 }
 
 impl IndexBlock {
@@ -17,7 +17,7 @@ impl IndexBlock {
         offset: u32,
         length: u32,
         index_offset_uncompressed: u32,
-        max_key: InternalKey,
+        max_key: RawUserKey,
     ) {
         debug_assert!(offset < index_offset_uncompressed);
         self.indexes.push((
@@ -78,12 +78,12 @@ impl IndexBlock {
     }
 
     /// Returns (offset, length)
-    pub(crate) fn may_contain_key(&self, key: &InternalKey) -> Option<(u32, u32, u32)> {
+    pub(crate) fn may_contain_key(&self, key: &RawUserKey) -> Option<(u32, u32, u32)> {
         self.binary_search(key)
     }
 
     /// Get maximum key from [SSTableIndex]
-    pub(crate) fn max_key(&self) -> &InternalKey {
+    pub(crate) fn max_key(&self) -> &RawUserKey {
         let last = self.indexes.last().unwrap_or_else(|| unsafe {
             std::hint::unreachable_unchecked();
         });
@@ -92,14 +92,14 @@ impl IndexBlock {
 
     /// Find the first data block whose max key is greater or equal to `key`
     /// Returns (offset, length, index_offset)
-    pub(crate) fn binary_search(&self, key: &InternalKey) -> Option<(u32, u32, u32)> {
+    pub(crate) fn binary_search(&self, key: &RawUserKey) -> Option<(u32, u32, u32)> {
         match self.indexes.binary_search_by(|probe| probe.4.cmp(key)) {
             Ok(i) | Err(i) => self.indexes.get(i).map(|e| (e.0, e.1, e.2)),
         }
     }
 
     /// Find all the first data block whose max key is greater or equal to `key`
-    pub(crate) fn find_all_ge(&self, key: &InternalKey) -> &[(u32, u32, u32, u32, InternalKey)] {
+    pub(crate) fn find_all_ge(&self, key: &RawUserKey) -> &[(u32, u32, u32, u32, RawUserKey)] {
         match self.indexes.binary_search_by(|probe| probe.4.cmp(key)) {
             Ok(i) | Err(i) => &self.indexes[i..],
         }

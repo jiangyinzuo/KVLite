@@ -2,7 +2,7 @@
 extern crate kvlite;
 extern crate test;
 
-use kvlite::db::key_types::InternalKey;
+use kvlite::db::key_types::RawUserKey;
 use kvlite::memory::{
     BTreeMemTable, MemTable, MrSwSkipMapMemTable, MutexSkipMapMemTable, SkipMapMemTable,
 };
@@ -73,7 +73,7 @@ fn mrsw_skip_map_mixed(b: &mut Bencher) {
     })
 }
 
-fn table_get_set(mem_table: Arc<impl MemTable<InternalKey, InternalKey>>) {
+fn table_get_set(mem_table: Arc<impl MemTable<RawUserKey, RawUserKey>>) {
     for i in 0..SIZE {
         mem_table
             .set(Vec::from(i.to_be_bytes()), Vec::from(i.to_be_bytes()))
@@ -88,7 +88,7 @@ fn table_get_set(mem_table: Arc<impl MemTable<InternalKey, InternalKey>>) {
     }
 }
 
-fn table_set(mem_table: &mut impl MemTable<InternalKey, InternalKey>) {
+fn table_set(mem_table: &mut impl MemTable<RawUserKey, RawUserKey>) {
     for i in 0..SIZE {
         mem_table
             .set(Vec::from(i.to_be_bytes()), Vec::from(i.to_be_bytes()))
@@ -101,7 +101,7 @@ fn table_set(mem_table: &mut impl MemTable<InternalKey, InternalKey>) {
     }
 }
 
-fn table_get(mem_table: &mut impl MemTable<InternalKey, InternalKey>) {
+fn table_get(mem_table: &mut impl MemTable<RawUserKey, RawUserKey>) {
     for _ in 0..10 {
         for j in 0..SIZE + 10 {
             mem_table.get(&Vec::from(j.to_be_bytes())).unwrap();

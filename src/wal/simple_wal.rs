@@ -1,4 +1,4 @@
-use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey};
 use crate::db::options::WriteOptions;
 use crate::db::Value;
 use crate::ioutils::{read_bytes_exact, read_u32, BufReaderWithPos};
@@ -12,10 +12,10 @@ pub struct SimpleWriteAheadLog {
     inner: WALInner,
 }
 
-impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
+impl<UK: DBKey> WAL<RawUserKey, UK> for SimpleWriteAheadLog {
     fn open_and_load_logs(
         db_path: &str,
-        mut_mem_table: &mut impl MemTable<InternalKey, UK>,
+        mut_mem_table: &mut impl MemTable<RawUserKey, UK>,
     ) -> Result<SimpleWriteAheadLog> {
         let wal = SimpleWriteAheadLog {
             inner: WALInner::open_logs(db_path)?,
@@ -25,7 +25,7 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
         Ok(wal)
     }
 
-    fn load_log(file: &File, mem_table: &mut impl MemTable<InternalKey, UK>) -> Result<()> {
+    fn load_log(file: &File, mem_table: &mut impl MemTable<RawUserKey, UK>) -> Result<()> {
         let mut reader = BufReaderWithPos::new(file)?;
         reader.seek(SeekFrom::Start(0))?;
         while let Ok(key_length) = read_u32(&mut reader) {
@@ -45,7 +45,7 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
     fn append(
         &mut self,
         write_options: &WriteOptions,
-        key: &InternalKey,
+        key: &RawUserKey,
         value: Option<&Value>,
     ) -> Result<()> {
         let key_length: [u8; 4] = (key.len() as u32).to_le_bytes();
@@ -80,7 +80,7 @@ impl<UK: MemKey> WAL<InternalKey, UK> for SimpleWriteAheadLog {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::key_types::InternalKey;
+    use crate::db::key_types::RawUserKey;
     use crate::db::options::WriteOptions;
     use crate::memory::{InternalKeyValueIterator, MutexSkipMapMemTable, SkipMapMemTable};
     use crate::wal::simple_wal::SimpleWriteAheadLog;
@@ -92,7 +92,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().to_str().unwrap();
 
-        let mut mut_mem = MutexSkipMapMemTable::<InternalKey>::default();
+        let mut mut_mem = MutexSkipMapMemTable::<RawUserKey>::default();
 
         let mut wal: SimpleWriteAheadLog =
             SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
@@ -101,7 +101,7 @@ mod tests {
         for i in 1..4 {
             mut_mem = MutexSkipMapMemTable::default();
             for j in 0..100 {
-                <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
+                <SimpleWriteAheadLog as WAL<RawUserKey, RawUserKey>>::append(
                     &mut wal,
                     &wo,
                     &format!("{}key{}", i, j).into_bytes(),
@@ -109,7 +109,7 @@ mod tests {
                 )
                 .unwrap();
                 if (j & 1) == 1 {
-                    <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::append(
+                    <SimpleWriteAheadLog as WAL<RawUserKey, RawUserKey>>::append(
                         &mut wal,
                         &wo,
                         &format!("{}key{}", i, j).into_bytes(),
@@ -121,8 +121,8 @@ mod tests {
             wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
             assert_eq!(100 * i, mut_mem.len());
         }
-        <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::freeze_mut_log(&mut wal).unwrap();
-        <SimpleWriteAheadLog as WAL<InternalKey, InternalKey>>::clear_imm_log(&mut wal).unwrap();
+        <SimpleWriteAheadLog as WAL<RawUserKey, RawUserKey>>::freeze_mut_log(&mut wal).unwrap();
+        <SimpleWriteAheadLog as WAL<RawUserKey, RawUserKey>>::clear_imm_log(&mut wal).unwrap();
         mut_mem = MutexSkipMapMemTable::default();
         wal = SimpleWriteAheadLog::open_and_load_logs(path, &mut mut_mem).unwrap();
         assert!(mut_mem.is_empty());

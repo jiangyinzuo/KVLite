@@ -1,5 +1,5 @@
-use kvlite::db::key_types::InternalKey;
-use kvlite::db::no_transaction_db::NoTransactionDB;
+use kvlite::db::dbimpl::DBImpl;
+use kvlite::db::key_types::RawUserKey;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
 use kvlite::memory::MutexSkipMapMemTable;
@@ -8,10 +8,10 @@ use tempfile::TempDir;
 
 fn main() {
     let temp_dir = TempDir::new().unwrap();
-    let db = NoTransactionDB::<
-        InternalKey,
-        InternalKey,
-        MutexSkipMapMemTable<InternalKey>,
+    let db = DBImpl::<
+        RawUserKey,
+        RawUserKey,
+        MutexSkipMapMemTable<RawUserKey>,
         SimpleWriteAheadLog,
     >::open(temp_dir.path())
     .unwrap();
@@ -20,7 +20,7 @@ fn main() {
     let value = Vec::from("value1");
     db.set(&write_option, hello.clone(), value).unwrap();
 
-    println!("{:?}", db.get(&"hello".into()).unwrap()); // Some("value1")
+    println!("{:?}", db.get(&"hello".into()).unwrap());
     db.remove(&write_option, hello).unwrap();
     assert!(db.get(&"hello".into()).unwrap().is_none());
 }

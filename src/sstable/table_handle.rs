@@ -1,7 +1,7 @@
 use crate::cache::ShardLRUCache;
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::db::db_iter::InternalKeyValue;
-use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey};
 use crate::db::{max_level_shift, Value, WRITE_BUFFER_SIZE};
 use crate::env::file_system::{FileSystem, SequentialReadableFile};
 use crate::filter::{DefaultBloomFilter, SEED};
@@ -73,7 +73,7 @@ impl TableWriteHandle {
         Ok(())
     }
 
-    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(InternalKey, Value)>) -> crate::Result<()> {
+    pub fn write_sstable_from_vec(&mut self, kvs: Vec<(RawUserKey, Value)>) -> crate::Result<()> {
         // write Data Blocks
         let length = kvs.len();
         for (i, (k, v)) in kvs.into_iter().enumerate() {
@@ -112,13 +112,13 @@ impl TableWriteHandle {
     }
 
     #[inline]
-    pub fn take_min_key(&mut self) -> InternalKey {
+    pub fn take_min_key(&mut self) -> RawUserKey {
         debug_assert_ne!(self.writer.index_block.min_key.len(), 0);
         std::mem::take(&mut self.writer.index_block.min_key)
     }
 
     #[inline]
-    pub fn max_key(&self) -> &InternalKey {
+    pub fn max_key(&self) -> &RawUserKey {
         self.writer.max_key()
     }
 }
@@ -152,7 +152,7 @@ impl TableWriter {
         }
     }
 
-    fn add_key_value(&mut self, mut k: InternalKey, mut v: Value) {
+    fn add_key_value(&mut self, mut k: RawUserKey, mut v: Value) {
         debug_assert!(!k.is_empty(), "attempt to write empty key");
         let h = murmur_hash(&k, SEED);
         self.filter.add(h);
@@ -181,7 +181,7 @@ impl TableWriter {
         }
     }
 
-    fn flush_data(&mut self, max_key: InternalKey) {
+    fn flush_data(&mut self, max_key: RawUserKey) {
         let index_offset_uncompressed = self.writer.pos as u32 + self.data.len() as u32;
         self.data.append(&mut self.record_offsets);
 
@@ -227,7 +227,7 @@ impl TableWriter {
     }
 
     #[inline]
-    pub(crate) fn max_key(&self) -> &InternalKey {
+    pub(crate) fn max_key(&self) -> &RawUserKey {
         self.index_block.max_key()
     }
 }
@@ -239,8 +239,8 @@ pub struct TableReadHandle {
     table_key: u64,
     hash: u32,
     status: RwLock<TableStatus>,
-    min_key: InternalKey,
-    max_key: InternalKey,
+    min_key: RawUserKey,
+    max_key: RawUserKey,
     kv_total: u32,
     file_size: u64,
 }
@@ -306,7 +306,7 @@ impl TableReadHandle {
         table_write_handle.rename();
 
         let min_key = table_write_handle.take_min_key();
-        let max_key: InternalKey = table_write_handle.max_key().clone();
+        let max_key: RawUserKey = table_write_handle.max_key().clone();
 
         let table_id = table_write_handle.table_id;
         let level = table_write_handle.level;
@@ -368,7 +368,7 @@ impl TableReadHandle {
     /// Query value by `key` with `cache`
     pub fn query_sstable_with_cache(
         &self,
-        #[allow(clippy::ptr_arg)] key: &InternalKey,
+        #[allow(clippy::ptr_arg)] key: &RawUserKey,
         cache: &mut TableCache,
     ) -> Option<Value> {
         let h = murmur_hash(key, SEED);
@@ -393,7 +393,7 @@ impl TableReadHandle {
     /// Query value by `key` and insert cache into `lru_cache`.
     pub fn query_sstable(
         &self,
-        #[allow(clippy::ptr_arg)] key: &InternalKey,
+        #[allow(clippy::ptr_arg)] key: &RawUserKey,
         lru_cache: &Arc<ShardLRUCache<u64, TableCache>>,
     ) -> Option<Value> {
         let mut buf_reader = self.create_buf_reader_with_pos();
@@ -428,10 +428,10 @@ impl TableReadHandle {
 
     /// Query all the key-value pairs in [`key_start`, `key_end`] and insert them into `kvs`
     /// Return whether table_read_handle is overlapping with [`key_start`, `key_end`]
-    pub fn range_query<UK: MemKey>(
+    pub fn range_query<UK: DBKey>(
         &self,
-        #[allow(clippy::ptr_arg)] key_start: &InternalKey,
-        #[allow(clippy::ptr_arg)] key_end: &InternalKey,
+        #[allow(clippy::ptr_arg)] key_start: &RawUserKey,
+        #[allow(clippy::ptr_arg)] key_end: &RawUserKey,
         kvs: &mut SrSwSkipMap<UK, Value>,
     ) -> bool {
         if self.is_overlapping(key_start, key_end) {
@@ -477,17 +477,17 @@ impl TableReadHandle {
     }
 
     #[inline]
-    pub fn min_max_key(&self) -> (&InternalKey, &InternalKey) {
+    pub fn min_max_key(&self) -> (&RawUserKey, &RawUserKey) {
         (&self.min_key, &self.max_key)
     }
 
     #[inline]
-    pub fn min_key(&self) -> &InternalKey {
+    pub fn min_key(&self) -> &RawUserKey {
         &self.min_key
     }
 
     #[inline]
-    pub fn max_key(&self) -> &InternalKey {
+    pub fn max_key(&self) -> &RawUserKey {
         &self.max_key
     }
 
@@ -496,7 +496,7 @@ impl TableReadHandle {
     ///   |---|       |--|     |---|    |------|
     ///```
     #[allow(clippy::ptr_arg)]
-    pub fn is_overlapping(&self, min_key: &InternalKey, max_key: &InternalKey) -> bool {
+    pub fn is_overlapping(&self, min_key: &RawUserKey, max_key: &RawUserKey) -> bool {
         self.min_key.le(min_key) && min_key.le(&self.max_key)
             || self.min_key.le(max_key) && max_key.le(&self.max_key)
             || min_key.le(&self.min_key) && self.max_key.le(max_key)
@@ -526,7 +526,7 @@ pub struct TableIterator {
     data_block: DataBlockIter,
     cur_data_block_idx: usize,
     #[cfg(debug_assertions)]
-    prev_key: InternalKey,
+    prev_key: RawUserKey,
 }
 
 impl TableIterator {
@@ -545,7 +545,7 @@ impl TableIterator {
             data_block: data_block.into_iter(),
             cur_data_block_idx: 0,
             #[cfg(debug_assertions)]
-            prev_key: InternalKey::default(),
+            prev_key: RawUserKey::default(),
         }
     }
 

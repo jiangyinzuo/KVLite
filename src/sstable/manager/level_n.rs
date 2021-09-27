@@ -2,7 +2,7 @@ use crate::cache::{LRUEntry, ShardLRUCache};
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
 use crate::compaction::level_n::start_compact;
 use crate::db::db_iter::InternalKeyValue;
-use crate::db::key_types::{InternalKey, MemKey};
+use crate::db::key_types::{DBKey, RawUserKey};
 use crate::db::{Value, MAX_LEVEL};
 use crate::sstable::manager::level_iter::LevelNIterator;
 use crate::sstable::table_cache::TableCache;
@@ -21,7 +21,7 @@ pub struct LevelNManager {
     db_path: String,
     /// map: <max key, tableID>
     level_tables:
-        [std::sync::RwLock<BTreeMap<(InternalKey, TableID), Arc<TableReadHandle>>>; MAX_LEVEL],
+        [std::sync::RwLock<BTreeMap<(RawUserKey, TableID), Arc<TableReadHandle>>>; MAX_LEVEL],
     level_sizes: [AtomicU64; MAX_LEVEL],
     next_table_id: [AtomicU64; MAX_LEVEL],
 
@@ -168,7 +168,7 @@ impl LevelNManager {
     pub fn get_level_tables_lock(
         &self,
         level: NonZeroUsize,
-    ) -> &std::sync::RwLock<BTreeMap<(InternalKey, u64), Arc<TableReadHandle>>> {
+    ) -> &std::sync::RwLock<BTreeMap<(RawUserKey, u64), Arc<TableReadHandle>>> {
         let lock = self.level_tables.get(level.get() - 1).unwrap();
         lock
     }
@@ -185,10 +185,10 @@ impl LevelNManager {
             .collect()
     }
 
-    pub fn range_query<UK: MemKey>(
+    pub fn range_query<UK: DBKey>(
         &self,
-        key_start: &InternalKey,
-        key_end: &InternalKey,
+        key_start: &RawUserKey,
+        key_end: &RawUserKey,
         kvs: &mut SrSwSkipMap<UK, Value>,
     ) {
         for level in (1..=MAX_LEVEL).rev() {
@@ -203,7 +203,7 @@ impl LevelNManager {
         }
     }
 
-    pub fn query(&self, key: &InternalKey) -> Result<Option<Value>> {
+    pub fn query(&self, key: &RawUserKey) -> Result<Option<Value>> {
         for level in 1..=MAX_LEVEL {
             let tables_lock =
                 self.get_level_tables_lock(unsafe { NonZeroUsize::new_unchecked(level) });
@@ -309,8 +309,8 @@ impl LevelNManager {
     pub fn get_overlap_tables(
         &self,
         level: NonZeroUsize,
-        min_key: &InternalKey,
-        max_key: &InternalKey,
+        min_key: &RawUserKey,
+        max_key: &RawUserKey,
     ) -> VecDeque<Arc<TableReadHandle>> {
         let tables_lock = self.get_level_tables_lock(level);
         let tables_guard = tables_lock.read().unwrap();

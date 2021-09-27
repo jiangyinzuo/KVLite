@@ -4,19 +4,16 @@ use core::marker::{Send, Sync};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 
-/// Key stored in memory table
-pub trait MemKey:
-    Ord + Send + Clone + Sync + Default + Into<InternalKey> + From<InternalKey>
-{
-    fn internal_key(&self) -> &InternalKey;
+pub trait DBKey: Ord + Send + Clone + Sync + Default + Into<RawUserKey> + From<RawUserKey> {
+    fn raw_user_key(&self) -> &RawUserKey;
     fn mem_size(&self) -> usize;
 }
 
 /// Raw user key stored in disk
-pub type InternalKey = Vec<u8>;
+pub type RawUserKey = Vec<u8>;
 
-impl MemKey for InternalKey {
-    fn internal_key(&self) -> &InternalKey {
+impl DBKey for RawUserKey {
+    fn raw_user_key(&self) -> &RawUserKey {
         self
     }
 
@@ -25,8 +22,8 @@ impl MemKey for InternalKey {
     }
 }
 
-impl<K: MemKey> From<LSNKey<K>> for InternalKey {
-    fn from(lsn_key: LSNKey<K>) -> Self {
+impl<K: DBKey> From<SeqNumKey<K>> for RawUserKey {
+    fn from(lsn_key: SeqNumKey<K>) -> Self {
         lsn_key.user_key.into()
     }
 }
@@ -50,28 +47,28 @@ impl PartialEq for I32UserKey {
 
 impl Eq for I32UserKey {}
 
-impl From<I32UserKey> for InternalKey {
+impl From<I32UserKey> for RawUserKey {
     fn from(key: I32UserKey) -> Self {
         key.1
     }
 }
 
-impl From<LSNKey<I32UserKey>> for I32UserKey {
-    fn from(lsn_key: LSNKey<I32UserKey>) -> Self {
-        lsn_key.user_key
+impl From<SeqNumKey<I32UserKey>> for I32UserKey {
+    fn from(seq_num_key: SeqNumKey<I32UserKey>) -> Self {
+        seq_num_key.user_key
     }
 }
 
-impl From<InternalKey> for I32UserKey {
-    fn from(ik: InternalKey) -> Self {
+impl From<RawUserKey> for I32UserKey {
+    fn from(ik: RawUserKey) -> Self {
         let a: [u8; 4] = ik.clone().try_into().unwrap();
         let num = i32::from_le_bytes(a);
         I32UserKey(num, ik)
     }
 }
 
-impl MemKey for I32UserKey {
-    fn internal_key(&self) -> &InternalKey {
+impl DBKey for I32UserKey {
+    fn raw_user_key(&self) -> &RawUserKey {
         &self.1
     }
 
@@ -80,22 +77,22 @@ impl MemKey for I32UserKey {
     }
 }
 
-pub type LSN = u64;
+pub type SequenceNumber = u64;
 
 /// User key with log sequence number(LSN)
 #[derive(PartialEq, Eq, Default, Clone)]
-pub struct LSNKey<UK: MemKey> {
+pub struct SeqNumKey<UK: DBKey> {
     user_key: UK,
-    lsn: LSN,
+    seq_num: SequenceNumber,
 }
 
-impl<K: MemKey> LSNKey<K> {
-    pub fn new(user_key: K, lsn: LSN) -> LSNKey<K> {
-        LSNKey { user_key, lsn }
+impl<K: DBKey> SeqNumKey<K> {
+    pub fn new(user_key: K, seq_num: SequenceNumber) -> SeqNumKey<K> {
+        SeqNumKey { user_key, seq_num }
     }
 
-    pub fn upper_bound(lsn_key: &Self) -> Self {
-        LSNKey::new(lsn_key.user_key.clone(), LSN::MAX)
+    pub fn upper_bound(seq_num_key: &Self) -> Self {
+        SeqNumKey::new(seq_num_key.user_key.clone(), SequenceNumber::MAX)
     }
 
     pub fn user_key(&self) -> &K {
@@ -103,45 +100,50 @@ impl<K: MemKey> LSNKey<K> {
     }
 
     #[inline]
-    pub fn lsn(&self) -> LSN {
-        self.lsn
+    pub fn seq_num(&self) -> SequenceNumber {
+        self.seq_num
+    }
+
+    #[inline]
+    pub fn set_seq_num(&mut self, seq_num: SequenceNumber) {
+        self.seq_num = seq_num;
     }
 }
 
-impl<K: MemKey> PartialOrd for LSNKey<K> {
+impl<K: DBKey> PartialOrd for SeqNumKey<K> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         let user_key_order = self.user_key.partial_cmp(&other.user_key)?;
         match user_key_order {
-            Ordering::Equal => self.lsn.partial_cmp(&other.lsn),
+            Ordering::Equal => self.seq_num.partial_cmp(&other.seq_num),
             o => Some(o),
         }
     }
 }
 
-impl<K: MemKey> Ord for LSNKey<K> {
+impl<K: DBKey> Ord for SeqNumKey<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.user_key.cmp(&other.user_key) {
-            Ordering::Equal => self.lsn.cmp(&other.lsn),
+            Ordering::Equal => self.seq_num.cmp(&other.seq_num),
             o => o,
         }
     }
 }
 
-impl<K: MemKey> From<InternalKey> for LSNKey<K> {
-    fn from(ik: InternalKey) -> LSNKey<K> {
-        LSNKey {
+impl<K: DBKey> From<RawUserKey> for SeqNumKey<K> {
+    fn from(ik: RawUserKey) -> SeqNumKey<K> {
+        SeqNumKey {
             user_key: K::from(ik),
-            lsn: 0,
+            seq_num: 0,
         }
     }
 }
 
-impl<K: MemKey> MemKey for LSNKey<K> {
-    fn internal_key(&self) -> &InternalKey {
-        self.user_key.internal_key()
+impl<K: DBKey> DBKey for SeqNumKey<K> {
+    fn raw_user_key(&self) -> &RawUserKey {
+        self.user_key.raw_user_key()
     }
 
     fn mem_size(&self) -> usize {
-        self.user_key.mem_size() + std::mem::size_of::<LSN>()
+        self.user_key.mem_size() + std::mem::size_of::<SequenceNumber>()
     }
 }

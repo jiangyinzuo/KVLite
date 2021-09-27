@@ -1,15 +1,15 @@
 use crate::collections::skip_list::skipmap::SrSwSkipMap;
-use crate::db::key_types::MemKey;
+use crate::db::key_types::DBKey;
 use crate::db::options::WriteOptions;
 use crate::memory::MemTable;
 use crate::Result;
 use std::path::Path;
 
 pub mod db_iter;
+pub mod dbimpl;
 pub mod key_types;
-pub mod no_transaction_db;
 pub mod options;
-pub mod transaction;
+pub mod write_batch_db;
 
 pub const WRITE_BUFFER_SIZE: u64 = 4 * 1024 * 1024;
 pub const MAX_LEVEL: usize = 7;
@@ -26,7 +26,7 @@ pub(crate) const fn max_level_shift() -> usize {
 
 pub type Value = Vec<u8>;
 
-pub trait DBCommand<SK: MemKey, UK: MemKey> {
+pub trait DBCommand<SK: DBKey, UK: DBKey> {
     fn range_get(&self, key_start: &SK, key_end: &SK, kvs: &mut SrSwSkipMap<UK, Value>)
     where
         SK: Into<UK>,
@@ -36,7 +36,7 @@ pub trait DBCommand<SK: MemKey, UK: MemKey> {
     fn remove(&self, key: SK) -> crate::Result<()>;
 }
 
-pub trait DB<SK: MemKey, UK: MemKey, M: MemTable<SK, UK>>: Sized {
+pub trait DB<SK: DBKey, UK: DBKey, M: MemTable<SK, UK>>: Sized {
     fn open(db_path: impl AsRef<Path>) -> Result<Self>;
     fn get(&self, key: &SK) -> Result<Option<Value>>;
     fn set(&self, write_options: &WriteOptions, key: SK, value: Value) -> Result<()>;

@@ -635,6 +635,15 @@ impl<SK: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> SkipMap<SK, V,
         }
     }
 
+    pub fn iter_mut<'a>(&mut self) -> IterMut<'a, SK, V, RW_MODE> {
+        unsafe {
+            IterMut {
+                node: (*self.dummy_head).get_next(0),
+                _marker: PhantomData,
+            }
+        }
+    }
+
     /// Get first key-value pair.
     ///
     /// # Examples
@@ -729,6 +738,29 @@ impl<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
             unsafe {
                 self.node = (*self.node).get_next(0);
                 Some((&(*n).entry.key, &(*n).entry.value))
+            }
+        }
+    }
+}
+
+pub struct IterMut<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> {
+    node: *mut Node<K, V, RW_MODE>,
+    _marker: PhantomData<&'a mut Node<K, V, RW_MODE>>,
+}
+
+impl<'a, K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> Iterator
+    for IterMut<'a, K, V, RW_MODE>
+{
+    type Item = (&'a mut K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.node.is_null() {
+            None
+        } else {
+            let n = self.node;
+            unsafe {
+                self.node = (*self.node).get_next(0);
+                Some((&mut (*n).entry.key, &mut (*n).entry.value))
             }
         }
     }
@@ -857,7 +889,7 @@ impl<K: Ord + Default, V: Default, const RW_MODE: ReadWriteMode> IntoIterator
 mod tests {
     use crate::collections::skip_list::skipmap::ReadWriteMode::{MrSw, SrSw};
     use crate::collections::skip_list::skipmap::SrSwSkipMap;
-    use crate::db::no_transaction_db::tests::create_random_map;
+    use crate::db::dbimpl::tests::create_random_map;
     use rand::Rng;
 
     #[test]

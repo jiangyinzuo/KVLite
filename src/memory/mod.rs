@@ -1,14 +1,13 @@
 //! Memory table
 
+use crate::collections::skip_list::skipmap::{Node, ReadWriteMode, SkipMap, SrSwSkipMap};
+use crate::collections::skip_list::MemoryAllocator;
+use crate::db::key_types::{DBKey, RawUserKey, SequenceNumber};
+use crate::db::{DBCommand, Value};
 pub use btree_mem_table::BTreeMemTable;
 pub use mrmw_skip_map_mem_table::MrMwSkipMapMemTable;
 pub use mrsw_skip_map_mem_table::MrSwSkipMapMemTable;
 pub use skip_map_mem_table::MutexSkipMapMemTable;
-
-use crate::collections::skip_list::skipmap::{Node, ReadWriteMode, SkipMap, SrSwSkipMap};
-use crate::collections::skip_list::MemoryAllocator;
-use crate::db::key_types::{InternalKey, MemKey};
-use crate::db::{DBCommand, Value};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -18,14 +17,14 @@ mod mrsw_skip_map_mem_table;
 mod skip_map_mem_table;
 
 /// Table in Memory
-pub trait MemTable<SK: MemKey, UK: MemKey>:
+pub trait MemTable<SK: DBKey, UK: DBKey>:
     DBCommand<SK, UK> + Default + InternalKeyValueIterator + Send + Sync + Sized
 {
     fn merge(&self, kvs: SrSwSkipMap<SK, Value>, memory_size: u64);
     fn approximate_memory_usage(&self) -> u64;
 }
 
-pub trait SkipMapMemTable<SK: MemKey, UK: MemKey, const RW_MODE: ReadWriteMode>:
+pub trait SkipMapMemTable<SK: DBKey, UK: DBKey, const RW_MODE: ReadWriteMode>:
     MemTable<SK, UK> + 'static
 {
     fn get_inner(&self) -> &SkipMap<SK, Value, RW_MODE>;
@@ -33,8 +32,8 @@ pub trait SkipMapMemTable<SK: MemKey, UK: MemKey, const RW_MODE: ReadWriteMode>:
 
 /// Used for iterate all the key-value pairs in database.
 pub struct MemTableCloneIterator<
-    SK: MemKey,
-    UK: MemKey,
+    SK: DBKey,
+    UK: DBKey,
     M: SkipMapMemTable<SK, UK, { RW_MODE }>,
     const RW_MODE: ReadWriteMode,
 > {
@@ -44,8 +43,8 @@ pub struct MemTableCloneIterator<
 }
 
 impl<
-        SK: MemKey,
-        UK: MemKey,
+        SK: DBKey,
+        UK: DBKey,
         M: SkipMapMemTable<SK, UK, { RW_MODE }>,
         const RW_MODE: ReadWriteMode,
     > MemTableCloneIterator<SK, UK, M, { RW_MODE }>
@@ -61,8 +60,8 @@ impl<
 }
 
 impl<
-        SK: MemKey,
-        UK: MemKey,
+        SK: DBKey,
+        UK: DBKey,
         M: SkipMapMemTable<SK, UK, { RW_MODE }>,
         const RW_MODE: ReadWriteMode,
     > Iterator for MemTableCloneIterator<SK, UK, M, { RW_MODE }>
@@ -92,15 +91,15 @@ pub trait InternalKeyValueIterator {
     }
 
     /// # Note: InternalKey should not be duplicated.
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)> + '_>;
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&RawUserKey, &Value)> + '_>;
 }
 
-impl InternalKeyValueIterator for SrSwSkipMap<InternalKey, Value> {
+impl InternalKeyValueIterator for SrSwSkipMap<RawUserKey, Value> {
     fn len(&self) -> usize {
         self.len()
     }
 
-    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&InternalKey, &Value)>> {
+    fn kv_iter(&self) -> Box<dyn Iterator<Item = (&RawUserKey, &Value)>> {
         Box::new(
             self.iter_ptr()
                 .map(|node| unsafe { (&(*node).entry.key, &(*node).entry.value) }),

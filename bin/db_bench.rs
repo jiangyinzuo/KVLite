@@ -1,5 +1,5 @@
-use kvlite::db::key_types::InternalKey;
-use kvlite::db::no_transaction_db::NoTransactionDB;
+use kvlite::db::dbimpl::DBImpl;
+use kvlite::db::key_types::RawUserKey;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
 use kvlite::memory::{MrMwSkipMapMemTable, MrSwSkipMapMemTable};
@@ -37,12 +37,8 @@ fn print_arguments() {
     println!("RawSize: {} MB (estimated)", RAW_SIZE);
 }
 
-type DataBase = NoTransactionDB<
-    InternalKey,
-    InternalKey,
-    MrMwSkipMapMemTable<InternalKey>,
-    SimpleWriteAheadLog,
->;
+type DataBase =
+    DBImpl<RawUserKey, RawUserKey, MrMwSkipMapMemTable<RawUserKey>, SimpleWriteAheadLog>;
 
 struct BenchMark {
     // drop `db` before `_temp_dir`

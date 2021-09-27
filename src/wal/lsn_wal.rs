@@ -35,7 +35,7 @@
 //! | value3            |
 //! +-------------------+
 //! ```
-use crate::db::key_types::{InternalKey, LSNKey, MemKey, LSN};
+use crate::db::key_types::{DBKey, RawUserKey, SeqNumKey, SequenceNumber};
 use crate::db::options::WriteOptions;
 use crate::db::Value;
 use crate::error::KVLiteError;
@@ -53,10 +53,10 @@ pub struct LSNWriteAheadLog {
     inner: WALInner,
 }
 
-impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
+impl<UK: DBKey> WAL<SeqNumKey<UK>, UK> for LSNWriteAheadLog {
     fn open_and_load_logs(
         db_path: &str,
-        mut_mem_table: &mut impl MemTable<LSNKey<UK>, UK>,
+        mut_mem_table: &mut impl MemTable<SeqNumKey<UK>, UK>,
     ) -> Result<Self> {
         let wal = LSNWriteAheadLog {
             inner: WALInner::open_logs(db_path)?,
@@ -66,7 +66,7 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
         Ok(wal)
     }
 
-    fn load_log(file: &File, mem_table: &mut impl MemTable<LSNKey<UK>, UK>) -> Result<()> {
+    fn load_log(file: &File, mem_table: &mut impl MemTable<SeqNumKey<UK>, UK>) -> Result<()> {
         let mut reader = BufReaderWithPos::new(file)?;
         reader.seek(SeekFrom::Start(0))?;
         while let Ok(lsn) = read_u64(&mut reader) {
@@ -83,8 +83,8 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
                 lsn => {
                     let key_length = read_u64(&mut reader)?;
                     let value_length = read_u64(&mut reader)?;
-                    let key: InternalKey = read_bytes_exact(&mut reader, key_length)?;
-                    let lsn_key = LSNKey::new(UK::from(key), lsn);
+                    let key: RawUserKey = read_bytes_exact(&mut reader, key_length)?;
+                    let lsn_key = SeqNumKey::new(UK::from(key), lsn);
                     if value_length > 0 {
                         let value = read_bytes_exact(&mut reader, value_length)?;
                         mem_table.set(lsn_key, value)?;
@@ -101,10 +101,10 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
     fn append(
         &mut self,
         write_options: &WriteOptions,
-        key: &LSNKey<UK>,
+        key: &SeqNumKey<UK>,
         value: Option<&Value>,
     ) -> Result<()> {
-        let internal_key = key.internal_key();
+        let internal_key = key.raw_user_key();
         let key_length: [u8; 4] = (internal_key.len() as u32).to_le_bytes();
         self.inner.log1.write_all(&key_length)?;
         match value {
@@ -135,7 +135,7 @@ impl<UK: MemKey> WAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
     }
 }
 
-impl<UK: MemKey> TransactionWAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
+impl<UK: DBKey> TransactionWAL<SeqNumKey<UK>, UK> for LSNWriteAheadLog {
     fn start_transaction(&mut self) -> Result<()> {
         let bytes = START_TRANSACTION.to_le_bytes();
         self.inner.log1.write_all(&bytes)?;
@@ -150,10 +150,10 @@ impl<UK: MemKey> TransactionWAL<LSNKey<UK>, UK> for LSNWriteAheadLog {
 }
 
 impl LSNWriteAheadLog {
-    fn load_kvs_in_lsn<UK: MemKey>(
-        lsn: LSN,
+    fn load_kvs_in_lsn<UK: DBKey>(
+        lsn: SequenceNumber,
         reader: &mut BufReaderWithPos<&File>,
-        mem_table: &mut impl MemTable<LSNKey<UK>, UK>,
+        mem_table: &mut impl MemTable<SeqNumKey<UK>, UK>,
     ) -> Result<()> {
         while let Ok(key_length) = read_u64(reader) {
             match key_length {
@@ -161,8 +161,8 @@ impl LSNWriteAheadLog {
                 START_TRANSACTION => return Err(KVLiteError::Custom(String::from("invalid log"))),
                 key_length => {
                     let value_length = read_u64(reader)?;
-                    let key: InternalKey = read_bytes_exact(reader, key_length)?;
-                    let lsn_key = LSNKey::new(UK::from(key), lsn);
+                    let key: RawUserKey = read_bytes_exact(reader, key_length)?;
+                    let lsn_key = SeqNumKey::new(UK::from(key), lsn);
                     if value_length > 0 {
                         let value = read_bytes_exact(reader, value_length)?;
                         mem_table.set(lsn_key, value)?;
