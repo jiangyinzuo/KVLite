@@ -1,5 +1,5 @@
+use kvlite::db::dbimpl::DBImpl;
 use kvlite::db::key_types::RawUserKey;
-use kvlite::db::no_transaction_db::NoTransactionDB;
 use kvlite::db::options::WriteOptions;
 use kvlite::db::DB;
 use kvlite::memory::MrSwSkipMapMemTable;
@@ -8,7 +8,7 @@ use minitrace_jaeger::Reporter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 type DataBase =
-    NoTransactionDB<RawUserKey, RawUserKey, MrSwSkipMapMemTable<RawUserKey>, SimpleWriteAheadLog>;
+    DBImpl<RawUserKey, RawUserKey, MrSwSkipMapMemTable<RawUserKey>, SimpleWriteAheadLog>;
 
 fn trace(db: DataBase) {
     let wo = WriteOptions { sync: false };
